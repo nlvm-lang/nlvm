@@ -70,7 +70,16 @@ use crate::value::{Object, Value};
 pub fn is_native_class(fqcn: &str) -> bool {
     matches!(
         fqcn,
-        "system.Out" | "system.Err" | "system.In" | "system.Int" | "system.Float" | "system.Bool" | "system.String"
+        "system.Out"
+            | "system.Err"
+            | "system.In"
+            | "system.Int"
+            | "system.Float"
+            | "system.Bool"
+            | "system.String"
+            | "system.io.File"
+            | "system.io.Directory"
+            | "system.io.Path"
     )
 }
 
@@ -198,7 +207,137 @@ pub fn dispatch(program: &Program, fqcn: &str, name: &str, mut args: Vec<Value>)
             let parts: Vec<Value> = s.split(delim.as_str()).map(|p| Value::Str(Rc::new(p.to_string()))).collect();
             Ok(Some(Value::Array(Rc::new(RefCell::new(parts)))))
         }
+        // stdlib.md § system.io.File — paths are used as-is, no
+        // sanitization ("path validation is the caller's responsibility").
+        ("system.io.File", "exists") => Ok(Some(Value::Bool(std::path::Path::new(&str_at(&args, 0)?).exists()))),
+        ("system.io.File", "open") => {
+            let path = str_at(&args, 0)?;
+            // 1-argument open == `FileMode.ReadWrite` (stdlib.md): read and
+            // write, file must already exist, positioned at the start.
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path)
+                .map_err(|e| throw_io_error(&path, e))?;
+            let id = program.register_file(file);
+            let mut fields = HashMap::new();
+            fields.insert("__fd__".to_string(), Value::Int(id));
+            Ok(Some(Value::Object(Rc::new(RefCell::new(Object {
+                class_name: "system.io.FileHandle".to_string(),
+                fields,
+            })))))
+        }
+        ("system.io.File", "readAllText") => {
+            let path = str_at(&args, 0)?;
+            let text = std::fs::read_to_string(&path).map_err(|e| throw_io_error(&path, e))?;
+            Ok(Some(Value::Str(Rc::new(text))))
+        }
+        ("system.io.File", "writeAllText") => {
+            let path = str_at(&args, 0)?;
+            let content = str_at(&args, 1)?;
+            std::fs::write(&path, content).map_err(|e| throw_io_error(&path, e))?;
+            Ok(None)
+        }
+        ("system.io.Directory", "list") => {
+            let path = str_at(&args, 0)?;
+            let entries = std::fs::read_dir(&path).map_err(|e| throw_io_error(&path, e))?;
+            let mut names = Vec::new();
+            for entry in entries {
+                let entry = entry.map_err(|e| throw_io_error(&path, e))?;
+                names.push(entry.file_name().to_string_lossy().into_owned());
+            }
+            // read_dir order is platform-dependent; sorted so NL programs
+            // (and their expected_stdout in tests) see a stable order.
+            names.sort();
+            let values = names.into_iter().map(|n| Value::Str(Rc::new(n))).collect();
+            Ok(Some(Value::Array(Rc::new(RefCell::new(values)))))
+        }
+        ("system.io.Directory", "create") => {
+            let path = str_at(&args, 0)?;
+            std::fs::create_dir_all(&path).map_err(|e| throw_io_error(&path, e))?;
+            Ok(None)
+        }
+        ("system.io.Directory", "remove") => {
+            let path = str_at(&args, 0)?;
+            std::fs::remove_dir(&path).map_err(|e| throw_io_error(&path, e))?;
+            Ok(None)
+        }
+        ("system.io.Directory", "exists") => Ok(Some(Value::Bool(std::path::Path::new(&str_at(&args, 0)?).is_dir()))),
+        ("system.io.Path", "join") => {
+            let Some(Value::Array(segments)) = args.first() else {
+                return Err(VmError::Malformed("expected string[] argument to native call"));
+            };
+            let mut joined = std::path::PathBuf::new();
+            for seg in segments.borrow().iter() {
+                let Value::Str(s) = seg else {
+                    return Err(VmError::Malformed("expected string[] argument to native call"));
+                };
+                joined.push(s.as_str());
+            }
+            Ok(Some(Value::Str(Rc::new(joined.to_string_lossy().into_owned()))))
+        }
+        ("system.io.Path", "dirname") => {
+            let path = str_at(&args, 0)?;
+            let dir = std::path::Path::new(&path).parent().map(|p| p.to_string_lossy().into_owned());
+            Ok(Some(Value::Str(Rc::new(dir.unwrap_or_default()))))
+        }
+        ("system.io.Path", "basename") => {
+            let path = str_at(&args, 0)?;
+            let base = std::path::Path::new(&path).file_name().map(|p| p.to_string_lossy().into_owned());
+            Ok(Some(Value::Str(Rc::new(base.unwrap_or_default()))))
+        }
+        ("system.io.Path", "extension") => {
+            let path = str_at(&args, 0)?;
+            // stdlib.md: "Returns the file extension (e.g. `.nl`)" — with
+            // the leading dot, or null when there is none.
+            match std::path::Path::new(&path).extension() {
+                Some(ext) => Ok(Some(Value::Str(Rc::new(format!(".{}", ext.to_string_lossy()))))),
+                None => Ok(Some(Value::Null)),
+            }
+        }
+        ("system.io.Path", "normalize") => Ok(Some(Value::Str(Rc::new(normalize_path(&str_at(&args, 0)?))))),
         _ => Err(VmError::MethodNotFound(format!("{fqcn}.{name}"))),
+    }
+}
+
+/// Purely lexical `.`/`..`/redundant-separator resolution (stdlib.md §
+/// system.io.Path — `normalize` is documented as the *pre-I/O* validation
+/// step for untrusted paths, so it must not touch the file system the way
+/// `std::fs::canonicalize` would). A `..` at the start (nothing left to pop)
+/// is kept as-is, matching the usual lexical-normalization convention.
+fn normalize_path(path: &str) -> String {
+    use std::path::Component;
+    let mut parts: Vec<String> = Vec::new();
+    let mut absolute = false;
+    for component in std::path::Path::new(path).components() {
+        match component {
+            Component::RootDir => absolute = true,
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if parts.last().is_some_and(|p| p != "..") {
+                    parts.pop();
+                } else if !absolute {
+                    parts.push("..".to_string());
+                }
+            }
+            other => parts.push(other.as_os_str().to_string_lossy().into_owned()),
+        }
+    }
+    let joined = parts.join(std::path::MAIN_SEPARATOR_STR);
+    match (absolute, joined.is_empty()) {
+        (true, _) => format!("{}{joined}", std::path::MAIN_SEPARATOR),
+        (false, true) => ".".to_string(),
+        (false, false) => joined,
+    }
+}
+
+/// Maps a host I/O error to the spec's exception types — stdlib.md:
+/// `FileNotFoundException` when the path does not exist, `IOException` for
+/// every other failure.
+fn throw_io_error(path: &str, err: std::io::Error) -> VmError {
+    match err.kind() {
+        std::io::ErrorKind::NotFound => throw_native("FileNotFoundException", format!("{path}: {err}")),
+        _ => throw_native("IOException", format!("{path}: {err}")),
     }
 }
 
@@ -258,6 +397,142 @@ fn throw_native(class_name: &str, message: impl Into<String>) -> VmError {
         class_name: class_name.to_string(),
         fields,
     }))))
+}
+
+/// `system.io.FileHandle` — like the native generic collections below, a
+/// real heap object dispatched through `INVOKE_INSTANCE` on its runtime
+/// class, but non-generic and stateful *outside* the object: the object
+/// only carries an `"__fd__"` index into `Program::file_handles` (which is
+/// why `dispatch_native_instance` takes `program` while
+/// `dispatch_instance` doesn't).
+pub fn is_native_instance_class(fqcn: &str) -> bool {
+    fqcn == "system.io.FileHandle"
+}
+
+pub fn dispatch_native_instance(
+    program: &Program,
+    name: &str,
+    receiver: &Value,
+    args: Vec<Value>,
+) -> Result<Option<Value>, VmError> {
+    use std::io::{Read, Write};
+
+    let Value::Object(obj) = receiver else {
+        return Err(VmError::Malformed("expected FileHandle receiver"));
+    };
+    let id = match obj.borrow().fields.get("__fd__") {
+        Some(Value::Int(id)) => *id,
+        _ => return Err(VmError::Malformed("malformed FileHandle object")),
+    };
+
+    // `close()` is idempotent and never fails (stdlib.md); everything else
+    // on a closed handle throws IOException — including `m7_0030`'s
+    // read-after-close (CWE-416) scenario.
+    if name == "close" {
+        program.close_file(id);
+        return Ok(None);
+    }
+    let closed = || throw_native("IOException", format!("{name} on a closed file handle"));
+
+    match name {
+        "read" | "write" if args.len() == 3 => {
+            let Some(Value::Array(buffer)) = args.first().cloned() else {
+                return Err(VmError::Malformed("expected byte[] argument to native call"));
+            };
+            let offset = int_at(&args, 1)?;
+            let length = int_at(&args, 2)?;
+            let buf_len = buffer.borrow().len() as i64;
+            // stdlib.md § system.io.FileHandle, Bounds checking: checked
+            // *before any I/O*, immune to `offset + length` overflow
+            // (checked_add instead of wrapping `+`).
+            if offset < 0 || length < 0 || offset.checked_add(length).is_none_or(|end| end > buf_len) {
+                return Err(throw_native(
+                    "IndexOutOfBoundsException",
+                    format!("offset {offset}, length {length}, buffer length {buf_len}"),
+                ));
+            }
+            if name == "read" {
+                let mut tmp = vec![0u8; length as usize];
+                let n = program
+                    .with_file(id, |f| f.read(&mut tmp))
+                    .ok_or_else(closed)?
+                    .map_err(|e| throw_native("IOException", e.to_string()))?;
+                let mut buf = buffer.borrow_mut();
+                for (i, byte) in tmp[..n].iter().enumerate() {
+                    buf[offset as usize + i] = Value::Byte(*byte);
+                }
+                Ok(Some(Value::Int(n as i64)))
+            } else {
+                let data: Vec<u8> = buffer.borrow()[offset as usize..(offset + length) as usize]
+                    .iter()
+                    .map(|v| match v {
+                        Value::Byte(b) => Ok(*b),
+                        // `int` stored through a `byte[]` element keeps the
+                        // low-order bits, same as the `(byte)` cast rule.
+                        Value::Int(i) => Ok(*i as u8),
+                        _ => Err(VmError::Malformed("expected byte[] argument to native call")),
+                    })
+                    .collect::<Result<_, _>>()?;
+                program
+                    .with_file(id, |f| f.write_all(&data))
+                    .ok_or_else(closed)?
+                    .map_err(|e| throw_native("IOException", e.to_string()))?;
+                Ok(None)
+            }
+        }
+        "write" if args.len() == 1 => {
+            let text = str_at(&args, 0)?;
+            program
+                .with_file(id, |f| f.write_all(text.as_bytes()))
+                .ok_or_else(closed)?
+                .map_err(|e| throw_native("IOException", e.to_string()))?;
+            Ok(None)
+        }
+        "readLine" => {
+            // Byte-at-a-time keeps the OS file position exactly after the
+            // `\n` (a `BufReader` would read ahead and desync the handle
+            // for the interleaved `read`/`write` calls stdlib.md allows).
+            let line = program
+                .with_file(id, |f| -> std::io::Result<Option<String>> {
+                    let mut bytes = Vec::new();
+                    let mut one = [0u8; 1];
+                    loop {
+                        if f.read(&mut one)? == 0 {
+                            // EOF: null if nothing was read at all.
+                            return Ok(if bytes.is_empty() { None } else { Some(lossy_line(bytes)) });
+                        }
+                        if one[0] == b'\n' {
+                            return Ok(Some(lossy_line(bytes)));
+                        }
+                        bytes.push(one[0]);
+                    }
+                })
+                .ok_or_else(closed)?
+                .map_err(|e| throw_native("IOException", e.to_string()))?;
+            Ok(Some(match line {
+                Some(l) => Value::Str(Rc::new(l)),
+                None => Value::Null,
+            }))
+        }
+        "flush" => {
+            program
+                .with_file(id, |f| f.flush())
+                .ok_or_else(closed)?
+                .map_err(|e| throw_native("IOException", e.to_string()))?;
+            Ok(None)
+        }
+        _ => Err(VmError::MethodNotFound(format!("system.io.FileHandle.{name}"))),
+    }
+}
+
+/// One decoded `readLine` result: UTF-8 (lossy) with a trailing `\r`
+/// stripped, mirroring `system.In.readLine`'s CRLF handling.
+fn lossy_line(bytes: Vec<u8>) -> String {
+    let mut s = String::from_utf8_lossy(&bytes).into_owned();
+    if s.ends_with('\r') {
+        s.pop();
+    }
+    s
 }
 
 pub fn is_native_generic_class(fqcn: &str) -> bool {

@@ -1,0 +1,53 @@
+---
+title: "Phase 6 — system.io.FileHandle readLine/write/read/close"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "3 1 over 3"
+---
+
+#NLFILE phase6/iohandle/Main.nl
+namespace phase6.iohandle;
+class Main {
+	public static int main(string[] args) {
+		try {
+			system.io.Directory.create("target/tmp_phase6io");
+			string path = "target/tmp_phase6io/lines.txt";
+			system.io.File.writeAllText(path, "one\ntwo\nthree");
+			auto h = system.io.File.open(path);
+			int count = 0;
+			int matched = 0;
+			bool done = false;
+			while (!done) {
+				string|null line = h.readLine();
+				if (line == null) {
+					done = true;
+				} else {
+					count = count + 1;
+					if (line == "two") {
+						matched = matched + 1;
+					}
+				}
+			}
+			h.close();
+			h.close();
+			system.Out.print(system.Int.toString(count));
+			system.Out.print(" ");
+			system.Out.print(system.Int.toString(matched));
+			system.Out.print(" ");
+			auto w = system.io.File.open(path);
+			w.write("ONE");
+			w.flush();
+			w.close();
+			system.Out.print(system.io.File.readAllText(path) == "ONE\ntwo\nthree" ? "over" : "bad");
+			system.Out.print(" ");
+			auto r = system.io.File.open(path);
+			byte[] buf = new byte[3];
+			int n = r.read(buf, 0, 3);
+			r.close();
+			system.Out.print(system.Int.toString(n));
+			return 0;
+		} catch (system.io.IOException e) {
+			return 1;
+		}
+	}
+}

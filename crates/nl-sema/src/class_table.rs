@@ -83,6 +83,11 @@ pub fn import_map(file: &SourceFile, all_files: &[SourceFile]) -> HashMap<String
     for prelude_file in nl_syntax::prelude::files() {
         map.insert(fqcn_of(&prelude_file), fqcn_of(&prelude_file));
     }
+    // `system.io.IOException` and friends resolve to the same prelude
+    // classes — see nl_syntax::prelude::NAMESPACED_ALIASES.
+    for (alias, target) in nl_syntax::prelude::NAMESPACED_ALIASES {
+        map.insert((*alias).to_string(), (*target).to_string());
+    }
     for other in all_files {
         if other.namespace == file.namespace {
             let simple = match &other.item {

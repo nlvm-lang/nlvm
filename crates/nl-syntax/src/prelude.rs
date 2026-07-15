@@ -35,6 +35,17 @@ const HIERARCHY: &[(&str, Option<&str>)] = &[
     ("InterruptedException", Some("Exception")),
 ];
 
+/// Qualified aliases for prelude exception classes: stdlib.md groups the
+/// I/O exceptions under the `system.io` namespace (and fixtures reference
+/// them that way — `catch (system.io.IOException e)` in `m7_0030`), but the
+/// prelude declares them namespace-less, so both `import_map`s
+/// (`nl_sema::class_table` / `nl_codegen::class_table`) seed these
+/// qualified spellings as extra names for the same classes.
+pub const NAMESPACED_ALIASES: &[(&str, &str)] = &[
+    ("system.io.IOException", "IOException"),
+    ("system.io.FileNotFoundException", "FileNotFoundException"),
+];
+
 /// Every built-in exception class, as a namespace-less `SourceFile`.
 pub fn files() -> Vec<SourceFile> {
     HIERARCHY

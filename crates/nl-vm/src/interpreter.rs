@@ -544,6 +544,16 @@ fn exec_step(
                     *pc_ref = pc;
                     return Ok(Step::Continue);
                 }
+                // `handle.read(...)` etc. on a `system.io.FileHandle` — same
+                // interception pattern, but stateful through `program`'s
+                // file-handle table (see `nl_vm::native`'s doc comments).
+                if crate::native::is_native_instance_class(&runtime_class) {
+                    if let Some(result) = crate::native::dispatch_native_instance(program, &name, &receiver, call_args)? {
+                        stack.push(result);
+                    }
+                    *pc_ref = pc;
+                    return Ok(Step::Continue);
+                }
                 // Not necessarily declared on `runtime_class` itself — walk
                 // the `extends` chain for an inherited-but-not-overridden
                 // method (vm.md § Method dispatch, Instance methods).

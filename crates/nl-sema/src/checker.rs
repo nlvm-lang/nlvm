@@ -597,6 +597,9 @@ impl<'a> MethodChecker<'a> {
                             for (actual, expected) in arg_types.iter().zip(&param_types) {
                                 self.check_assignable(actual, expected)?;
                             }
+                            for exc in crate::stdlib::throws(&path, name) {
+                                self.require_handled(exc)?;
+                            }
                             return Ok(return_ty);
                         }
                     }
@@ -629,6 +632,24 @@ impl<'a> MethodChecker<'a> {
                     // locals before nl-sema ever runs), so the element
                     // type(s) are recovered straight from it — see
                     // `crate::native_generics`'s doc comment.
+                    // `handle.read(...)` etc. — instance methods of a native
+                    // stdlib object class (`system.io.FileHandle`), which has
+                    // no entry in `self.classes`; its checked exceptions
+                    // still feed E015 like a user class's `throws` would.
+                    Type::Named(fqcn) if crate::stdlib::is_native_instance(fqcn) => {
+                        match crate::stdlib::instance_lookup(fqcn, name, args.len()) {
+                            Some((param_types, return_ty)) => {
+                                for (actual, expected) in arg_types.iter().zip(&param_types) {
+                                    self.check_assignable(actual, expected)?;
+                                }
+                                for exc in crate::stdlib::throws(fqcn, name) {
+                                    self.require_handled(exc)?;
+                                }
+                                Ok(return_ty)
+                            }
+                            None => Ok(Type::Void),
+                        }
+                    }
                     Type::Named(fqcn) if crate::native_generics::is_instance(fqcn) => {
                         match crate::native_generics::method_signature(fqcn, name, args.len()) {
                             Some((param_types, return_ty)) => {

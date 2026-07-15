@@ -1,0 +1,14 @@
+---
+title: "E015 — stdlib checked exception (IOException) must be caught or declared"
+file_separator: "#NLFILE"
+expected_compile_error: "E015"
+---
+
+#NLFILE phase6/ioe015/Main.nl
+namespace phase6.ioe015;
+class Main {
+	public static int main(string[] args) {
+		system.io.File.writeAllText("target/tmp_e015.txt", "x");
+		return 0;
+	}
+}

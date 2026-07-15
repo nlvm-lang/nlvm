@@ -996,9 +996,13 @@ impl<'a> Emitter<'a> {
                 let fqcn = fqcn.clone();
                 // `list.size()`/`map.get(k)` etc. — see `compile_new`'s
                 // matching comment and `crate::native_generics`'s doc
-                // comment. Falls through to the ordinary user-class path
-                // below when `fqcn` isn't a native generic instantiation.
-                let (params, return_ty) = if let Some(sig) = crate::native_generics::method_signature(&fqcn, name, args.len()) {
+                // comment; `handle.read(...)` etc. likewise resolve from
+                // `crate::stdlib::instance_signature` (`system.io.FileHandle`
+                // has no bytecode `Module` either). Falls through to the
+                // ordinary user-class path below for everything else.
+                let (params, return_ty) = if let Some(sig) = crate::stdlib::instance_signature(&fqcn, name, args.len()) {
+                    sig
+                } else if let Some(sig) = crate::native_generics::method_signature(&fqcn, name, args.len()) {
                     sig
                 } else {
                     let method = find_method(self.classes, &fqcn, name, args.len())

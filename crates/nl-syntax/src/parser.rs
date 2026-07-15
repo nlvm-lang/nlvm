@@ -229,12 +229,27 @@ impl Parser {
     /// `throws Type1, Type2, ...` — optional, after a method/constructor's
     /// parameter list and before its body (or before an interface method's
     /// trailing `;`).
+    /// `ident(.ident)*` — a possibly namespace-qualified class name. Only
+    /// used in positions where `.` cannot mean anything else (types, `new`,
+    /// `catch`, `throws`), never in expression position where `.` starts a
+    /// field/method access.
+    fn parse_dotted_name(&mut self) -> Result<String, SyntaxError> {
+        let mut name = self.eat_ident()?;
+        while self.is_punct(Punct::Dot) {
+            self.bump();
+            let seg = self.eat_ident()?;
+            name.push('.');
+            name.push_str(&seg);
+        }
+        Ok(name)
+    }
+
     fn parse_throws_clause(&mut self) -> Result<Vec<String>, SyntaxError> {
         let mut throws = Vec::new();
         if self.is_keyword(Keyword::Throws) {
             self.bump();
             loop {
-                throws.push(self.eat_ident()?);
+                throws.push(self.parse_dotted_name()?);
                 if self.is_punct(Punct::Comma) {
                     self.bump();
                 } else {
@@ -429,7 +444,11 @@ impl Parser {
                     Type::StringT
                 }
                 _ => {
-                    let name = self.eat_ident()?;
+                    // Namespace-qualified class name (`system.io.IOException`
+                    // in a catch clause, `system.io.FileHandle` as a local's
+                    // type, ...). Unambiguous in type position: nothing else
+                    // can follow an identifier with `.` here.
+                    let name = self.parse_dotted_name()?;
                     if self.is_punct(Punct::Lt) {
                         Type::Generic(name, self.parse_generic_args()?)
                     } else {
@@ -486,13 +505,7 @@ impl Parser {
                     // greedily consuming `.`-separated segments is
                     // unambiguous here, unlike in expression position where
                     // `.` starts a field/method access.
-                    let mut name = self.eat_ident()?;
-                    while self.is_punct(Punct::Dot) {
-                        self.bump();
-                        let seg = self.eat_ident()?;
-                        name.push('.');
-                        name.push_str(&seg);
-                    }
+                    let name = self.parse_dotted_name()?;
                     if self.is_punct(Punct::Lt) {
                         Ok(Type::Generic(name, self.parse_generic_args()?))
                     } else {
@@ -596,17 +609,29 @@ impl Parser {
             return true;
         }
         if matches!(&self.peek().kind, TokenKind::Ident(_)) {
+            // Skip a dotted qualified-name prefix (`system.io.FileHandle h`)
+            // — a `.` immediately followed by an identifier can only
+            // continue either a type name or a field access, and the checks
+            // below (next token is an identifier, `|`, `<...>`, or `[]`)
+            // only ever match the type-name reading: an expression statement
+            // after `a.b` continues with `(`, `=`, `;`, an operator, ...
+            let mut offset = 1usize;
+            while matches!(self.peek_at(offset), Some(TokenKind::Punct(Punct::Dot)))
+                && matches!(self.peek_at(offset + 1), Some(TokenKind::Ident(_)))
+            {
+                offset += 2;
+            }
             if matches!(
-                self.peek_at(1),
+                self.peek_at(offset),
                 Some(TokenKind::Ident(_)) | Some(TokenKind::Punct(Punct::Pipe))
             ) {
                 return true;
             }
-            if matches!(self.peek_at(1), Some(TokenKind::Punct(Punct::Lt))) {
-                return self.looks_like_generic_type_decl();
+            if matches!(self.peek_at(offset), Some(TokenKind::Punct(Punct::Lt))) {
+                return self.looks_like_generic_type_decl(offset);
             }
             return matches!(
-                (self.peek_at(1), self.peek_at(2)),
+                (self.peek_at(offset), self.peek_at(offset + 1)),
                 (Some(TokenKind::Punct(Punct::LBracket)), Some(TokenKind::Punct(Punct::RBracket)))
             );
         }
@@ -615,13 +640,13 @@ impl Parser {
 
     /// `Name<...> ident` — e.g. `Box<int> a`. Without this lookahead,
     /// `Box<int>` is indistinguishable from the chained relational
-    /// expression `Box < int > a`; scans forward from the `<` at offset 1,
-    /// tracking nesting depth (for `Box<Box<int>>`), bailing out (not a
-    /// generic type) on any token that couldn't plausibly appear inside a
-    /// type-argument list.
-    fn looks_like_generic_type_decl(&self) -> bool {
+    /// expression `Box < int > a`; scans forward from the `<` at
+    /// `lt_offset`, tracking nesting depth (for `Box<Box<int>>`), bailing
+    /// out (not a generic type) on any token that couldn't plausibly appear
+    /// inside a type-argument list.
+    fn looks_like_generic_type_decl(&self, lt_offset: usize) -> bool {
         let mut depth = 0i32;
-        let mut offset = 1usize;
+        let mut offset = lt_offset;
         loop {
             match self.peek_at(offset) {
                 Some(TokenKind::Punct(Punct::Lt)) => depth += 1,
@@ -633,6 +658,7 @@ impl Parser {
                 }
                 Some(TokenKind::Ident(_))
                 | Some(TokenKind::Punct(Punct::Comma))
+                | Some(TokenKind::Punct(Punct::Dot))
                 | Some(TokenKind::Punct(Punct::LBracket))
                 | Some(TokenKind::Punct(Punct::RBracket))
                 | Some(TokenKind::Punct(Punct::Pipe)) => {}
@@ -697,7 +723,7 @@ impl Parser {
         while self.is_keyword(Keyword::Catch) {
             self.bump();
             self.eat_punct(Punct::LParen)?;
-            let ty = self.eat_ident()?;
+            let ty = self.parse_dotted_name()?;
             let var = self.eat_ident()?;
             self.eat_punct(Punct::RParen)?;
             let catch_body = self.parse_block()?;

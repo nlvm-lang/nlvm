@@ -11,8 +11,40 @@ use nl_syntax::ast::Type;
 pub fn is_stdlib_class(fqcn: &str) -> bool {
     matches!(
         fqcn,
-        "system.Out" | "system.Err" | "system.In" | "system.Int" | "system.Float" | "system.Bool" | "system.String"
+        "system.Out"
+            | "system.Err"
+            | "system.In"
+            | "system.Int"
+            | "system.Float"
+            | "system.Bool"
+            | "system.String"
+            | "system.io.File"
+            | "system.io.Directory"
+            | "system.io.Path"
     )
+}
+
+fn file_handle() -> Type {
+    Type::Named("system.io.FileHandle".to_string())
+}
+
+/// The one native class whose *instances* the user manipulates
+/// (`system.io.File.open` returns one): its methods compile to an ordinary
+/// `INVOKE_INSTANCE` (the VM intercepts by the receiver's runtime class,
+/// `nl_vm::native::dispatch_native_instance`), with this table standing in
+/// for the `ClassInfo` a bytecode-backed class would provide.
+pub fn instance_signature(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>, Type)> {
+    let nullable = |t: Type| Type::Union(vec![t, Type::NullT]);
+    let byte_array = Type::Array(Box::new(Type::Byte));
+    match (fqcn, name, argc) {
+        ("system.io.FileHandle", "close", 0) => Some((vec![], Type::Void)),
+        ("system.io.FileHandle", "read", 3) => Some((vec![byte_array, Type::Int, Type::Int], Type::Int)),
+        ("system.io.FileHandle", "readLine", 0) => Some((vec![], nullable(Type::StringT))),
+        ("system.io.FileHandle", "write", 1) => Some((vec![Type::StringT], Type::Void)),
+        ("system.io.FileHandle", "write", 3) => Some((vec![byte_array, Type::Int, Type::Int], Type::Void)),
+        ("system.io.FileHandle", "flush", 0) => Some((vec![], Type::Void)),
+        _ => None,
+    }
 }
 
 /// `print`/`println` accept any of `int|float|bool|string` (stdlib.md:
@@ -68,6 +100,19 @@ pub fn signature(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>, Type
         ("system.String", "endsWith", 2) => Some((vec![Type::StringT, Type::StringT], Type::Bool)),
         ("system.String", "trim", 1) => Some((vec![Type::StringT], Type::StringT)),
         ("system.String", "split", 2) => Some((vec![Type::StringT, Type::StringT], string_array)),
+        ("system.io.File", "exists", 1) => Some((vec![Type::StringT], Type::Bool)),
+        ("system.io.File", "open", 1) => Some((vec![Type::StringT], file_handle())),
+        ("system.io.File", "readAllText", 1) => Some((vec![Type::StringT], Type::StringT)),
+        ("system.io.File", "writeAllText", 2) => Some((vec![Type::StringT, Type::StringT], Type::Void)),
+        ("system.io.Directory", "list", 1) => Some((vec![Type::StringT], string_array)),
+        ("system.io.Directory", "create", 1) => Some((vec![Type::StringT], Type::Void)),
+        ("system.io.Directory", "remove", 1) => Some((vec![Type::StringT], Type::Void)),
+        ("system.io.Directory", "exists", 1) => Some((vec![Type::StringT], Type::Bool)),
+        ("system.io.Path", "join", 1) => Some((vec![string_array], Type::StringT)),
+        ("system.io.Path", "dirname", 1) => Some((vec![Type::StringT], Type::StringT)),
+        ("system.io.Path", "basename", 1) => Some((vec![Type::StringT], Type::StringT)),
+        ("system.io.Path", "extension", 1) => Some((vec![Type::StringT], nullable(Type::StringT))),
+        ("system.io.Path", "normalize", 1) => Some((vec![Type::StringT], Type::StringT)),
         _ => None,
     }
 }

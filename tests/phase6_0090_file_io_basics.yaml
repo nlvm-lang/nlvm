@@ -1,0 +1,53 @@
+---
+title: "Phase 6 — system.io.File/Directory/Path basics"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "dir absent present hello-io 1 data.txt removed a/b/c.nl a/b c.nl isnl a/c.txt"
+---
+
+#NLFILE phase6/iobasics/Main.nl
+namespace phase6.iobasics;
+class Main {
+	public static int main(string[] args) {
+		try {
+			system.io.Directory.create("target/tmp_phase6io/sub");
+			system.Out.print(system.io.Directory.exists("target/tmp_phase6io") ? "dir" : "nodir");
+			system.Out.print(" ");
+			system.Out.print(system.io.File.exists("target/tmp_phase6io/never_created.txt") ? "?" : "absent");
+			system.Out.print(" ");
+			string path = "target/tmp_phase6io/sub/data.txt";
+			system.io.File.writeAllText(path, "hello-io");
+			system.Out.print(system.io.File.exists(path) ? "present" : "missing");
+			system.Out.print(" ");
+			system.Out.print(system.io.File.readAllText(path));
+			system.Out.print(" ");
+			string[] entries = system.io.Directory.list("target/tmp_phase6io/sub");
+			system.Out.print(system.Int.toString(entries.length()));
+			system.Out.print(" ");
+			system.Out.print(entries[0]);
+			system.Out.print(" ");
+			system.io.Directory.create("target/tmp_phase6io/empty");
+			system.io.Directory.remove("target/tmp_phase6io/empty");
+			system.Out.print(system.io.Directory.exists("target/tmp_phase6io/empty") ? "still" : "removed");
+			system.Out.print(" ");
+			string[] segs = new string[3];
+			segs[0] = "a";
+			segs[1] = "b";
+			segs[2] = "c.nl";
+			string joined = system.io.Path.join(segs);
+			system.Out.print(joined);
+			system.Out.print(" ");
+			system.Out.print(system.io.Path.dirname(joined));
+			system.Out.print(" ");
+			system.Out.print(system.io.Path.basename(joined));
+			system.Out.print(" ");
+			string|null ext = system.io.Path.extension(joined);
+			system.Out.print(ext == ".nl" ? "isnl" : "other");
+			system.Out.print(" ");
+			system.Out.print(system.io.Path.normalize("a/./b/../c.txt"));
+			return 0;
+		} catch (system.io.IOException e) {
+			return 1;
+		}
+	}
+}

@@ -21,6 +21,12 @@ pub struct Program {
     /// threaded explicitly through `call_static`/`call_instance`/`run_frame`.
     stdout: RefCell<String>,
     stderr: RefCell<String>,
+    /// Open files backing `system.io.FileHandle` objects (see
+    /// `crate::native`): a handle object only carries an index into this
+    /// table, and `close()` clears the slot (making the index permanently
+    /// dead — stdlib.md: "After the handle has been closed, any call to
+    /// read, readLine, write, or flush throws IOException").
+    file_handles: RefCell<Vec<Option<std::fs::File>>>,
 }
 
 impl Program {
@@ -31,7 +37,12 @@ impl Program {
                 map.insert(name.to_string(), module);
             }
         }
-        Program { modules: map, stdout: RefCell::new(String::new()), stderr: RefCell::new(String::new()) }
+        Program {
+            modules: map,
+            stdout: RefCell::new(String::new()),
+            stderr: RefCell::new(String::new()),
+            file_handles: RefCell::new(Vec::new()),
+        }
     }
 
     pub fn get(&self, fqcn: &str) -> Option<&Module> {
@@ -48,6 +59,27 @@ impl Program {
 
     pub fn write_stderr(&self, s: &str) {
         self.stderr.borrow_mut().push_str(s);
+    }
+
+    pub fn register_file(&self, file: std::fs::File) -> i64 {
+        let mut handles = self.file_handles.borrow_mut();
+        handles.push(Some(file));
+        (handles.len() - 1) as i64
+    }
+
+    /// Idempotent, like `FileHandle.close()` itself (stdlib.md) — closing an
+    /// already-closed or unknown id is a no-op. Dropping the `File` closes it.
+    pub fn close_file(&self, id: i64) {
+        if let Some(slot) = self.file_handles.borrow_mut().get_mut(id as usize) {
+            *slot = None;
+        }
+    }
+
+    /// Runs `f` on the open file for `id`, or `None` if the id is unknown
+    /// or the handle was closed (the caller turns that into `IOException`).
+    pub fn with_file<R>(&self, id: i64, f: impl FnOnce(&mut std::fs::File) -> R) -> Option<R> {
+        let mut handles = self.file_handles.borrow_mut();
+        handles.get_mut(id as usize)?.as_mut().map(f)
     }
 }
 
