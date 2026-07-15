@@ -3,7 +3,7 @@ use nl_syntax::ast::{Block, CatchClause, Stmt, Type};
 
 use crate::class_table::resolve_type;
 use crate::error::CodegenError;
-use crate::expr::{expr_ty_of, Emitter, LoopCtx};
+use crate::expr::{expr_ty_of, Emitter, ExprTy, LoopCtx};
 
 impl<'a> Emitter<'a> {
     pub fn compile_block(&mut self, block: &[Stmt]) -> Result<(), CodegenError> {
@@ -75,6 +75,7 @@ impl<'a> Emitter<'a> {
                 step,
                 body,
             } => self.compile_for(init, cond.as_ref(), step, body)?,
+            Stmt::ForEach { ty, var, iterable, body } => self.compile_foreach(ty.as_ref(), var, iterable, body)?,
             Stmt::Break => {
                 if self.loops.is_empty() {
                     return Err(CodegenError::Unsupported("'break' outside a loop".to_string()));
@@ -277,6 +278,106 @@ impl<'a> Emitter<'a> {
             self.patch_branch_to(pc, operand, end_pc);
         }
         self.pop_scope();
+        Ok(())
+    }
+
+    /// `for ([const] item : collection)` — vm.md § For-each loops:
+    /// desugared into an index-based loop over hidden scratch locals (the
+    /// collection reference and the index), exactly the pseudo-bytecode
+    /// pattern the spec gives. Arrays use `ARRAY_LENGTH`/`ARRAY_LOAD`;
+    /// `system.List<T>` uses `size()`/`get(i)` via `INVOKE_INSTANCE`.
+    /// `system.Map<K,V>` iteration needs `entries()`/`MapEntry<K,V>`
+    /// (neither exists — PLAN.md Phase 6 gap) and is rejected explicitly.
+    fn compile_foreach(
+        &mut self,
+        ty: Option<&Type>,
+        var: &str,
+        iterable: &nl_syntax::ast::Expr,
+        body: &Block,
+    ) -> Result<(), CodegenError> {
+        self.push_scope();
+        let iterable_ty = self.compile_expr(iterable)?;
+        let (list_fqcn, elem_ty) = match &iterable_ty {
+            ExprTy::Array(elem) => (None, (**elem).clone()),
+            ExprTy::Object(fqcn) if fqcn.starts_with("system.List<") => {
+                let (_, ret) = crate::native_generics::method_signature(fqcn, "get", 1)
+                    .expect("system.List instantiation always has get(int)");
+                (Some(fqcn.clone()), expr_ty_of(&ret))
+            }
+            other => {
+                return Err(CodegenError::Unsupported(format!(
+                    "for-each over non-iterable type {other:?} (arrays and system.List only)"
+                )))
+            }
+        };
+        let coll_local = self.declare_scratch_local(iterable_ty.clone());
+        self.emit_store(coll_local);
+        let idx_local = self.declare_scratch_local(ExprTy::Int);
+        self.emit_int_const(0);
+        self.emit_store(idx_local);
+        // Declared once, re-stored before each iteration of the body.
+        let item_ty = match ty {
+            Some(t) => expr_ty_of(&resolve_type(t, self.imports)),
+            None => elem_ty,
+        };
+        let item_local = self.declare_local(var.to_string(), item_ty);
+
+        let cond_pc = self.code.len();
+        self.op_u16(Opcode::Load, idx_local, 1);
+        self.op_u16(Opcode::Load, coll_local, 1);
+        match &list_fqcn {
+            None => self.op(Opcode::ArrayLength, 0),
+            Some(fqcn) => self.emit_native_instance_call(fqcn, "size", 0)?,
+        }
+        self.op(Opcode::CmpLt, -1);
+        let exit_patch = self.branch(Opcode::IfFalse, -1);
+
+        self.op_u16(Opcode::Load, coll_local, 1);
+        self.op_u16(Opcode::Load, idx_local, 1);
+        match &list_fqcn {
+            None => self.op(Opcode::ArrayLoad, -1),
+            Some(fqcn) => self.emit_native_instance_call(fqcn, "get", 1)?,
+        }
+        self.emit_store(item_local);
+
+        self.loops.push(LoopCtx {
+            break_patches: Vec::new(),
+            continue_patches: Vec::new(),
+            finally_depth: self.finally_stack.len(),
+        });
+        self.compile_block(body)?;
+        let ctx = self.loops.pop().unwrap();
+
+        // `continue` proceeds to the next element: jump to the increment.
+        let step_pc = self.code.len();
+        for (pc, operand) in ctx.continue_patches {
+            self.patch_branch_to(pc, operand, step_pc);
+        }
+        self.op_iinc(idx_local, 1);
+        self.emit_goto_to(cond_pc);
+        let end_pc = self.code.len();
+        self.patch_branch_to(exit_patch.0, exit_patch.1, end_pc);
+        for (pc, operand) in ctx.break_patches {
+            self.patch_branch_to(pc, operand, end_pc);
+        }
+        self.pop_scope();
+        Ok(())
+    }
+
+    /// One `INVOKE_INSTANCE` against a native generic class (the arguments
+    /// and receiver must already be on the stack) — same method-ref shape
+    /// `compile_method_call` emits for an explicit `list.get(i)` call.
+    fn emit_native_instance_call(&mut self, fqcn: &str, name: &str, argc: usize) -> Result<(), CodegenError> {
+        let (params, ret) = crate::native_generics::method_signature(fqcn, name, argc).ok_or_else(|| {
+            CodegenError::Unsupported(format!("unknown method '{name}' on '{fqcn}' with {argc} argument(s)"))
+        })?;
+        let descriptor = crate::type_desc::method_descriptor(&params, &ret);
+        let name_index = self.cp.add_utf8(name.to_string());
+        let descriptor_index = self.cp.add_type_desc(&descriptor);
+        let class_index = self.cp.add_class(fqcn);
+        let method_ref = self.cp.add_method_ref(class_index, name_index, descriptor_index);
+        let result_delta = if expr_ty_of(&ret) == ExprTy::Void { 0 } else { 1 };
+        self.op_u16(Opcode::InvokeInstance, method_ref, result_delta - argc as i32 - 1);
         Ok(())
     }
 }

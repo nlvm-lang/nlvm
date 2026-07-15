@@ -1,0 +1,54 @@
+---
+title: "Phase 6 — for-each over arrays and system.List, with break/continue"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "6 a-b-c- 30 x"
+---
+
+#NLFILE phase6/foreach/Main.nl
+namespace phase6.foreach;
+class Main {
+	public static int main(string[] args) {
+		int[] nums = new int[3];
+		nums[0] = 1;
+		nums[1] = 2;
+		nums[2] = 3;
+		int sum = 0;
+		for (const auto n : nums) {
+			sum += n;
+		}
+		system.Out.print(system.Int.toString(sum));
+		system.Out.print(" ");
+		string[] letters = new string[3];
+		letters[0] = "a";
+		letters[1] = "b";
+		letters[2] = "c";
+		for (string s : letters) {
+			system.Out.print(s + "-");
+		}
+		system.Out.print(" ");
+		auto list = new system.List<int>();
+		list.pushBack(10);
+		list.pushBack(2);
+		list.pushBack(20);
+		list.pushBack(30);
+		int acc = 0;
+		for (auto v : list) {
+			if (v == 2) {
+				continue;
+			}
+			if (v == 20) {
+				acc += v;
+				break;
+			}
+			acc += v;
+		}
+		system.Out.print(system.Int.toString(acc + list.get(0) - 10));
+		system.Out.print(" ");
+		// The loop variable is scoped to the loop: the same name is free
+		// for an unrelated declaration afterwards.
+		string v = "x";
+		system.Out.print(v);
+		return 0;
+	}
+}

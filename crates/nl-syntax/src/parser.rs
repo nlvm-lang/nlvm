@@ -712,6 +712,35 @@ impl Parser {
         })
     }
 
+    /// Speculative for-each header parse — `Ok(None)` means "not a
+    /// for-each, rewind and parse a C-style header" (the caller restores
+    /// `self.pos`); anything after the committing `:` reports real errors.
+    fn try_parse_foreach_header(&mut self) -> Result<Option<Stmt>, SyntaxError> {
+        if self.is_keyword(Keyword::Const) {
+            self.bump();
+        }
+        let ty = if self.is_keyword(Keyword::Auto) {
+            self.bump();
+            None
+        } else {
+            match self.parse_type() {
+                Ok(t) => Some(t),
+                Err(_) => return Ok(None),
+            }
+        };
+        let Ok(var) = self.eat_ident() else {
+            return Ok(None);
+        };
+        if !self.is_punct(Punct::Colon) {
+            return Ok(None);
+        }
+        self.bump();
+        let iterable = self.parse_expr()?;
+        self.eat_punct(Punct::RParen)?;
+        let body = self.parse_block()?;
+        Ok(Some(Stmt::ForEach { ty, var, iterable, body }))
+    }
+
     /// `try { ... } catch (Type name) { ... } ... finally { ... }` —
     /// specs.md § Exception handling. At least one `catch` or a `finally` is
     /// required (a bare `try {}` with neither is meaningless); the parser
@@ -779,6 +808,16 @@ impl Parser {
     fn parse_for_stmt(&mut self) -> Result<Stmt, SyntaxError> {
         self.eat_keyword(Keyword::For)?;
         self.eat_punct(Punct::LParen)?;
+
+        // For-each form: `for ([const] (auto|Type) ident : expr)` — tried
+        // speculatively with rollback (same pattern as `parse_closure`),
+        // since only the `:` after the loop variable distinguishes it from
+        // a C-style header like `for (int i = 0; ...)`.
+        let save = self.pos;
+        if let Some(stmt) = self.try_parse_foreach_header()? {
+            return Ok(stmt);
+        }
+        self.pos = save;
 
         let mut init = Vec::new();
         if !self.is_punct(Punct::Semi) {

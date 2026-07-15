@@ -154,6 +154,17 @@ pub enum Stmt {
         step: Vec<Expr>,
         body: Block,
     },
+    /// `for ([const] auto item : collection)` / `for ([const] T item :
+    /// collection)` — specs.md § Loops. `ty` is `None` for `auto` (the
+    /// element type is deduced from the collection). `const` on the loop
+    /// variable is parsed and discarded, like `const` everywhere else in
+    /// this implementation (const-correctness is out of scope — PLAN.md).
+    ForEach {
+        ty: Option<Type>,
+        var: String,
+        iterable: Expr,
+        body: Block,
+    },
     Break,
     Continue,
     Block(Block),

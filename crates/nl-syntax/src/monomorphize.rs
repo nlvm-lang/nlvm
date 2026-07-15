@@ -262,6 +262,13 @@ fn collect_stmt(stmt: &Stmt, imports: &HashMap<String, String>, templates: &Hash
             collect_expr(cond, imports, templates, out);
             collect_block(body, imports, templates, out);
         }
+        Stmt::ForEach { ty, iterable, body, .. } => {
+            if let Some(t) = ty {
+                collect_type(t, imports, templates, out);
+            }
+            collect_expr(iterable, imports, templates, out);
+            collect_block(body, imports, templates, out);
+        }
         Stmt::For { init, cond, step, body } => {
             for s in init {
                 collect_stmt(s, imports, templates, out);
@@ -455,6 +462,12 @@ fn rewrite_stmt(stmt: &Stmt, imports: &HashMap<String, String>, templates: &Hash
             else_branch: else_branch.as_ref().map(|b| rewrite_block(b, imports, templates)),
         },
         Stmt::While { cond, body } => Stmt::While { cond: rewrite_expr(cond, imports, templates), body: rewrite_block(body, imports, templates) },
+        Stmt::ForEach { ty, var, iterable, body } => Stmt::ForEach {
+            ty: ty.as_ref().map(|t| rewrite_type(t, imports, templates)),
+            var: var.clone(),
+            iterable: rewrite_expr(iterable, imports, templates),
+            body: rewrite_block(body, imports, templates),
+        },
         Stmt::For { init, cond, step, body } => Stmt::For {
             init: init.iter().map(|s| rewrite_stmt(s, imports, templates)).collect(),
             cond: cond.as_ref().map(|c| rewrite_expr(c, imports, templates)),
@@ -595,6 +608,12 @@ fn subst_stmt(stmt: &Stmt, subst: &HashMap<String, Type>) -> Stmt {
             else_branch: else_branch.as_ref().map(|b| subst_block(b, subst)),
         },
         Stmt::While { cond, body } => Stmt::While { cond: subst_expr(cond, subst), body: subst_block(body, subst) },
+        Stmt::ForEach { ty, var, iterable, body } => Stmt::ForEach {
+            ty: ty.as_ref().map(|t| subst_type(t, subst)),
+            var: var.clone(),
+            iterable: subst_expr(iterable, subst),
+            body: subst_block(body, subst),
+        },
         Stmt::For { init, cond, step, body } => Stmt::For {
             init: init.iter().map(|s| subst_stmt(s, subst)).collect(),
             cond: cond.as_ref().map(|c| subst_expr(c, subst)),

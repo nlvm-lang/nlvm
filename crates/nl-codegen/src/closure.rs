@@ -47,6 +47,10 @@ fn collect_stmt(stmt: &Stmt, names: &mut HashSet<String>) {
             collect_expr(cond, names);
             collect_block(body, names);
         }
+        Stmt::ForEach { iterable, body, .. } => {
+            collect_expr(iterable, names);
+            collect_block(body, names);
+        }
         Stmt::For { init, cond, step, body } => {
             for s in init {
                 collect_stmt(s, names);

@@ -440,6 +440,40 @@ impl<'a> MethodChecker<'a> {
                 self.check_block(body, assigned.clone())?;
                 Ok((assigned, false))
             }
+            Stmt::ForEach { ty, var, iterable, body } => {
+                let iterable_ty = self.check_expr(iterable, &mut assigned)?;
+                // Element type: `T` for a `T[]`, the `get(i)` return type
+                // for a `system.List<T>` instantiation. Anything else is
+                // left lenient (`Void`) — nl-codegen produces the precise
+                // "not iterable" error, same division of labor as unknown
+                // classes/methods. `system.Map` iteration needs `entries()`
+                // (vm.md § For-each loops), not implemented — see PLAN.md.
+                let elem_ty = match &iterable_ty {
+                    Type::Array(elem) => (**elem).clone(),
+                    Type::Named(fqcn) => crate::native_generics::method_signature(fqcn, "get", 1)
+                        .map(|(_, ret)| ret)
+                        .unwrap_or(Type::Void),
+                    _ => Type::Void,
+                };
+                self.push_scope();
+                let declared_ty = match ty {
+                    Some(t) => {
+                        let declared = self.resolve_ty(t);
+                        self.check_assignable(&elem_ty, &declared)?;
+                        declared
+                    }
+                    None => elem_ty,
+                };
+                // The loop variable is (re)assigned by the loop itself
+                // before each iteration of the body.
+                let id = self.declare(var, declared_ty);
+                let mut body_assigned = assigned.clone();
+                body_assigned.insert(id);
+                self.check_stmts(body, body_assigned)?;
+                self.pop_scope();
+                // Zero iterations possible — same rule as `while`.
+                Ok((assigned, false))
+            }
             Stmt::For { init, cond, step, body } => {
                 self.push_scope();
                 let mut inner = assigned.clone();

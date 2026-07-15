@@ -253,7 +253,7 @@ impl<'a> Emitter<'a> {
         self.track(stack_delta);
     }
 
-    fn op_iinc(&mut self, local_index: u16, delta: i16) {
+    pub(crate) fn op_iinc(&mut self, local_index: u16, delta: i16) {
         self.code.push(Opcode::IInc as u8);
         self.code.extend_from_slice(&local_index.to_be_bytes());
         self.code.extend_from_slice(&delta.to_be_bytes());
@@ -1152,7 +1152,7 @@ impl<'a> Emitter<'a> {
         Ok(())
     }
 
-    fn emit_int_const(&mut self, v: i64) {
+    pub(crate) fn emit_int_const(&mut self, v: i64) {
         match v {
             0 => self.op(Opcode::ConstIZero, 1),
             1 => self.op(Opcode::ConstIOne, 1),
