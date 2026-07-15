@@ -19,12 +19,10 @@
 //! unwrapped (`dechunk`) since some servers chunk regardless of the
 //! connection header.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::error::VmError;
 use crate::native::throw_native;
@@ -156,10 +154,10 @@ fn parse_response(raw: &[u8]) -> Result<Value, VmError> {
 
     let mut fields = HashMap::new();
     fields.insert("statusCode".to_string(), Value::Int(status_code));
-    fields.insert("body".to_string(), Value::Str(Rc::new(String::from_utf8_lossy(&body).into_owned())));
-    let header_values: Vec<Value> = headers.into_iter().map(|h| Value::Str(Rc::new(h))).collect();
-    fields.insert("headers".to_string(), Value::Array(Rc::new(RefCell::new(header_values))));
-    Ok(Value::Object(Rc::new(RefCell::new(Object { class_name: "system.net.HttpResponse".to_string(), fields }))))
+    fields.insert("body".to_string(), Value::Str(Arc::new(String::from_utf8_lossy(&body).into_owned())));
+    let header_values: Vec<Value> = headers.into_iter().map(|h| Value::Str(Arc::new(h))).collect();
+    fields.insert("headers".to_string(), Value::Array(Arc::new(Mutex::new(header_values))));
+    Ok(Value::Object(Arc::new(Mutex::new(Object { class_name: "system.net.HttpResponse".to_string(), fields }))))
 }
 
 /// Unwraps `Transfer-Encoding: chunked` (RFC 7230 § 4.1): `<size in
@@ -199,6 +197,7 @@ fn dechunk(mut data: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::value::lock;
     use std::io::BufRead;
     use std::net::TcpListener;
 
@@ -250,7 +249,7 @@ mod tests {
         let port = serve_once("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nhello world");
         let result = http_request(&format!("http://127.0.0.1:{port}/"), "GET", None).unwrap();
         let Value::Object(obj) = result else { panic!("expected object") };
-        let obj = obj.borrow();
+        let obj = lock(&obj);
         assert_eq!(field_int(&obj, "statusCode"), 200);
         assert_eq!(field_str(&obj, "body"), "hello world");
     }
@@ -260,7 +259,7 @@ mod tests {
         let port = serve_once("HTTP/1.1 201 Created\r\n\r\ncreated");
         let result = http_request(&format!("http://127.0.0.1:{port}/items"), "POST", Some("payload")).unwrap();
         let Value::Object(obj) = result else { panic!("expected object") };
-        let obj = obj.borrow();
+        let obj = lock(&obj);
         assert_eq!(field_int(&obj, "statusCode"), 201);
         assert_eq!(field_str(&obj, "body"), "created");
     }
@@ -270,7 +269,7 @@ mod tests {
         let port = serve_once("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n1\r\n \r\n5\r\nworld\r\n0\r\n\r\n");
         let result = http_request(&format!("http://127.0.0.1:{port}/"), "GET", None).unwrap();
         let Value::Object(obj) = result else { panic!("expected object") };
-        let obj = obj.borrow();
+        let obj = lock(&obj);
         assert_eq!(field_str(&obj, "body"), "hello world");
     }
 
@@ -284,7 +283,7 @@ mod tests {
     fn get_https_real_server() {
         let result = http_request("https://example.com/", "GET", None).unwrap();
         let Value::Object(obj) = result else { panic!("expected object") };
-        let obj = obj.borrow();
+        let obj = lock(&obj);
         assert_eq!(field_int(&obj, "statusCode"), 200);
         assert!(field_str(&obj, "body").contains("Example Domain"));
     }
@@ -296,7 +295,7 @@ mod tests {
         drop(listener); // frees the port without anything listening on it
         let err = http_request(&format!("http://127.0.0.1:{port}/"), "GET", None).unwrap_err();
         match err {
-            VmError::Thrown(Value::Object(obj)) => assert_eq!(obj.borrow().class_name, "IOException"),
+            VmError::Thrown(Value::Object(obj)) => assert_eq!(lock(&obj).class_name, "IOException"),
             other => panic!("expected IOException, got {other:?}"),
         }
     }

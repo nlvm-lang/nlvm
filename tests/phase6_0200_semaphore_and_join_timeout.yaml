@@ -1,0 +1,37 @@
+---
+title: "Phase 6 — system.thread.Semaphore + Thread.join(timeoutMillis)/isAlive/Thread.sleep"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "true false true false"
+---
+
+#NLFILE phase6/thread2/Main.nl
+namespace phase6.thread2;
+class Main {
+	public static int main(string[] args) throws InterruptedException {
+		// Semaphore(1): acts as a mutex, but exercised via acquire/release
+		// (and tryAcquire) instead of Mutex.lock/unlock. One permit is
+		// available, so the first tryAcquire succeeds.
+		auto sem = new system.thread.Semaphore(1);
+		bool acquired = sem.tryAcquire();
+		system.Out.print(system.Bool.toString(acquired));
+		system.Out.print(" ");
+		sem.release();
+
+		// join(timeoutMillis): a thread that sleeps 200ms should not be
+		// finished after a 20ms join, but should be finished (and join
+		// return true) after a generous 2000ms join.
+		auto slow = new system.thread.Thread(() => {
+			system.thread.Thread.sleep(200);
+		});
+		slow.start();
+		bool finishedQuickly = slow.join(20);
+		system.Out.print(system.Bool.toString(finishedQuickly));
+		system.Out.print(" ");
+		bool finishedEventually = slow.join(2000);
+		system.Out.print(system.Bool.toString(finishedEventually));
+		system.Out.print(" ");
+		system.Out.print(system.Bool.toString(slow.isAlive()));
+		return 0;
+	}
+}

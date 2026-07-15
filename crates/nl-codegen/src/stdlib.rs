@@ -25,6 +25,7 @@ pub fn is_stdlib_class(fqcn: &str) -> bool {
             | "system.Uuid"
             | "system.net.TcpStream"
             | "system.net.Http"
+            | "system.thread.Thread"
     )
 }
 
@@ -88,6 +89,16 @@ pub fn instance_signature(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Ty
         }
         ("system.net.UdpSocket", "receive", 1) => Some((vec![Type::Array(Box::new(Type::Byte))], Type::Int)),
         ("system.net.UdpSocket", "close", 0) => Some((vec![], Type::Void)),
+        ("system.thread.Thread", "start", 0) => Some((vec![], Type::Void)),
+        ("system.thread.Thread", "join", 0) => Some((vec![], Type::Void)),
+        ("system.thread.Thread", "join", 1) => Some((vec![Type::Int], Type::Bool)),
+        ("system.thread.Thread", "isAlive", 0) => Some((vec![], Type::Bool)),
+        ("system.thread.Mutex", "lock", 0) => Some((vec![], Type::Void)),
+        ("system.thread.Mutex", "unlock", 0) => Some((vec![], Type::Void)),
+        ("system.thread.Mutex", "tryLock", 0) => Some((vec![], Type::Bool)),
+        ("system.thread.Semaphore", "acquire", 0) => Some((vec![], Type::Void)),
+        ("system.thread.Semaphore", "release", 0) => Some((vec![], Type::Void)),
+        ("system.thread.Semaphore", "tryAcquire", 0) => Some((vec![], Type::Bool)),
         _ => None,
     }
 }
@@ -103,6 +114,14 @@ pub fn ctor_param_types(fqcn: &str, argc: usize) -> Option<Vec<Type>> {
         ("system.Random", 1) => Some(vec![Type::Int]),
         ("system.net.TcpListener", 2) => Some(vec![Type::StringT, Type::Int]),
         ("system.net.UdpSocket", 0) => Some(vec![]),
+        // `Thread(() => void task)` — `Type::Void` is the same "no real
+        // function type this phase" joker `Expr::Closure`'s own synthetic
+        // type resolves to elsewhere (see `Emitter::coerce_value`'s
+        // matching `ExprTy::Closure` branch, needed here for the first
+        // call site that ever passes a closure as a call argument).
+        ("system.thread.Thread", 1) => Some(vec![Type::Void]),
+        ("system.thread.Mutex", 0) => Some(vec![]),
+        ("system.thread.Semaphore", 1) => Some(vec![Type::Int]),
         _ => None,
     }
 }
@@ -183,6 +202,7 @@ pub fn signature(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>, Type
         ("system.net.TcpStream", "connect", 2) => Some((vec![Type::StringT, Type::Int], tcp_stream())),
         ("system.net.Http", "get", 1) => Some((vec![Type::StringT], http_response())),
         ("system.net.Http", "post", 2) => Some((vec![Type::StringT, Type::StringT], http_response())),
+        ("system.thread.Thread", "sleep", 1) => Some((vec![Type::Int], Type::Void)),
         _ => None,
     }
 }

@@ -132,6 +132,10 @@ pub fn lookup(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>, Type)> 
         ("system.net.TcpStream", "connect", 2) => Some((vec![Type::StringT, Type::Int], tcp_stream())),
         ("system.net.Http", "get", 1) => Some((vec![Type::StringT], http_response())),
         ("system.net.Http", "post", 2) => Some((vec![Type::StringT, Type::StringT], http_response())),
+        // `system.thread.Thread.sleep` is the one *static* method on an
+        // otherwise instance-dispatch class (`is_native_instance` below) —
+        // same shape as `system.net.TcpStream.connect`.
+        ("system.thread.Thread", "sleep", 1) => Some((vec![Type::Int], Type::Void)),
         _ => None,
     }
 }
@@ -157,7 +161,14 @@ pub fn result_field_ty(fqcn: &str, name: &str) -> Option<Type> {
 pub fn is_native_instance(fqcn: &str) -> bool {
     matches!(
         fqcn,
-        "system.io.FileHandle" | "system.Random" | "system.net.TcpListener" | "system.net.TcpStream" | "system.net.UdpSocket"
+        "system.io.FileHandle"
+            | "system.Random"
+            | "system.net.TcpListener"
+            | "system.net.TcpStream"
+            | "system.net.UdpSocket"
+            | "system.thread.Thread"
+            | "system.thread.Mutex"
+            | "system.thread.Semaphore"
     )
 }
 
@@ -189,6 +200,16 @@ pub fn instance_lookup(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>
         }
         ("system.net.UdpSocket", "receive", 1) => Some((vec![Type::Array(Box::new(Type::Byte))], Type::Int)),
         ("system.net.UdpSocket", "close", 0) => Some((vec![], Type::Void)),
+        ("system.thread.Thread", "start", 0) => Some((vec![], Type::Void)),
+        ("system.thread.Thread", "join", 0) => Some((vec![], Type::Void)),
+        ("system.thread.Thread", "join", 1) => Some((vec![Type::Int], Type::Bool)),
+        ("system.thread.Thread", "isAlive", 0) => Some((vec![], Type::Bool)),
+        ("system.thread.Mutex", "lock", 0) => Some((vec![], Type::Void)),
+        ("system.thread.Mutex", "unlock", 0) => Some((vec![], Type::Void)),
+        ("system.thread.Mutex", "tryLock", 0) => Some((vec![], Type::Bool)),
+        ("system.thread.Semaphore", "acquire", 0) => Some((vec![], Type::Void)),
+        ("system.thread.Semaphore", "release", 0) => Some((vec![], Type::Void)),
+        ("system.thread.Semaphore", "tryAcquire", 0) => Some((vec![], Type::Bool)),
         _ => None,
     }
 }
@@ -210,6 +231,13 @@ pub fn throws(fqcn: &str, name: &str) -> &'static [&'static str] {
         ("system.net.TcpStream", "connect" | "read" | "write") => &["IOException"],
         ("system.net.UdpSocket", "bind" | "send" | "receive") => &["IOException"],
         ("system.net.Http", "get" | "post") => &["IOException"],
+        // stdlib.md declares `InterruptedException` on these three, but
+        // nothing in this implementation ever actually raises it (no
+        // interrupt mechanism — see `nl_vm::native`'s thread section); kept
+        // here anyway so `catch`/`throws` sites around them still type-check
+        // against the real declared signature (E015 still fires if unhandled).
+        ("system.thread.Thread", "join") => &["InterruptedException"],
+        ("system.thread.Thread", "sleep") => &["InterruptedException"],
         _ => &[],
     }
 }

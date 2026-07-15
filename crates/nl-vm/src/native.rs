@@ -61,14 +61,13 @@
 //! that relies on `entries()` for maps and hasn't been wired into
 //! nl-codegen for either collection.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use crate::error::VmError;
 use crate::interpreter::values_equal;
 use crate::program::Program;
-use crate::value::{Object, Value};
+use crate::value::{lock, Object, Value};
 
 pub fn is_native_class(fqcn: &str) -> bool {
     matches!(
@@ -87,13 +86,14 @@ pub fn is_native_class(fqcn: &str) -> bool {
             | "system.Uuid"
             | "system.net.TcpStream"
             | "system.net.Http"
+            | "system.thread.Thread"
     )
 }
 
 /// Dispatches one native call. `args` has already been popped off the
 /// operand stack by the caller, in declaration order. Returns `Ok(None)`
 /// for a `void` native (nothing to push back).
-pub fn dispatch(program: &Program, fqcn: &str, name: &str, mut args: Vec<Value>) -> Result<Option<Value>, VmError> {
+pub fn dispatch(program: &Arc<Program>, fqcn: &str, name: &str, mut args: Vec<Value>) -> Result<Option<Value>, VmError> {
     match (fqcn, name) {
         ("system.Out", "print") => {
             program.write_stdout(&expect_str(&mut args)?);
@@ -126,7 +126,7 @@ pub fn dispatch(program: &Program, fqcn: &str, name: &str, mut args: Vec<Value>)
                             line.pop();
                         }
                     }
-                    Ok(Some(Value::Str(Rc::new(line))))
+                    Ok(Some(Value::Str(Arc::new(line))))
                 }
                 Err(e) => Err(VmError::Io(e)),
             }
@@ -139,7 +139,7 @@ pub fn dispatch(program: &Program, fqcn: &str, name: &str, mut args: Vec<Value>)
             Ok(v) => Ok(Some(Value::Int(v))),
             Err(_) => Ok(Some(Value::Null)),
         },
-        ("system.Int", "toString") => Ok(Some(Value::Str(Rc::new(expect_int(&mut args)?.to_string())))),
+        ("system.Int", "toString") => Ok(Some(Value::Str(Arc::new(expect_int(&mut args)?.to_string())))),
         ("system.Float", "parse") => match expect_str(&mut args)?.trim().parse::<f64>() {
             Ok(v) => Ok(Some(Value::Float(v))),
             Err(_) => Err(throw_format_error("invalid float literal")),
@@ -148,7 +148,7 @@ pub fn dispatch(program: &Program, fqcn: &str, name: &str, mut args: Vec<Value>)
             Ok(v) => Ok(Some(Value::Float(v))),
             Err(_) => Ok(Some(Value::Null)),
         },
-        ("system.Float", "toString") => Ok(Some(Value::Str(Rc::new(expect_float(&mut args)?.to_string())))),
+        ("system.Float", "toString") => Ok(Some(Value::Str(Arc::new(expect_float(&mut args)?.to_string())))),
         ("system.Bool", "parse") => match expect_str(&mut args)?.as_str() {
             "true" => Ok(Some(Value::Bool(true))),
             "false" => Ok(Some(Value::Bool(false))),
@@ -159,7 +159,7 @@ pub fn dispatch(program: &Program, fqcn: &str, name: &str, mut args: Vec<Value>)
             "false" => Ok(Some(Value::Bool(false))),
             _ => Ok(Some(Value::Null)),
         },
-        ("system.Bool", "toString") => Ok(Some(Value::Str(Rc::new(expect_bool(&mut args)?.to_string())))),
+        ("system.Bool", "toString") => Ok(Some(Value::Str(Arc::new(expect_bool(&mut args)?.to_string())))),
         // stdlib.md § system.String — `args[0]` is always the receiver
         // (whether the call came from `text.trim()` or the equivalent
         // static `system.String.trim(text)`, see nl_codegen::stdlib's doc
@@ -175,7 +175,7 @@ pub fn dispatch(program: &Program, fqcn: &str, name: &str, mut args: Vec<Value>)
             if idx < 0 || idx as usize >= chars.len() {
                 return Err(throw_native("IndexOutOfBoundsException", format!("index {idx}, length {}", chars.len())));
             }
-            Ok(Some(Value::Str(Rc::new(chars[idx as usize].to_string()))))
+            Ok(Some(Value::Str(Arc::new(chars[idx as usize].to_string()))))
         }
         ("system.String", "substring") => {
             let chars: Vec<char> = str_at(&args, 0)?.chars().collect();
@@ -188,7 +188,7 @@ pub fn dispatch(program: &Program, fqcn: &str, name: &str, mut args: Vec<Value>)
                 ));
             }
             let sub: String = chars[start as usize..end as usize].iter().collect();
-            Ok(Some(Value::Str(Rc::new(sub))))
+            Ok(Some(Value::Str(Arc::new(sub))))
         }
         ("system.String", "indexOf") => {
             let haystack = str_at(&args, 0)?;
@@ -197,22 +197,22 @@ pub fn dispatch(program: &Program, fqcn: &str, name: &str, mut args: Vec<Value>)
             Ok(Some(Value::Int(char_index_of(&haystack, &needle, from).unwrap_or(-1))))
         }
         ("system.String", "contains") => Ok(Some(Value::Bool(str_at(&args, 0)?.contains(&str_at(&args, 1)?)))),
-        ("system.String", "toUpperCase") => Ok(Some(Value::Str(Rc::new(str_at(&args, 0)?.to_uppercase())))),
-        ("system.String", "toLowerCase") => Ok(Some(Value::Str(Rc::new(str_at(&args, 0)?.to_lowercase())))),
+        ("system.String", "toUpperCase") => Ok(Some(Value::Str(Arc::new(str_at(&args, 0)?.to_uppercase())))),
+        ("system.String", "toLowerCase") => Ok(Some(Value::Str(Arc::new(str_at(&args, 0)?.to_lowercase())))),
         ("system.String", "replace") => {
             let s = str_at(&args, 0)?;
             let from = str_at(&args, 1)?;
             let to = str_at(&args, 2)?;
-            Ok(Some(Value::Str(Rc::new(s.replace(&from, &to)))))
+            Ok(Some(Value::Str(Arc::new(s.replace(&from, &to)))))
         }
         ("system.String", "startsWith") => Ok(Some(Value::Bool(str_at(&args, 0)?.starts_with(&str_at(&args, 1)?)))),
         ("system.String", "endsWith") => Ok(Some(Value::Bool(str_at(&args, 0)?.ends_with(&str_at(&args, 1)?)))),
-        ("system.String", "trim") => Ok(Some(Value::Str(Rc::new(str_at(&args, 0)?.trim().to_string())))),
+        ("system.String", "trim") => Ok(Some(Value::Str(Arc::new(str_at(&args, 0)?.trim().to_string())))),
         ("system.String", "split") => {
             let s = str_at(&args, 0)?;
             let delim = str_at(&args, 1)?;
-            let parts: Vec<Value> = s.split(delim.as_str()).map(|p| Value::Str(Rc::new(p.to_string()))).collect();
-            Ok(Some(Value::Array(Rc::new(RefCell::new(parts)))))
+            let parts: Vec<Value> = s.split(delim.as_str()).map(|p| Value::Str(Arc::new(p.to_string()))).collect();
+            Ok(Some(Value::Array(Arc::new(Mutex::new(parts)))))
         }
         // stdlib.md § system.io.File — paths are used as-is, no
         // sanitization ("path validation is the caller's responsibility").
@@ -239,7 +239,7 @@ pub fn dispatch(program: &Program, fqcn: &str, name: &str, mut args: Vec<Value>)
             let id = program.register_file(file);
             let mut fields = HashMap::new();
             fields.insert("__fd__".to_string(), Value::Int(id));
-            Ok(Some(Value::Object(Rc::new(RefCell::new(Object {
+            Ok(Some(Value::Object(Arc::new(Mutex::new(Object {
                 class_name: "system.io.FileHandle".to_string(),
                 fields,
             })))))
@@ -247,7 +247,7 @@ pub fn dispatch(program: &Program, fqcn: &str, name: &str, mut args: Vec<Value>)
         ("system.io.File", "readAllText") => {
             let path = str_at(&args, 0)?;
             let text = std::fs::read_to_string(&path).map_err(|e| throw_io_error(&path, e))?;
-            Ok(Some(Value::Str(Rc::new(text))))
+            Ok(Some(Value::Str(Arc::new(text))))
         }
         ("system.io.File", "writeAllText") => {
             let path = str_at(&args, 0)?;
@@ -264,8 +264,8 @@ pub fn dispatch(program: &Program, fqcn: &str, name: &str, mut args: Vec<Value>)
             let mut matches = Vec::new();
             collect_glob_matches(base_path, base_path, &regex, &mut matches).map_err(|e| throw_io_error(&base, e))?;
             matches.sort();
-            let values = matches.into_iter().map(|p| Value::Str(Rc::new(p))).collect();
-            Ok(Some(Value::Array(Rc::new(RefCell::new(values)))))
+            let values = matches.into_iter().map(|p| Value::Str(Arc::new(p))).collect();
+            Ok(Some(Value::Array(Arc::new(Mutex::new(values)))))
         }
         ("system.io.Directory", "list") => {
             let path = str_at(&args, 0)?;
@@ -278,8 +278,8 @@ pub fn dispatch(program: &Program, fqcn: &str, name: &str, mut args: Vec<Value>)
             // read_dir order is platform-dependent; sorted so NL programs
             // (and their expected_stdout in tests) see a stable order.
             names.sort();
-            let values = names.into_iter().map(|n| Value::Str(Rc::new(n))).collect();
-            Ok(Some(Value::Array(Rc::new(RefCell::new(values)))))
+            let values = names.into_iter().map(|n| Value::Str(Arc::new(n))).collect();
+            Ok(Some(Value::Array(Arc::new(Mutex::new(values)))))
         }
         ("system.io.Directory", "create") => {
             let path = str_at(&args, 0)?;
@@ -297,43 +297,43 @@ pub fn dispatch(program: &Program, fqcn: &str, name: &str, mut args: Vec<Value>)
                 return Err(VmError::Malformed("expected string[] argument to native call"));
             };
             let mut joined = std::path::PathBuf::new();
-            for seg in segments.borrow().iter() {
+            for seg in lock(&segments).iter() {
                 let Value::Str(s) = seg else {
                     return Err(VmError::Malformed("expected string[] argument to native call"));
                 };
                 joined.push(s.as_str());
             }
-            Ok(Some(Value::Str(Rc::new(joined.to_string_lossy().into_owned()))))
+            Ok(Some(Value::Str(Arc::new(joined.to_string_lossy().into_owned()))))
         }
         ("system.io.Path", "dirname") => {
             let path = str_at(&args, 0)?;
             let dir = std::path::Path::new(&path).parent().map(|p| p.to_string_lossy().into_owned());
-            Ok(Some(Value::Str(Rc::new(dir.unwrap_or_default()))))
+            Ok(Some(Value::Str(Arc::new(dir.unwrap_or_default()))))
         }
         ("system.io.Path", "basename") => {
             let path = str_at(&args, 0)?;
             let base = std::path::Path::new(&path).file_name().map(|p| p.to_string_lossy().into_owned());
-            Ok(Some(Value::Str(Rc::new(base.unwrap_or_default()))))
+            Ok(Some(Value::Str(Arc::new(base.unwrap_or_default()))))
         }
         ("system.io.Path", "extension") => {
             let path = str_at(&args, 0)?;
             // stdlib.md: "Returns the file extension (e.g. `.nl`)" — with
             // the leading dot, or null when there is none.
             match std::path::Path::new(&path).extension() {
-                Some(ext) => Ok(Some(Value::Str(Rc::new(format!(".{}", ext.to_string_lossy()))))),
+                Some(ext) => Ok(Some(Value::Str(Arc::new(format!(".{}", ext.to_string_lossy()))))),
                 None => Ok(Some(Value::Null)),
             }
         }
-        ("system.io.Path", "normalize") => Ok(Some(Value::Str(Rc::new(normalize_path(&str_at(&args, 0)?))))),
+        ("system.io.Path", "normalize") => Ok(Some(Value::Str(Arc::new(normalize_path(&str_at(&args, 0)?))))),
         // stdlib.md § system.SecureRandom — CSPRNG backed by `/dev/urandom`,
         // same source `system.Uuid.random` uses. Not seedable.
         ("system.SecureRandom", "nextBytes") => {
             let Some(Value::Array(buffer)) = args.first().cloned() else {
                 return Err(VmError::Malformed("expected byte[] argument to native call"));
             };
-            let len = buffer.borrow().len();
+            let len = lock(&buffer).len();
             let random = secure_random_bytes(len)?;
-            let mut buf = buffer.borrow_mut();
+            let mut buf = lock(&buffer);
             for (slot, b) in buf.iter_mut().zip(random) {
                 *slot = Value::Byte(b);
             }
@@ -349,7 +349,7 @@ pub fn dispatch(program: &Program, fqcn: &str, name: &str, mut args: Vec<Value>)
         }
         // stdlib.md § system.Uuid — UUID v4, 122 random bits from the same
         // CSPRNG as SecureRandom, version/variant nibbles set per RFC 4122.
-        ("system.Uuid", "random") => Ok(Some(Value::Str(Rc::new(uuid_v4()?)))),
+        ("system.Uuid", "random") => Ok(Some(Value::Str(Arc::new(uuid_v4()?)))),
         // stdlib.md § system.net.TcpStream — the one *static* TcpStream
         // method (the rest is instance dispatch, see `dispatch_tcp_stream`);
         // same object-building shape as `system.io.File.open`.
@@ -361,7 +361,7 @@ pub fn dispatch(program: &Program, fqcn: &str, name: &str, mut args: Vec<Value>)
             let id = program.register_tcp_stream(stream);
             let mut fields = HashMap::new();
             fields.insert("__fd__".to_string(), Value::Int(id));
-            Ok(Some(Value::Object(Rc::new(RefCell::new(Object {
+            Ok(Some(Value::Object(Arc::new(Mutex::new(Object {
                 class_name: "system.net.TcpStream".to_string(),
                 fields,
             })))))
@@ -374,6 +374,11 @@ pub fn dispatch(program: &Program, fqcn: &str, name: &str, mut args: Vec<Value>)
             let url = str_at(&args, 0)?;
             let body = str_at(&args, 1)?;
             crate::net_http::http_request(&url, "POST", Some(&body)).map(Some)
+        }
+        ("system.thread.Thread", "sleep") => {
+            let millis = expect_int(&mut args)?.max(0) as u64;
+            std::thread::sleep(std::time::Duration::from_millis(millis));
+            Ok(None)
         }
         _ => Err(VmError::MethodNotFound(format!("{fqcn}.{name}"))),
     }
@@ -545,8 +550,8 @@ fn throw_format_error(message: impl Into<String>) -> VmError {
 
 pub(crate) fn throw_native(class_name: &str, message: impl Into<String>) -> VmError {
     let mut fields = HashMap::new();
-    fields.insert("message".to_string(), Value::Str(Rc::new(message.into())));
-    VmError::Thrown(Value::Object(Rc::new(RefCell::new(crate::value::Object {
+    fields.insert("message".to_string(), Value::Str(Arc::new(message.into())));
+    VmError::Thrown(Value::Object(Arc::new(Mutex::new(crate::value::Object {
         class_name: class_name.to_string(),
         fields,
     }))))
@@ -568,11 +573,14 @@ pub fn is_native_instance_class(fqcn: &str) -> bool {
             | "system.net.TcpListener"
             | "system.net.TcpStream"
             | "system.net.UdpSocket"
+            | "system.thread.Thread"
+            | "system.thread.Mutex"
+            | "system.thread.Semaphore"
     )
 }
 
 pub fn dispatch_native_instance(
-    program: &Program,
+    program: &Arc<Program>,
     name: &str,
     receiver: &Value,
     args: Vec<Value>,
@@ -583,20 +591,23 @@ pub fn dispatch_native_instance(
         return Err(VmError::Malformed("expected native instance receiver"));
     };
     // A `.clone()`'d owned `String` rather than matching directly on
-    // `obj.borrow().class_name.as_str()` — a match scrutinee's temporary
-    // `Ref` is kept alive for the whole match, including the arm bodies,
-    // and `dispatch_random`/`dispatch_tcp_*` all re-borrow the same
-    // `RefCell` (e.g. `dispatch_random`'s `obj.borrow_mut()`), which would
-    // panic with "already borrowed" otherwise.
-    let class_name = obj.borrow().class_name.clone();
+    // `lock(&obj).class_name.as_str()` — a match scrutinee's temporary
+    // guard is kept alive for the whole match, including the arm bodies,
+    // and `dispatch_random`/`dispatch_tcp_*`/`dispatch_thread` all
+    // re-lock the same `Mutex` (e.g. `dispatch_random`'s `lock(&obj)`),
+    // which would deadlock otherwise.
+    let class_name = lock(&obj).class_name.clone();
     match class_name.as_str() {
         "system.Random" => return dispatch_random(name, receiver, args),
         "system.net.TcpListener" => return dispatch_tcp_listener(program, name, receiver, args),
         "system.net.TcpStream" => return dispatch_tcp_stream(program, name, receiver, args),
         "system.net.UdpSocket" => return dispatch_udp_socket(program, name, receiver, args),
+        "system.thread.Thread" => return dispatch_thread(program, name, receiver, args),
+        "system.thread.Mutex" => return dispatch_mutex(program, name, receiver, args),
+        "system.thread.Semaphore" => return dispatch_semaphore(program, name, receiver, args),
         _ => {}
     }
-    let id = match obj.borrow().fields.get("__fd__") {
+    let id = match lock(&obj).fields.get("__fd__") {
         Some(Value::Int(id)) => *id,
         _ => return Err(VmError::Malformed("malformed FileHandle object")),
     };
@@ -617,7 +628,7 @@ pub fn dispatch_native_instance(
             };
             let offset = int_at(&args, 1)?;
             let length = int_at(&args, 2)?;
-            let buf_len = buffer.borrow().len() as i64;
+            let buf_len = lock(&buffer).len() as i64;
             // stdlib.md § system.io.FileHandle, Bounds checking: checked
             // *before any I/O*, immune to `offset + length` overflow
             // (checked_add instead of wrapping `+`).
@@ -633,13 +644,13 @@ pub fn dispatch_native_instance(
                     .with_file(id, |f| f.read(&mut tmp))
                     .ok_or_else(closed)?
                     .map_err(|e| throw_native("IOException", e.to_string()))?;
-                let mut buf = buffer.borrow_mut();
+                let mut buf = lock(&buffer);
                 for (i, byte) in tmp[..n].iter().enumerate() {
                     buf[offset as usize + i] = Value::Byte(*byte);
                 }
                 Ok(Some(Value::Int(n as i64)))
             } else {
-                let data: Vec<u8> = buffer.borrow()[offset as usize..(offset + length) as usize]
+                let data: Vec<u8> = lock(&buffer)[offset as usize..(offset + length) as usize]
                     .iter()
                     .map(|v| match v {
                         Value::Byte(b) => Ok(*b),
@@ -686,7 +697,7 @@ pub fn dispatch_native_instance(
                 .ok_or_else(closed)?
                 .map_err(|e| throw_native("IOException", e.to_string()))?;
             Ok(Some(match line {
-                Some(l) => Value::Str(Rc::new(l)),
+                Some(l) => Value::Str(Arc::new(l)),
                 None => Value::Null,
             }))
         }
@@ -726,7 +737,7 @@ pub fn is_random_class(fqcn: &str) -> bool {
 pub fn new_random_object() -> Value {
     let mut fields = HashMap::new();
     fields.insert("__state__".to_string(), Value::Int(0));
-    Value::Object(Rc::new(RefCell::new(Object {
+    Value::Object(Arc::new(Mutex::new(Object {
         class_name: "system.Random".to_string(),
         fields,
     })))
@@ -740,7 +751,7 @@ pub fn construct_random(receiver: &Value, mut args: Vec<Value>) -> Result<(), Vm
     let Value::Object(obj) = receiver else {
         return Err(VmError::Malformed("expected Random receiver"));
     };
-    obj.borrow_mut().fields.insert("__state__".to_string(), Value::Int(seed as i64));
+    lock(&obj).fields.insert("__state__".to_string(), Value::Int(seed as i64));
     Ok(())
 }
 
@@ -770,7 +781,7 @@ fn dispatch_random(name: &str, receiver: &Value, mut args: Vec<Value>) -> Result
     let Value::Object(obj) = receiver else {
         return Err(VmError::Malformed("expected Random receiver"));
     };
-    let mut state = match obj.borrow().fields.get("__state__") {
+    let mut state = match lock(&obj).fields.get("__state__") {
         Some(Value::Int(s)) => *s as u64,
         _ => return Err(VmError::Malformed("malformed Random object")),
     };
@@ -789,7 +800,7 @@ fn dispatch_random(name: &str, receiver: &Value, mut args: Vec<Value>) -> Result
         }
         _ => return Err(VmError::MethodNotFound(format!("system.Random.{name}"))),
     };
-    obj.borrow_mut().fields.insert("__state__".to_string(), Value::Int(state as i64));
+    lock(&obj).fields.insert("__state__".to_string(), Value::Int(state as i64));
     Ok(Some(result))
 }
 
@@ -818,10 +829,10 @@ pub fn is_net_udp_class(fqcn: &str) -> bool {
 pub fn new_tcp_listener_object() -> Value {
     let mut fields = HashMap::new();
     fields.insert("__fd__".to_string(), Value::Int(-1));
-    Value::Object(Rc::new(RefCell::new(Object { class_name: "system.net.TcpListener".to_string(), fields })))
+    Value::Object(Arc::new(Mutex::new(Object { class_name: "system.net.TcpListener".to_string(), fields })))
 }
 
-pub fn construct_tcp_listener(program: &Program, receiver: &Value, args: Vec<Value>) -> Result<(), VmError> {
+pub fn construct_tcp_listener(program: &Arc<Program>, receiver: &Value, args: Vec<Value>) -> Result<(), VmError> {
     let host = str_at(&args, 0)?;
     let port = int_at(&args, 1)?;
     let listener = std::net::TcpListener::bind((host.as_str(), port as u16))
@@ -830,12 +841,12 @@ pub fn construct_tcp_listener(program: &Program, receiver: &Value, args: Vec<Val
     let Value::Object(obj) = receiver else {
         return Err(VmError::Malformed("expected TcpListener receiver"));
     };
-    obj.borrow_mut().fields.insert("__fd__".to_string(), Value::Int(id));
+    lock(&obj).fields.insert("__fd__".to_string(), Value::Int(id));
     Ok(())
 }
 
 fn dispatch_tcp_listener(
-    program: &Program,
+    program: &Arc<Program>,
     name: &str,
     receiver: &Value,
     _args: Vec<Value>,
@@ -843,7 +854,7 @@ fn dispatch_tcp_listener(
     let Value::Object(obj) = receiver else {
         return Err(VmError::Malformed("expected TcpListener receiver"));
     };
-    let id = match obj.borrow().fields.get("__fd__") {
+    let id = match lock(&obj).fields.get("__fd__") {
         Some(Value::Int(id)) => *id,
         _ => return Err(VmError::Malformed("malformed TcpListener object")),
     };
@@ -860,7 +871,7 @@ fn dispatch_tcp_listener(
             let stream_id = program.register_tcp_stream(stream);
             let mut fields = HashMap::new();
             fields.insert("__fd__".to_string(), Value::Int(stream_id));
-            Ok(Some(Value::Object(Rc::new(RefCell::new(Object {
+            Ok(Some(Value::Object(Arc::new(Mutex::new(Object {
                 class_name: "system.net.TcpStream".to_string(),
                 fields,
             })))))
@@ -869,13 +880,13 @@ fn dispatch_tcp_listener(
     }
 }
 
-fn dispatch_tcp_stream(program: &Program, name: &str, receiver: &Value, args: Vec<Value>) -> Result<Option<Value>, VmError> {
+fn dispatch_tcp_stream(program: &Arc<Program>, name: &str, receiver: &Value, args: Vec<Value>) -> Result<Option<Value>, VmError> {
     use std::io::{Read, Write};
 
     let Value::Object(obj) = receiver else {
         return Err(VmError::Malformed("expected TcpStream receiver"));
     };
-    let id = match obj.borrow().fields.get("__fd__") {
+    let id = match lock(&obj).fields.get("__fd__") {
         Some(Value::Int(id)) => *id,
         _ => return Err(VmError::Malformed("malformed TcpStream object")),
     };
@@ -891,7 +902,7 @@ fn dispatch_tcp_stream(program: &Program, name: &str, receiver: &Value, args: Ve
     };
     let offset = int_at(&args, 1)?;
     let length = int_at(&args, 2)?;
-    let buf_len = buffer.borrow().len() as i64;
+    let buf_len = lock(&buffer).len() as i64;
     if offset < 0 || length < 0 || offset.checked_add(length).is_none_or(|end| end > buf_len) {
         return Err(throw_native(
             "IndexOutOfBoundsException",
@@ -905,14 +916,14 @@ fn dispatch_tcp_stream(program: &Program, name: &str, receiver: &Value, args: Ve
                 .with_tcp_stream(id, |s| s.read(&mut tmp))
                 .ok_or_else(closed)?
                 .map_err(|e| throw_native("IOException", e.to_string()))?;
-            let mut buf = buffer.borrow_mut();
+            let mut buf = lock(&buffer);
             for (i, byte) in tmp[..n].iter().enumerate() {
                 buf[offset as usize + i] = Value::Byte(*byte);
             }
             Ok(Some(Value::Int(n as i64)))
         }
         "write" => {
-            let data: Vec<u8> = buffer.borrow()[offset as usize..(offset + length) as usize]
+            let data: Vec<u8> = lock(&buffer)[offset as usize..(offset + length) as usize]
                 .iter()
                 .map(|v| match v {
                     Value::Byte(b) => Ok(*b),
@@ -933,7 +944,7 @@ fn dispatch_tcp_stream(program: &Program, name: &str, receiver: &Value, args: Ve
 pub fn new_udp_socket_object() -> Value {
     let mut fields = HashMap::new();
     fields.insert("__fd__".to_string(), Value::Int(-1));
-    Value::Object(Rc::new(RefCell::new(Object { class_name: "system.net.UdpSocket".to_string(), fields })))
+    Value::Object(Arc::new(Mutex::new(Object { class_name: "system.net.UdpSocket".to_string(), fields })))
 }
 
 /// `construct()` takes no arguments and declares no `throws` (stdlib.md),
@@ -942,22 +953,22 @@ pub fn new_udp_socket_object() -> Value {
 /// local allocation essentially never fails; `bind(host, port)` later
 /// swaps in a socket bound to the caller's chosen address (see
 /// `Program::rebind_udp_socket`).
-pub fn construct_udp_socket(program: &Program, receiver: &Value) -> Result<(), VmError> {
+pub fn construct_udp_socket(program: &Arc<Program>, receiver: &Value) -> Result<(), VmError> {
     let socket = std::net::UdpSocket::bind("0.0.0.0:0")
         .map_err(|e| throw_native("IOException", format!("failed to create UDP socket: {e}")))?;
     let id = program.register_udp_socket(socket);
     let Value::Object(obj) = receiver else {
         return Err(VmError::Malformed("expected UdpSocket receiver"));
     };
-    obj.borrow_mut().fields.insert("__fd__".to_string(), Value::Int(id));
+    lock(&obj).fields.insert("__fd__".to_string(), Value::Int(id));
     Ok(())
 }
 
-fn dispatch_udp_socket(program: &Program, name: &str, receiver: &Value, args: Vec<Value>) -> Result<Option<Value>, VmError> {
+fn dispatch_udp_socket(program: &Arc<Program>, name: &str, receiver: &Value, args: Vec<Value>) -> Result<Option<Value>, VmError> {
     let Value::Object(obj) = receiver else {
         return Err(VmError::Malformed("expected UdpSocket receiver"));
     };
-    let id = match obj.borrow().fields.get("__fd__") {
+    let id = match lock(&obj).fields.get("__fd__") {
         Some(Value::Int(id)) => *id,
         _ => return Err(VmError::Malformed("malformed UdpSocket object")),
     };
@@ -980,8 +991,7 @@ fn dispatch_udp_socket(program: &Program, name: &str, receiver: &Value, args: Ve
             let Some(Value::Array(buffer)) = args.get(2).cloned() else {
                 return Err(VmError::Malformed("expected byte[] argument to native call"));
             };
-            let data: Vec<u8> = buffer
-                .borrow()
+            let data: Vec<u8> = lock(&buffer)
                 .iter()
                 .map(|v| match v {
                     Value::Byte(b) => Ok(*b),
@@ -1003,19 +1013,254 @@ fn dispatch_udp_socket(program: &Program, name: &str, receiver: &Value, args: Ve
             let Some(Value::Array(buffer)) = args.first().cloned() else {
                 return Err(VmError::Malformed("expected byte[] argument to native call"));
             };
-            let buf_len = buffer.borrow().len();
+            let buf_len = lock(&buffer).len();
             let mut tmp = vec![0u8; buf_len];
             let n = program
                 .with_udp_socket(id, |s| s.recv(&mut tmp))
                 .ok_or_else(|| throw_native("IOException", "receive on a closed socket"))?
                 .map_err(|e| throw_native("IOException", e.to_string()))?;
-            let mut buf = buffer.borrow_mut();
+            let mut buf = lock(&buffer);
             for (i, byte) in tmp[..n].iter().enumerate() {
                 buf[i] = Value::Byte(*byte);
             }
             Ok(Some(Value::Int(n as i64)))
         }
         _ => Err(VmError::MethodNotFound(format!("system.net.UdpSocket.{name}"))),
+    }
+}
+
+/// stdlib.md § system.thread.Thread/Mutex/Semaphore — vm.md § Threading
+/// model: "each `system.thread.Thread` instance corresponds to a separate
+/// VM thread". Backed by real `std::thread::spawn`, which is exactly why
+/// `Value` had to move from `Rc`/`RefCell` to `Arc`/`Mutex` (see
+/// `crate::value`'s doc comment) — a spawned thread needs `'static`,
+/// `Send` captures, and heap objects (including a captured closure's own
+/// fields) really are shared across the two threads afterwards.
+///
+/// All three are constructed directly by user code (`new
+/// system.thread.Thread(...)` etc.), so — like `system.Random` — they're
+/// intercepted at `NEW`/`INVOKE_SPECIAL <construct>` in
+/// `interpreter::exec_step`, keyed by exact class name (never mangled).
+/// `Mutex`/`Semaphore` are both just a bounded counter under the hood
+/// (`Program::Counter`, built on `Condvar` rather than a `MutexGuard` —
+/// see that type's doc comment for why): a `Mutex` is a `Counter` capped at
+/// 1 (locked ⇔ count is `0`), a `Semaphore` is the same counter uncapped.
+pub fn is_thread_class(fqcn: &str) -> bool {
+    fqcn == "system.thread.Thread"
+}
+
+pub fn is_mutex_class(fqcn: &str) -> bool {
+    fqcn == "system.thread.Mutex"
+}
+
+pub fn is_semaphore_class(fqcn: &str) -> bool {
+    fqcn == "system.thread.Semaphore"
+}
+
+pub fn new_thread_object() -> Value {
+    let mut fields = HashMap::new();
+    fields.insert("__tid__".to_string(), Value::Int(-1));
+    fields.insert("__task__".to_string(), Value::Null);
+    Value::Object(Arc::new(Mutex::new(Object {
+        class_name: "system.thread.Thread".to_string(),
+        fields,
+    })))
+}
+
+pub fn new_mutex_object() -> Value {
+    let mut fields = HashMap::new();
+    fields.insert("__mid__".to_string(), Value::Int(-1));
+    Value::Object(Arc::new(Mutex::new(Object {
+        class_name: "system.thread.Mutex".to_string(),
+        fields,
+    })))
+}
+
+pub fn new_semaphore_object() -> Value {
+    let mut fields = HashMap::new();
+    fields.insert("__sid__".to_string(), Value::Int(-1));
+    Value::Object(Arc::new(Mutex::new(Object {
+        class_name: "system.thread.Semaphore".to_string(),
+        fields,
+    })))
+}
+
+/// `Thread(() => void task)` — just stashes the closure; the thread isn't
+/// actually spawned (and doesn't occupy a `Program::threads` slot) until
+/// `start()` (see `dispatch_thread`).
+pub fn construct_thread(receiver: &Value, mut args: Vec<Value>) -> Result<(), VmError> {
+    let task = args.pop().ok_or(VmError::Malformed("expected closure argument to native call"))?;
+    let Value::Object(obj) = receiver else {
+        return Err(VmError::Malformed("expected Thread receiver"));
+    };
+    lock(&obj).fields.insert("__task__".to_string(), task);
+    Ok(())
+}
+
+pub fn construct_mutex(program: &Arc<Program>, receiver: &Value) -> Result<(), VmError> {
+    let Value::Object(obj) = receiver else {
+        return Err(VmError::Malformed("expected Mutex receiver"));
+    };
+    let id = program.register_mutex();
+    lock(&obj).fields.insert("__mid__".to_string(), Value::Int(id));
+    Ok(())
+}
+
+pub fn construct_semaphore(program: &Arc<Program>, receiver: &Value, mut args: Vec<Value>) -> Result<(), VmError> {
+    let initial = expect_int(&mut args)?;
+    if initial < 0 {
+        return Err(throw_native("IllegalArgumentException", "initial count must not be negative"));
+    }
+    let Value::Object(obj) = receiver else {
+        return Err(VmError::Malformed("expected Semaphore receiver"));
+    };
+    let id = program.register_semaphore(initial);
+    lock(&obj).fields.insert("__sid__".to_string(), Value::Int(id));
+    Ok(())
+}
+
+/// Resolves and calls a zero-argument closure's synthetic `invoke` method
+/// (see `nl_codegen::closure`) — the shape every `Thread` task has
+/// (`() => void`), so unlike `INVOKE_CLOSURE`'s bytecode path there is no
+/// method-ref descriptor to match against: a name-only lookup
+/// (`Module::find_method`) is unambiguous.
+fn invoke_task(program: &Arc<Program>, task: Value) -> Result<Option<Value>, VmError> {
+    let Value::Object(obj) = &task else {
+        return Err(VmError::Malformed("expected closure receiver"));
+    };
+    let class_name = lock(obj).class_name.clone();
+    let module = program
+        .get(&class_name)
+        .ok_or_else(|| VmError::MethodNotFound(class_name.clone()))?;
+    let method = module
+        .find_method("invoke")
+        .ok_or_else(|| VmError::MethodNotFound(format!("{class_name}.invoke")))?;
+    crate::interpreter::call_instance(program, module, method, task, vec![])
+}
+
+fn dispatch_thread(
+    program: &Arc<Program>,
+    name: &str,
+    receiver: &Value,
+    mut args: Vec<Value>,
+) -> Result<Option<Value>, VmError> {
+    let Value::Object(obj) = receiver else {
+        return Err(VmError::Malformed("expected Thread receiver"));
+    };
+    match name {
+        // Starting an already-started (or never-given-a-task) `Thread`
+        // twice is a caller error stdlib.md just prohibits by contract
+        // ("must not be called more than once") rather than one this VM
+        // detects — treated as a no-op, consistent with e.g.
+        // `FileHandle.close()` tolerating a redundant call.
+        "start" => {
+            let task = lock(&obj).fields.get("__task__").cloned().unwrap_or(Value::Null);
+            if task.is_null() {
+                return Ok(None);
+            }
+            lock(&obj).fields.insert("__task__".to_string(), Value::Null);
+            let program_clone = Arc::clone(program);
+            let handle = std::thread::spawn(move || match invoke_task(&program_clone, task) {
+                Ok(_) => {}
+                // Same wording as the main thread's own unhandled-exception
+                // report (`program::run_program`) — no trailing newline
+                // either, for the same reason: a later write (from this
+                // thread or another) shouldn't inherit a blank line.
+                Err(VmError::Thrown(exc)) => {
+                    program_clone.write_stderr(&format!(
+                        "Unhandled exception: {}",
+                        crate::program::describe_exception(&exc)
+                    ));
+                }
+                Err(e) => program_clone.write_stderr(&format!("Unhandled exception: {e}")),
+            });
+            let tid = program.register_thread(handle);
+            lock(&obj).fields.insert("__tid__".to_string(), Value::Int(tid));
+            Ok(None)
+        }
+        "join" if args.is_empty() => {
+            if let Some(tid) = thread_id(&obj) {
+                program.join_thread(tid);
+            }
+            Ok(None)
+        }
+        "join" => {
+            let timeout_millis = expect_int(&mut args)?.max(0) as u64;
+            let Some(tid) = thread_id(&obj) else {
+                return Ok(Some(Value::Bool(true)));
+            };
+            // `std::thread::JoinHandle` has no timed join — polls
+            // `is_finished()` instead, bounded by `timeout_millis`.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_millis);
+            loop {
+                if program.thread_is_finished(tid) {
+                    program.join_thread(tid);
+                    return Ok(Some(Value::Bool(true)));
+                }
+                if std::time::Instant::now() >= deadline {
+                    return Ok(Some(Value::Bool(false)));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+        "isAlive" => match thread_id(&obj) {
+            Some(tid) => Ok(Some(Value::Bool(!program.thread_is_finished(tid)))),
+            None => Ok(Some(Value::Bool(false))),
+        },
+        _ => Err(VmError::MethodNotFound(format!("system.thread.Thread.{name}"))),
+    }
+}
+
+fn thread_id(obj: &Arc<Mutex<Object>>) -> Option<i64> {
+    match lock(obj).fields.get("__tid__") {
+        Some(Value::Int(id)) if *id >= 0 => Some(*id),
+        _ => None,
+    }
+}
+
+fn dispatch_mutex(program: &Arc<Program>, name: &str, receiver: &Value, _args: Vec<Value>) -> Result<Option<Value>, VmError> {
+    let Value::Object(obj) = receiver else {
+        return Err(VmError::Malformed("expected Mutex receiver"));
+    };
+    let id = match lock(&obj).fields.get("__mid__") {
+        Some(Value::Int(id)) => *id,
+        _ => return Err(VmError::Malformed("malformed Mutex object")),
+    };
+    let counter = program.mutex(id).ok_or(VmError::Malformed("malformed Mutex object"))?;
+    match name {
+        "lock" => {
+            counter.acquire();
+            Ok(None)
+        }
+        "unlock" => {
+            counter.release();
+            Ok(None)
+        }
+        "tryLock" => Ok(Some(Value::Bool(counter.try_acquire()))),
+        _ => Err(VmError::MethodNotFound(format!("system.thread.Mutex.{name}"))),
+    }
+}
+
+fn dispatch_semaphore(program: &Arc<Program>, name: &str, receiver: &Value, _args: Vec<Value>) -> Result<Option<Value>, VmError> {
+    let Value::Object(obj) = receiver else {
+        return Err(VmError::Malformed("expected Semaphore receiver"));
+    };
+    let id = match lock(&obj).fields.get("__sid__") {
+        Some(Value::Int(id)) => *id,
+        _ => return Err(VmError::Malformed("malformed Semaphore object")),
+    };
+    let counter = program.semaphore(id).ok_or(VmError::Malformed("malformed Semaphore object"))?;
+    match name {
+        "acquire" => {
+            counter.acquire();
+            Ok(None)
+        }
+        "release" => {
+            counter.release();
+            Ok(None)
+        }
+        "tryAcquire" => Ok(Some(Value::Bool(counter.try_acquire()))),
+        _ => Err(VmError::MethodNotFound(format!("system.thread.Semaphore.{name}"))),
     }
 }
 
@@ -1030,12 +1275,12 @@ pub fn is_native_generic_class(fqcn: &str) -> bool {
 pub fn new_generic_object(fqcn: &str) -> Value {
     let mut fields = HashMap::new();
     if fqcn.starts_with("system.List<") {
-        fields.insert("__data__".to_string(), Value::Array(Rc::new(RefCell::new(Vec::new()))));
+        fields.insert("__data__".to_string(), Value::Array(Arc::new(Mutex::new(Vec::new()))));
     } else {
-        fields.insert("__keys__".to_string(), Value::Array(Rc::new(RefCell::new(Vec::new()))));
-        fields.insert("__values__".to_string(), Value::Array(Rc::new(RefCell::new(Vec::new()))));
+        fields.insert("__keys__".to_string(), Value::Array(Arc::new(Mutex::new(Vec::new()))));
+        fields.insert("__values__".to_string(), Value::Array(Arc::new(Mutex::new(Vec::new()))));
     }
-    Value::Object(Rc::new(RefCell::new(Object { class_name: fqcn.to_string(), fields })))
+    Value::Object(Arc::new(Mutex::new(Object { class_name: fqcn.to_string(), fields })))
 }
 
 /// `Opcode::InvokeSpecial` on a native generic class's `<construct>`. Only
@@ -1044,7 +1289,8 @@ pub fn new_generic_object(fqcn: &str) -> Value {
 pub fn construct_generic(receiver: &Value, fqcn: &str, mut args: Vec<Value>) -> Result<(), VmError> {
     if fqcn.starts_with("system.List<") {
         if let Some(Value::Array(initial)) = args.pop() {
-            list_data(receiver)?.borrow_mut().extend(initial.borrow().iter().cloned());
+            let data = list_data(receiver)?;
+            lock(&data).extend(lock(&initial).iter().cloned());
         }
     }
     Ok(())
@@ -1061,14 +1307,14 @@ pub fn dispatch_instance(fqcn: &str, name: &str, receiver: &Value, args: Vec<Val
     }
 }
 
-type ArrayRc = Rc<RefCell<Vec<Value>>>;
+type ArrayRc = Arc<Mutex<Vec<Value>>>;
 
 fn list_data(receiver: &Value) -> Result<ArrayRc, VmError> {
     let Value::Object(obj) = receiver else {
         return Err(VmError::Malformed("expected List receiver"));
     };
-    match obj.borrow().fields.get("__data__") {
-        Some(Value::Array(a)) => Ok(Rc::clone(a)),
+    match lock(&obj).fields.get("__data__") {
+        Some(Value::Array(a)) => Ok(Arc::clone(a)),
         _ => Err(VmError::Malformed("malformed List object")),
     }
 }
@@ -1076,10 +1322,10 @@ fn list_data(receiver: &Value) -> Result<ArrayRc, VmError> {
 fn dispatch_list(name: &str, receiver: &Value, mut args: Vec<Value>) -> Result<Option<Value>, VmError> {
     let data = list_data(receiver)?;
     match name {
-        "size" => Ok(Some(Value::Int(data.borrow().len() as i64))),
+        "size" => Ok(Some(Value::Int(lock(&data).len() as i64))),
         "get" => {
             let idx = expect_int(&mut args)?;
-            let d = data.borrow();
+            let d = lock(&data);
             if idx < 0 || idx as usize >= d.len() {
                 return Err(throw_native("IndexOutOfBoundsException", format!("index {idx}, length {}", d.len())));
             }
@@ -1088,7 +1334,7 @@ fn dispatch_list(name: &str, receiver: &Value, mut args: Vec<Value>) -> Result<O
         "set" => {
             let value = args.pop().ok_or(VmError::Malformed("missing value argument"))?;
             let idx = expect_int(&mut args)?;
-            let mut d = data.borrow_mut();
+            let mut d = lock(&data);
             if idx < 0 || idx as usize >= d.len() {
                 return Err(throw_native("IndexOutOfBoundsException", format!("index {idx}, length {}", d.len())));
             }
@@ -1097,20 +1343,20 @@ fn dispatch_list(name: &str, receiver: &Value, mut args: Vec<Value>) -> Result<O
         }
         "pushBack" | "add" => {
             let value = args.pop().ok_or(VmError::Malformed("missing value argument"))?;
-            data.borrow_mut().push(value);
+            lock(&data).push(value);
             Ok(None)
         }
         "pushFront" => {
             let value = args.pop().ok_or(VmError::Malformed("missing value argument"))?;
-            data.borrow_mut().insert(0, value);
+            lock(&data).insert(0, value);
             Ok(None)
         }
-        "popBack" => match data.borrow_mut().pop() {
+        "popBack" => match lock(&data).pop() {
             Some(v) => Ok(Some(v)),
             None => Err(throw_native("IndexOutOfBoundsException", "popBack on empty list")),
         },
         "popFront" => {
-            let mut d = data.borrow_mut();
+            let mut d = lock(&data);
             if d.is_empty() {
                 return Err(throw_native("IndexOutOfBoundsException", "popFront on empty list"));
             }
@@ -1118,7 +1364,7 @@ fn dispatch_list(name: &str, receiver: &Value, mut args: Vec<Value>) -> Result<O
         }
         "remove" => {
             let idx = expect_int(&mut args)?;
-            let mut d = data.borrow_mut();
+            let mut d = lock(&data);
             if idx < 0 || idx as usize >= d.len() {
                 return Err(throw_native("IndexOutOfBoundsException", format!("index {idx}, length {}", d.len())));
             }
@@ -1126,7 +1372,7 @@ fn dispatch_list(name: &str, receiver: &Value, mut args: Vec<Value>) -> Result<O
         }
         "contains" => {
             let value = args.pop().ok_or(VmError::Malformed("missing value argument"))?;
-            Ok(Some(Value::Bool(data.borrow().iter().any(|v| values_equal(v, &value)))))
+            Ok(Some(Value::Bool(lock(&data).iter().any(|v| values_equal(v, &value)))))
         }
         _ => Err(VmError::MethodNotFound(format!("system.List.{name}"))),
     }
@@ -1136,9 +1382,9 @@ fn map_storage(receiver: &Value) -> Result<(ArrayRc, ArrayRc), VmError> {
     let Value::Object(obj) = receiver else {
         return Err(VmError::Malformed("expected Map receiver"));
     };
-    let obj = obj.borrow();
+    let obj = lock(&obj);
     match (obj.fields.get("__keys__"), obj.fields.get("__values__")) {
-        (Some(Value::Array(k)), Some(Value::Array(v))) => Ok((Rc::clone(k), Rc::clone(v))),
+        (Some(Value::Array(k)), Some(Value::Array(v))) => Ok((Arc::clone(k), Arc::clone(v))),
         _ => Err(VmError::Malformed("malformed Map object")),
     }
 }
@@ -1146,35 +1392,35 @@ fn map_storage(receiver: &Value) -> Result<(ArrayRc, ArrayRc), VmError> {
 fn dispatch_map(name: &str, receiver: &Value, mut args: Vec<Value>) -> Result<Option<Value>, VmError> {
     let (keys, values) = map_storage(receiver)?;
     match name {
-        "size" => Ok(Some(Value::Int(keys.borrow().len() as i64))),
+        "size" => Ok(Some(Value::Int(lock(&keys).len() as i64))),
         "get" => {
             let key = args.pop().ok_or(VmError::Malformed("missing key argument"))?;
-            let idx = keys.borrow().iter().position(|k| values_equal(k, &key));
+            let idx = lock(&keys).iter().position(|k| values_equal(k, &key));
             Ok(Some(match idx {
-                Some(i) => values.borrow()[i].clone(),
+                Some(i) => lock(&values)[i].clone(),
                 None => Value::Null,
             }))
         }
         "set" => {
             let value = args.pop().ok_or(VmError::Malformed("missing value argument"))?;
             let key = args.pop().ok_or(VmError::Malformed("missing key argument"))?;
-            let idx = keys.borrow().iter().position(|k| values_equal(k, &key));
+            let idx = lock(&keys).iter().position(|k| values_equal(k, &key));
             match idx {
-                Some(i) => values.borrow_mut()[i] = value,
+                Some(i) => lock(&values)[i] = value,
                 None => {
-                    keys.borrow_mut().push(key);
-                    values.borrow_mut().push(value);
+                    lock(&keys).push(key);
+                    lock(&values).push(value);
                 }
             }
             Ok(None)
         }
         "remove" => {
             let key = args.pop().ok_or(VmError::Malformed("missing key argument"))?;
-            let idx = keys.borrow().iter().position(|k| values_equal(k, &key));
+            let idx = lock(&keys).iter().position(|k| values_equal(k, &key));
             match idx {
                 Some(i) => {
-                    keys.borrow_mut().remove(i);
-                    values.borrow_mut().remove(i);
+                    lock(&keys).remove(i);
+                    lock(&values).remove(i);
                     Ok(Some(Value::Bool(true)))
                 }
                 None => Ok(Some(Value::Bool(false))),
@@ -1182,10 +1428,10 @@ fn dispatch_map(name: &str, receiver: &Value, mut args: Vec<Value>) -> Result<Op
         }
         "has" => {
             let key = args.pop().ok_or(VmError::Malformed("missing key argument"))?;
-            Ok(Some(Value::Bool(keys.borrow().iter().any(|k| values_equal(k, &key)))))
+            Ok(Some(Value::Bool(lock(&keys).iter().any(|k| values_equal(k, &key)))))
         }
-        "keys" => Ok(Some(Value::Array(Rc::new(RefCell::new(keys.borrow().clone()))))),
-        "values" => Ok(Some(Value::Array(Rc::new(RefCell::new(values.borrow().clone()))))),
+        "keys" => Ok(Some(Value::Array(Arc::new(Mutex::new(lock(&keys).clone()))))),
+        "values" => Ok(Some(Value::Array(Arc::new(Mutex::new(lock(&values).clone()))))),
         // stdlib.md § system.MapEntry — result objects with two public
         // fields, classed under the matching mangled `MapEntry`
         // instantiation (`"system.Map<string, int>"` ->
@@ -1195,19 +1441,18 @@ fn dispatch_map(name: &str, receiver: &Value, mut args: Vec<Value>) -> Result<Op
             let Value::Object(obj) = receiver else {
                 return Err(VmError::Malformed("expected Map receiver"));
             };
-            let entry_class = format!("system.MapEntry<{}", &obj.borrow().class_name["system.Map<".len()..]);
-            let entries: Vec<Value> = keys
-                .borrow()
+            let entry_class = format!("system.MapEntry<{}", &lock(&obj).class_name["system.Map<".len()..]);
+            let entries: Vec<Value> = lock(&keys)
                 .iter()
-                .zip(values.borrow().iter())
+                .zip(lock(&values).iter())
                 .map(|(k, v)| {
                     let mut fields = HashMap::new();
                     fields.insert("key".to_string(), k.clone());
                     fields.insert("value".to_string(), v.clone());
-                    Value::Object(Rc::new(RefCell::new(Object { class_name: entry_class.clone(), fields })))
+                    Value::Object(Arc::new(Mutex::new(Object { class_name: entry_class.clone(), fields })))
                 })
                 .collect();
-            Ok(Some(Value::Array(Rc::new(RefCell::new(entries)))))
+            Ok(Some(Value::Array(Arc::new(Mutex::new(entries)))))
         }
         _ => Err(VmError::MethodNotFound(format!("system.Map.{name}"))),
     }

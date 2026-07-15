@@ -1158,6 +1158,14 @@ impl<'a> Emitter<'a> {
             // nl-sema's job (it has the class table's `implements` lists);
             // a `Value::Object` doesn't carry its static type at runtime, so
             // there's nothing for codegen to enforce here either way.
+        } else if matches!(actual, ExprTy::Closure { .. }) && *expected == ExprTy::Void {
+            // A closure literal's own static type is just "this one
+            // literal" (see `ExprTy::Closure`'s doc comment) — there's no
+            // function-type syntax yet to check a callback parameter's
+            // shape against, so any closure is accepted wherever a
+            // callback param is declared (`Type::Void` used as the same
+            // joker nl-sema uses for a closure's own inferred type). First
+            // exercised by `system.thread.Thread(() => void task)`.
         } else if actual != expected {
             return Err(CodegenError::Unsupported(format!(
                 "cannot assign {actual:?} to '{what}' of type {expected:?}"

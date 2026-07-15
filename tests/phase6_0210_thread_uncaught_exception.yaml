@@ -1,0 +1,22 @@
+---
+title: "Phase 6 — an unhandled exception inside a Thread's task is reported to stderr without crashing the main thread"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "done"
+expected_stderr: "Unhandled exception: IndexOutOfBoundsException: index 5, length 1"
+---
+
+#NLFILE phase6/thread3/Main.nl
+namespace phase6.thread3;
+class Main {
+	public static int main(string[] args) throws InterruptedException {
+		auto t = new system.thread.Thread(() => {
+			int[] a = new int[1];
+			int x = a[5];
+		});
+		t.start();
+		t.join();
+		system.Out.print("done");
+		return 0;
+	}
+}

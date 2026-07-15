@@ -1,15 +1,14 @@
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use nl_bytecode::{ConstantPoolEntry, MethodDescriptor, Module, Opcode};
 
 use crate::error::VmError;
 use crate::program::Program;
-use crate::value::{Object, Value};
+use crate::value::{lock, Object, Value};
 
 pub fn call_static(
-    program: &Program,
+    program: &Arc<Program>,
     module: &Module,
     method: &MethodDescriptor,
     args: Vec<Value>,
@@ -27,7 +26,7 @@ pub fn call_static(
 /// (`this`), parameters follow starting at local 1 — vm.md § Call frame and
 /// operand stack.
 pub fn call_instance(
-    program: &Program,
+    program: &Arc<Program>,
     module: &Module,
     method: &MethodDescriptor,
     receiver: Value,
@@ -54,7 +53,7 @@ enum Step {
 }
 
 fn run_frame(
-    program: &Program,
+    program: &Arc<Program>,
     module: &Module,
     method: &MethodDescriptor,
     mut locals: Vec<Value>,
@@ -90,7 +89,7 @@ fn run_frame(
 /// implicit exception) — see the `match` below in `run_frame`.
 #[allow(unused_assignments)] // GOTO/GOTO_W always overwrite `pc` right after reading their operand
 fn exec_step(
-    program: &Program,
+    program: &Arc<Program>,
     module: &Module,
     locals: &mut [Value],
     stack: &mut Vec<Value>,
@@ -179,7 +178,7 @@ fn exec_step(
                 let value = match entry {
                     ConstantPoolEntry::Int(v) => Value::Int(*v),
                     ConstantPoolEntry::Float(v) => Value::Float(*v),
-                    ConstantPoolEntry::Utf8(s) => Value::Str(Rc::new(s.clone())),
+                    ConstantPoolEntry::Utf8(s) => Value::Str(Arc::new(s.clone())),
                     _ => return Err(VmError::Malformed("LDC target is not a loadable constant")),
                 };
                 stack.push(value);
@@ -273,7 +272,7 @@ fn exec_step(
                 if v.is_null() {
                     return Err(throw_native("NullPointerException", "null pointer dereference"));
                 }
-                stack.push(Value::Str(Rc::new(v.to_display_string())));
+                stack.push(Value::Str(Arc::new(v.to_display_string())));
             }
 
             Opcode::CmpEq => {
@@ -381,6 +380,23 @@ fn exec_step(
                     *pc_ref = pc;
                     return Ok(Step::Continue);
                 }
+                // `new system.thread.Thread(...)`/`Mutex()`/`Semaphore(n)`
+                // — same no-backing-Module situation as `system.Random`.
+                if crate::native::is_thread_class(&fqcn) {
+                    stack.push(crate::native::new_thread_object());
+                    *pc_ref = pc;
+                    return Ok(Step::Continue);
+                }
+                if crate::native::is_mutex_class(&fqcn) {
+                    stack.push(crate::native::new_mutex_object());
+                    *pc_ref = pc;
+                    return Ok(Step::Continue);
+                }
+                if crate::native::is_semaphore_class(&fqcn) {
+                    stack.push(crate::native::new_semaphore_object());
+                    *pc_ref = pc;
+                    return Ok(Step::Continue);
+                }
                 // Fields are collected across the whole `extends` chain (a
                 // subclass's own fields, if any, take precedence over a
                 // same-named ancestor field) so an inherited field like
@@ -410,7 +426,7 @@ fn exec_step(
                         .ok_or(VmError::Malformed("bad super_class index"))?
                         .to_string();
                 }
-                stack.push(Value::Object(Rc::new(RefCell::new(Object {
+                stack.push(Value::Object(Arc::new(Mutex::new(Object {
                     class_name: fqcn,
                     fields,
                 }))));
@@ -421,7 +437,7 @@ fn exec_step(
                 let v = stack.pop().ok_or(VmError::Malformed("stack underflow"))?;
                 let result = match &v {
                     Value::Object(obj) => {
-                        let runtime_class = obj.borrow().class_name.clone();
+                        let runtime_class = lock(&obj).class_name.clone();
                         is_instance_of(program, runtime_class, target_fqcn)
                     }
                     _ => false,
@@ -440,7 +456,7 @@ fn exec_step(
                 if size < 0 {
                     return Err(VmError::Malformed("negative array size"));
                 }
-                stack.push(Value::Array(Rc::new(RefCell::new(vec![default; size as usize]))));
+                stack.push(Value::Array(Arc::new(Mutex::new(vec![default; size as usize]))));
             }
             Opcode::NewArrayInit => {
                 return Err(VmError::Unsupported(format!("{op:?} lands in a later phase")));
@@ -451,7 +467,7 @@ fn exec_step(
                     return Err(VmError::Malformed("ARRAY_LOAD on non-array"));
                 };
                 let idx = idx.as_int().ok_or(VmError::Malformed("array index must be int"))?;
-                let arr_ref = arr.borrow();
+                let arr_ref = lock(&arr);
                 if idx < 0 || idx as usize >= arr_ref.len() {
                     return Err(throw_native("IndexOutOfBoundsException", format!("index {idx}, length {}", arr_ref.len())));
                 }
@@ -465,7 +481,7 @@ fn exec_step(
                     return Err(VmError::Malformed("ARRAY_STORE on non-array"));
                 };
                 let idx = idx.as_int().ok_or(VmError::Malformed("array index must be int"))?;
-                let mut arr_mut = arr.borrow_mut();
+                let mut arr_mut = lock(&arr);
                 if idx < 0 || idx as usize >= arr_mut.len() {
                     return Err(throw_native("IndexOutOfBoundsException", format!("index {idx}, length {}", arr_mut.len())));
                 }
@@ -476,7 +492,7 @@ fn exec_step(
                 let Value::Array(arr) = v else {
                     return Err(VmError::Malformed("ARRAY_LENGTH on non-array"));
                 };
-                stack.push(Value::Int(arr.borrow().len() as i64));
+                stack.push(Value::Int(lock(&arr).len() as i64));
             }
 
             Opcode::GetField => {
@@ -489,7 +505,7 @@ fn exec_step(
                 let Value::Object(obj) = receiver else {
                     return Err(VmError::Malformed("GET_FIELD on non-object"));
                 };
-                let value = obj.borrow().fields.get(&field_name).cloned().unwrap_or(Value::Null);
+                let value = lock(&obj).fields.get(&field_name).cloned().unwrap_or(Value::Null);
                 stack.push(value);
             }
             Opcode::SetField => {
@@ -503,7 +519,7 @@ fn exec_step(
                 let Value::Object(obj) = receiver else {
                     return Err(VmError::Malformed("SET_FIELD on non-object"));
                 };
-                obj.borrow_mut().fields.insert(field_name, value);
+                lock(&obj).fields.insert(field_name, value);
             }
             Opcode::GetStatic | Opcode::SetStatic => {
                 return Err(VmError::Unsupported(format!("{op:?} lands in a later phase")));
@@ -555,7 +571,7 @@ fn exec_step(
                 let Value::Object(obj) = &receiver else {
                     return Err(VmError::Malformed("INVOKE_INSTANCE on non-object"));
                 };
-                let runtime_class = obj.borrow().class_name.clone();
+                let runtime_class = lock(&obj).class_name.clone();
                 // `list.size()`/`map.get(k)` etc. — see `nl_vm::native`'s
                 // module doc comment. Keyed by the *runtime* class like the
                 // ordinary path below it, so this also covers a `List<T>`
@@ -608,7 +624,7 @@ fn exec_step(
                 let Value::Object(obj) = &receiver else {
                     return Err(VmError::Malformed("INVOKE_CLOSURE on non-object"));
                 };
-                let runtime_class = obj.borrow().class_name.clone();
+                let runtime_class = lock(&obj).class_name.clone();
                 let (target_module, target) = resolve_virtual(program, &runtime_class, &name, &descriptor)
                     .ok_or_else(|| VmError::MethodNotFound(format!("{runtime_class}.{name}")))?;
                 if let Some(result) = call_instance(program, target_module, target, receiver, call_args)? {
@@ -649,6 +665,21 @@ fn exec_step(
                     *pc_ref = pc;
                     return Ok(Step::Continue);
                 }
+                if crate::native::is_thread_class(&class_fqcn) {
+                    crate::native::construct_thread(&receiver, call_args)?;
+                    *pc_ref = pc;
+                    return Ok(Step::Continue);
+                }
+                if crate::native::is_mutex_class(&class_fqcn) {
+                    crate::native::construct_mutex(program, &receiver)?;
+                    *pc_ref = pc;
+                    return Ok(Step::Continue);
+                }
+                if crate::native::is_semaphore_class(&class_fqcn) {
+                    crate::native::construct_semaphore(program, &receiver, call_args)?;
+                    *pc_ref = pc;
+                    return Ok(Step::Continue);
+                }
                 // No virtual dispatch: always the exact class named in the
                 // ref (constructors, `super.method(...)`) — but that class
                 // may itself only *inherit* the method (e.g. `super(...)`
@@ -666,7 +697,7 @@ fn exec_step(
                 let (a, b) = pop2(stack)?;
                 let sa = as_string(&a)?;
                 let sb = as_string(&b)?;
-                stack.push(Value::Str(Rc::new(format!("{sa}{sb}"))));
+                stack.push(Value::Str(Arc::new(format!("{sa}{sb}"))));
             }
 
             Opcode::Return => return Ok(Step::Return(None)),
@@ -748,13 +779,13 @@ fn default_value_for(type_desc: &str) -> Value {
         "float" => Value::Float(0.0),
         "bool" => Value::Bool(false),
         "byte" => Value::Byte(0),
-        "string" => Value::Str(Rc::new(String::new())),
+        "string" => Value::Str(Arc::new(String::new())),
         // Arrays, objects, and unions all default to `null`.
         _ => Value::Null,
     }
 }
 
-fn implements_interface(program: &Program, class_fqcn: &str, target_fqcn: &str) -> bool {
+fn implements_interface(program: &Arc<Program>, class_fqcn: &str, target_fqcn: &str) -> bool {
     let Some(module) = program.get(class_fqcn) else {
         return false;
     };
@@ -767,7 +798,7 @@ fn implements_interface(program: &Program, class_fqcn: &str, target_fqcn: &str) 
 /// `instanceof`/exception-catch-type test: is `current` (or, transitively,
 /// any of its `extends` ancestors) equal to `target_fqcn`, or does one of
 /// them `implements` it? — vm.md § Object operations, § Exception table.
-fn is_instance_of(program: &Program, mut current: String, target_fqcn: &str) -> bool {
+fn is_instance_of(program: &Arc<Program>, mut current: String, target_fqcn: &str) -> bool {
     loop {
         if current == target_fqcn || implements_interface(program, &current, target_fqcn) {
             return true;
@@ -793,8 +824,8 @@ fn is_instance_of(program: &Program, mut current: String, target_fqcn: &str) -> 
 /// this phase (see nl_syntax::prelude).
 fn throw_native(class_name: &str, message: impl Into<String>) -> VmError {
     let mut fields = HashMap::new();
-    fields.insert("message".to_string(), Value::Str(Rc::new(message.into())));
-    VmError::Thrown(Value::Object(Rc::new(RefCell::new(Object {
+    fields.insert("message".to_string(), Value::Str(Arc::new(message.into())));
+    VmError::Thrown(Value::Object(Arc::new(Mutex::new(Object {
         class_name: class_name.to_string(),
         fields,
     }))))
@@ -805,11 +836,11 @@ fn throw_native(class_name: &str, message: impl Into<String>) -> VmError {
 /// (or is `0`, catch-all/`finally`) — vm.md § Throw and stack unwinding,
 /// steps 2-3. Entries are already in specificity order (nl-codegen emits
 /// per-`catch` entries before a trailing `finally` catch-all).
-fn find_handler(program: &Program, module: &Module, method: &MethodDescriptor, opcode_pc: usize, exc: &Value) -> Option<usize> {
+fn find_handler(program: &Arc<Program>, module: &Module, method: &MethodDescriptor, opcode_pc: usize, exc: &Value) -> Option<usize> {
     let Value::Object(obj) = exc else {
         return None;
     };
-    let exc_class = obj.borrow().class_name.clone();
+    let exc_class = lock(&obj).class_name.clone();
     for entry in &method.exception_table {
         if (entry.start_pc as usize) > opcode_pc || opcode_pc >= (entry.end_pc as usize) {
             continue;
@@ -832,7 +863,7 @@ fn find_handler(program: &Program, module: &Module, method: &MethodDescriptor, o
 /// (`start_fqcn` = the receiver's runtime class) and `INVOKE_SPECIAL`
 /// (`start_fqcn` = the exact class named in the method ref).
 fn resolve_virtual<'m>(
-    program: &'m Program,
+    program: &'m Arc<Program>,
     start_fqcn: &str,
     name: &str,
     descriptor: &str,
@@ -916,8 +947,8 @@ pub(crate) fn values_equal(a: &Value, b: &Value) -> bool {
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::Byte(x), Value::Byte(y)) => x == y,
         (Value::Str(x), Value::Str(y)) => x == y,
-        (Value::Array(x), Value::Array(y)) => Rc::ptr_eq(x, y),
-        (Value::Object(x), Value::Object(y)) => Rc::ptr_eq(x, y),
+        (Value::Array(x), Value::Array(y)) => Arc::ptr_eq(x, y),
+        (Value::Object(x), Value::Object(y)) => Arc::ptr_eq(x, y),
         _ => false,
     }
 }

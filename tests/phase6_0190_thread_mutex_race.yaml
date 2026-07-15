@@ -1,0 +1,36 @@
+---
+title: "Phase 6 — system.thread.Thread/Mutex: two real threads incrementing a shared counter"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "40000"
+---
+
+#NLFILE phase6/thread/Main.nl
+namespace phase6.thread;
+class Main {
+	public static int main(string[] args) throws InterruptedException {
+		// Two real OS threads race to increment the same shared counter
+		// (a captured int[1], mutated through the same Mutex) 20000 times
+		// each. Without a real mutual-exclusion lock this reliably loses
+		// increments (read-modify-write race) — a fake/no-op Mutex would
+		// make this test flaky or wrong, not just slow.
+		int[] value = new int[1];
+		auto mutex = new system.thread.Mutex();
+		int n = 20000;
+		auto task = () => {
+			for (int i = 0; i < n; i++) {
+				mutex.lock();
+				value[0] = value[0] + 1;
+				mutex.unlock();
+			}
+		};
+		auto t1 = new system.thread.Thread(task);
+		auto t2 = new system.thread.Thread(task);
+		t1.start();
+		t2.start();
+		t1.join();
+		t2.join();
+		system.Out.print(system.Int.toString(value[0]));
+		return 0;
+	}
+}
