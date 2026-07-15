@@ -603,6 +603,25 @@ impl<'a> MethodChecker<'a> {
                 }
                 match &target_ty {
                     Type::Array(_) if name == "length" && args.is_empty() => Ok(Type::Int),
+                    // `text.trim()` etc. — see `crate::stdlib::lookup`'s
+                    // doc comment: instance calls are looked up under the
+                    // same table as the static `system.String.trim(text)`
+                    // form, keyed by the *full* argument count (receiver
+                    // included). Unknown methods fall through leniently to
+                    // `Type::Void`, same as the `Type::Named` arm below —
+                    // nl-codegen produces the real diagnostic.
+                    Type::StringT => {
+                        let full_argc = args.len() + 1;
+                        match crate::stdlib::lookup("system.String", name, full_argc) {
+                            Some((param_types, return_ty)) => {
+                                for (actual, expected) in arg_types.iter().zip(&param_types[1..]) {
+                                    self.check_assignable(actual, expected)?;
+                                }
+                                Ok(return_ty)
+                            }
+                            None => Ok(Type::Void),
+                        }
+                    }
                     Type::Named(fqcn) => {
                         for t in self.method_throws(fqcn, name, args.len()) {
                             if let Type::Named(exc_fqcn) = t {

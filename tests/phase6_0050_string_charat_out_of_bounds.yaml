@@ -1,0 +1,18 @@
+---
+title: "string.charAt index out of range surfaces as an unhandled IndexOutOfBoundsException"
+file_separator: "#NLFILE"
+expected_exit_code: 1
+expected_stdout: ""
+expected_stderr: "Unhandled exception: IndexOutOfBoundsException: index 5, length 5"
+---
+
+#NLFILE phase6/charat_oob/Main.nl
+namespace phase6.charat_oob;
+class Main {
+	public static int main(string[] args) {
+		string text = "Hello";
+		string c = text.charAt(5);
+		system.Out.print(c);
+		return 0;
+	}
+}

@@ -7,10 +7,15 @@
 //! `nl_codegen::stdlib`/`nl_sema::stdlib`, which are what type-check and
 //! emit calls against them).
 //!
-//! Only the first tranche of stdlib.md is covered (PLAN.md Phase 6): output
-//! (`system.Out`/`system.Err`), `system.In.readLine`, and int/float/bool
-//! parsing/formatting. File I/O, List/Map, threads, etc. are future work.
+//! Only part of stdlib.md is covered so far (PLAN.md Phase 6): output
+//! (`system.Out`/`system.Err`), `system.In.readLine`, int/float/bool
+//! parsing/formatting, and `system.String` (instance methods on `string`
+//! values and their static equivalents — both compile to the same
+//! `INVOKE_STATIC system.String.<name>`, see `nl_codegen::stdlib`). File
+//! I/O, List/Map, threads, etc. are future work.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::error::VmError;
@@ -18,7 +23,10 @@ use crate::program::Program;
 use crate::value::Value;
 
 pub fn is_native_class(fqcn: &str) -> bool {
-    matches!(fqcn, "system.Out" | "system.Err" | "system.In" | "system.Int" | "system.Float" | "system.Bool")
+    matches!(
+        fqcn,
+        "system.Out" | "system.Err" | "system.In" | "system.Int" | "system.Float" | "system.Bool" | "system.String"
+    )
 }
 
 /// Dispatches one native call. `args` has already been popped off the
@@ -91,8 +99,88 @@ pub fn dispatch(program: &Program, fqcn: &str, name: &str, mut args: Vec<Value>)
             _ => Ok(Some(Value::Null)),
         },
         ("system.Bool", "toString") => Ok(Some(Value::Str(Rc::new(expect_bool(&mut args)?.to_string())))),
+        // stdlib.md § system.String — `args[0]` is always the receiver
+        // (whether the call came from `text.trim()` or the equivalent
+        // static `system.String.trim(text)`, see nl_codegen::stdlib's doc
+        // comment); indexed rather than popped since several of these take
+        // more than one argument and popping would read them back to
+        // front. Character positions are counted in `char`s, not bytes
+        // (specs.md: "A character is represented as a string of length
+        // 1").
+        ("system.String", "length") => Ok(Some(Value::Int(str_at(&args, 0)?.chars().count() as i64))),
+        ("system.String", "charAt") => {
+            let chars: Vec<char> = str_at(&args, 0)?.chars().collect();
+            let idx = int_at(&args, 1)?;
+            if idx < 0 || idx as usize >= chars.len() {
+                return Err(throw_native("IndexOutOfBoundsException", format!("index {idx}, length {}", chars.len())));
+            }
+            Ok(Some(Value::Str(Rc::new(chars[idx as usize].to_string()))))
+        }
+        ("system.String", "substring") => {
+            let chars: Vec<char> = str_at(&args, 0)?.chars().collect();
+            let start = int_at(&args, 1)?;
+            let end = if args.len() >= 3 { int_at(&args, 2)? } else { chars.len() as i64 };
+            if start < 0 || end < start || end as usize > chars.len() {
+                return Err(throw_native(
+                    "IndexOutOfBoundsException",
+                    format!("start {start}, end {end}, length {}", chars.len()),
+                ));
+            }
+            let sub: String = chars[start as usize..end as usize].iter().collect();
+            Ok(Some(Value::Str(Rc::new(sub))))
+        }
+        ("system.String", "indexOf") => {
+            let haystack = str_at(&args, 0)?;
+            let needle = str_at(&args, 1)?;
+            let from = if args.len() >= 3 { int_at(&args, 2)?.max(0) as usize } else { 0 };
+            Ok(Some(Value::Int(char_index_of(&haystack, &needle, from).unwrap_or(-1))))
+        }
+        ("system.String", "contains") => Ok(Some(Value::Bool(str_at(&args, 0)?.contains(&str_at(&args, 1)?)))),
+        ("system.String", "toUpperCase") => Ok(Some(Value::Str(Rc::new(str_at(&args, 0)?.to_uppercase())))),
+        ("system.String", "toLowerCase") => Ok(Some(Value::Str(Rc::new(str_at(&args, 0)?.to_lowercase())))),
+        ("system.String", "replace") => {
+            let s = str_at(&args, 0)?;
+            let from = str_at(&args, 1)?;
+            let to = str_at(&args, 2)?;
+            Ok(Some(Value::Str(Rc::new(s.replace(&from, &to)))))
+        }
+        ("system.String", "startsWith") => Ok(Some(Value::Bool(str_at(&args, 0)?.starts_with(&str_at(&args, 1)?)))),
+        ("system.String", "endsWith") => Ok(Some(Value::Bool(str_at(&args, 0)?.ends_with(&str_at(&args, 1)?)))),
+        ("system.String", "trim") => Ok(Some(Value::Str(Rc::new(str_at(&args, 0)?.trim().to_string())))),
+        ("system.String", "split") => {
+            let s = str_at(&args, 0)?;
+            let delim = str_at(&args, 1)?;
+            let parts: Vec<Value> = s.split(delim.as_str()).map(|p| Value::Str(Rc::new(p.to_string()))).collect();
+            Ok(Some(Value::Array(Rc::new(RefCell::new(parts)))))
+        }
         _ => Err(VmError::MethodNotFound(format!("{fqcn}.{name}"))),
     }
+}
+
+fn str_at(args: &[Value], i: usize) -> Result<String, VmError> {
+    match args.get(i) {
+        Some(Value::Str(s)) => Ok((**s).clone()),
+        _ => Err(VmError::Malformed("expected string argument to native call")),
+    }
+}
+
+fn int_at(args: &[Value], i: usize) -> Result<i64, VmError> {
+    args.get(i).and_then(|v| v.as_int()).ok_or(VmError::Malformed("expected int argument to native call"))
+}
+
+/// Char-index (not byte-index) of the first occurrence of `needle` in
+/// `haystack` at or after char position `from`, or `None`. An empty
+/// `needle` matches at `from` itself, mirroring `str::find`'s behavior.
+fn char_index_of(haystack: &str, needle: &str, from: usize) -> Option<i64> {
+    let hay: Vec<char> = haystack.chars().collect();
+    let needle: Vec<char> = needle.chars().collect();
+    if needle.is_empty() {
+        return if from <= hay.len() { Some(from as i64) } else { None };
+    }
+    if from > hay.len() || needle.len() > hay.len() {
+        return None;
+    }
+    (from..=hay.len() - needle.len()).find(|&start| hay[start..start + needle.len()] == needle[..]).map(|s| s as i64)
 }
 
 fn expect_str(args: &mut Vec<Value>) -> Result<String, VmError> {
@@ -119,9 +207,6 @@ fn throw_format_error(message: impl Into<String>) -> VmError {
 }
 
 fn throw_native(class_name: &str, message: impl Into<String>) -> VmError {
-    use std::cell::RefCell;
-    use std::collections::HashMap;
-
     let mut fields = HashMap::new();
     fields.insert("message".to_string(), Value::Str(Rc::new(message.into())));
     VmError::Thrown(Value::Object(Rc::new(RefCell::new(crate::value::Object {

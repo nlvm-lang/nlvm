@@ -9,7 +9,10 @@
 use nl_syntax::ast::Type;
 
 pub fn is_stdlib_class(fqcn: &str) -> bool {
-    matches!(fqcn, "system.Out" | "system.Err" | "system.In" | "system.Int" | "system.Float" | "system.Bool")
+    matches!(
+        fqcn,
+        "system.Out" | "system.Err" | "system.In" | "system.Int" | "system.Float" | "system.Bool" | "system.String"
+    )
 }
 
 /// `print`/`println` accept any of `int|float|bool|string` (stdlib.md:
@@ -28,8 +31,18 @@ pub fn is_printlike(fqcn: &str, name: &str) -> bool {
 /// `(param_types, return_type)` for every other stdlib method — used to
 /// build both the call-site argument coercion and the native `MethodRef`'s
 /// descriptor.
+///
+/// `system.String` entries are keyed by the *total* argument count
+/// including the receiver, since `text.trim()` (instance form,
+/// `Emitter::compile_method_call`) and `system.String.trim(text)` (static
+/// form, this function's normal caller `compile_stdlib_call`) both end up
+/// emitting the exact same `INVOKE_STATIC system.String.trim(string)`
+/// against `system.String` — stdlib.md documents them as equivalent. The
+/// instance-call site prepends the already-compiled receiver's type before
+/// looking up here, so both call shapes share this single table.
 pub fn signature(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>, Type)> {
     let nullable = |t: Type| Type::Union(vec![t, Type::NullT]);
+    let string_array = Type::Array(Box::new(Type::StringT));
     match (fqcn, name, argc) {
         ("system.In", "readLine", 0) => Some((vec![], nullable(Type::StringT))),
         ("system.Int", "parse", 1) => Some((vec![Type::StringT], Type::Int)),
@@ -41,6 +54,20 @@ pub fn signature(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>, Type
         ("system.Bool", "parse", 1) => Some((vec![Type::StringT], Type::Bool)),
         ("system.Bool", "tryParse", 1) => Some((vec![Type::StringT], nullable(Type::Bool))),
         ("system.Bool", "toString", 1) => Some((vec![Type::Bool], Type::StringT)),
+        ("system.String", "length", 1) => Some((vec![Type::StringT], Type::Int)),
+        ("system.String", "charAt", 2) => Some((vec![Type::StringT, Type::Int], Type::StringT)),
+        ("system.String", "substring", 2) => Some((vec![Type::StringT, Type::Int], Type::StringT)),
+        ("system.String", "substring", 3) => Some((vec![Type::StringT, Type::Int, Type::Int], Type::StringT)),
+        ("system.String", "indexOf", 2) => Some((vec![Type::StringT, Type::StringT], Type::Int)),
+        ("system.String", "indexOf", 3) => Some((vec![Type::StringT, Type::StringT, Type::Int], Type::Int)),
+        ("system.String", "contains", 2) => Some((vec![Type::StringT, Type::StringT], Type::Bool)),
+        ("system.String", "toUpperCase", 1) => Some((vec![Type::StringT], Type::StringT)),
+        ("system.String", "toLowerCase", 1) => Some((vec![Type::StringT], Type::StringT)),
+        ("system.String", "replace", 3) => Some((vec![Type::StringT, Type::StringT, Type::StringT], Type::StringT)),
+        ("system.String", "startsWith", 2) => Some((vec![Type::StringT, Type::StringT], Type::Bool)),
+        ("system.String", "endsWith", 2) => Some((vec![Type::StringT, Type::StringT], Type::Bool)),
+        ("system.String", "trim", 1) => Some((vec![Type::StringT], Type::StringT)),
+        ("system.String", "split", 2) => Some((vec![Type::StringT, Type::StringT], string_array)),
         _ => None,
     }
 }

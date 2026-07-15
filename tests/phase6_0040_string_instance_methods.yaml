@@ -1,0 +1,43 @@
+---
+title: "Phase 6 — system.String instance methods on string values"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "16 Hello, World   HELLO, WORLD   Hello, Hello, World   9 yes yes yes   Hello, NL   abc H static"
+---
+
+#NLFILE phase6/strtest/Main.nl
+namespace phase6.strtest;
+class Main {
+	public static int main(string[] args) {
+		string text = "  Hello, World  ";
+		system.Out.print(system.Int.toString(text.length()));
+		system.Out.print(" ");
+		system.Out.print(text.trim());
+		system.Out.print(" ");
+		system.Out.print(text.toUpperCase());
+		system.Out.print(" ");
+		system.Out.print(text.substring(2, 8));
+		system.Out.print(" ");
+		system.Out.print(text.substring(2));
+		system.Out.print(" ");
+		system.Out.print(system.Int.toString(text.indexOf("World")));
+		system.Out.print(" ");
+		system.Out.print(text.contains("World") ? "yes" : "no");
+		system.Out.print(" ");
+		system.Out.print(text.startsWith("  He") ? "yes" : "no");
+		system.Out.print(" ");
+		system.Out.print(text.endsWith("ld  ") ? "yes" : "no");
+		system.Out.print(" ");
+		system.Out.print(text.replace("World", "NL"));
+		system.Out.print(" ");
+		string[] parts = "a,b,c".split(",");
+		system.Out.print(parts[0]);
+		system.Out.print(parts[1]);
+		system.Out.print(parts[2]);
+		system.Out.print(" ");
+		system.Out.print(text.charAt(2));
+		system.Out.print(" ");
+		system.Out.print(system.String.trim("  static  "));
+		return 0;
+	}
+}

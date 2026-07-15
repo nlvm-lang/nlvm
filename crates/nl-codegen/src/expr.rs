@@ -956,6 +956,25 @@ impl<'a> Emitter<'a> {
                 self.op(Opcode::ArrayLength, 0);
                 Ok(ExprTy::Int)
             }
+            // `text.trim()` etc. — stdlib.md § system.String instance
+            // methods. The receiver is already compiled and sitting on the
+            // stack; look up the *full* signature (receiver included) in
+            // `crate::stdlib::signature`, the same table the static
+            // `system.String.trim(text)` form uses, then compile the
+            // remaining args and emit `INVOKE_STATIC system.String.<name>`.
+            ExprTy::StringT => {
+                let full_argc = args.len() + 1;
+                let (param_types, return_ty) =
+                    crate::stdlib::signature("system.String", name, full_argc).ok_or_else(|| {
+                        CodegenError::Unsupported(format!(
+                            "unknown method '{name}' on string with {} argument(s)",
+                            args.len()
+                        ))
+                    })?;
+                let extra_param_tys: Vec<ExprTy> = param_types[1..].iter().map(expr_ty_of).collect();
+                self.compile_call_args(args, &extra_param_tys, name)?;
+                self.emit_native_static("system.String", name, &param_types, &return_ty)
+            }
             ExprTy::Object(fqcn) => {
                 let fqcn = fqcn.clone();
                 let method = find_method(self.classes, &fqcn, name, args.len())
