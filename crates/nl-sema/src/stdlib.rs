@@ -10,16 +10,47 @@
 //!
 //! Only part of stdlib.md is covered so far (PLAN.md Phase 6): output,
 //! int/float/bool parsing/formatting, system.String, file I/O
-//! (`system.io.File`/`FileHandle`/`Directory`/`Path` — no `FileMode`, since
-//! enums aren't implemented, so only the 1-argument `open`; no `glob`), and
-//! `system.Random`/`SecureRandom`/`Uuid`. Network, threads, etc. are future
-//! work.
+//! (`system.io.File`/`FileHandle`/`Directory`/`Path`, including `FileMode`
+//! and `glob` — see below), and `system.Random`/`SecureRandom`/`Uuid`.
+//! Network, threads, etc. are future work.
+//!
+//! ## `system.io.FileMode`
+//!
+//! Real enums aren't a language feature yet (PLAN.md still lists them as
+//! out of scope), so `FileMode` isn't a genuine user-visible enum — it's
+//! modeled as int-constant "fields" on a fake stdlib class, resolved by
+//! `enum_const_ty` from a `system.io.FileMode.Read`-shaped dotted
+//! `Expr::FieldAccess` chain (mirrors how `lookup`'s callers special-case a
+//! dotted `Expr::MethodCall` chain for `system.Out.print(...)`). The value
+//! type is just `Type::Named("system.io.FileMode")`, which flows through
+//! `check_assignable` for free: `types::atom_eq` compares `Type::Named` by
+//! name only, so `File.open`'s declared second parameter type matches
+//! without needing a `ClassInfo` entry in the class table.
 
 use nl_syntax::ast::Type;
 
 fn file_handle() -> Type {
     Type::Named("system.io.FileHandle".to_string())
 }
+
+fn file_mode() -> Type {
+    Type::Named("system.io.FileMode".to_string())
+}
+
+/// `system.io.FileMode.<name>` — `None` if `fqcn` isn't `"system.io.FileMode"`
+/// or `name` isn't one of the six modes stdlib.md documents. See this
+/// module's doc comment.
+pub fn enum_const_ty(fqcn: &str, name: &str) -> Option<Type> {
+    if fqcn == "system.io.FileMode" && FILE_MODES.contains(&name) {
+        Some(file_mode())
+    } else {
+        None
+    }
+}
+
+/// Shared with `nl_codegen::stdlib::enum_const_value`, which assigns the
+/// matching int tag by position in this same list — keep both in sync.
+pub const FILE_MODES: [&str; 6] = ["Read", "Write", "Append", "ReadWrite", "ReadWriteTruncate", "ReadWriteAppend"];
 
 /// `(param_types, return_type)` for `fqcn.name(argc args)`, or `None` if
 /// unknown (falls back to the caller's existing lenient handling).
@@ -70,8 +101,10 @@ pub fn lookup(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>, Type)> 
         ("system.String", "split", 2) => Some((vec![Type::StringT, Type::StringT], string_array)),
         ("system.io.File", "exists", 1) => Some((vec![Type::StringT], Type::Bool)),
         ("system.io.File", "open", 1) => Some((vec![Type::StringT], file_handle())),
+        ("system.io.File", "open", 2) => Some((vec![Type::StringT, file_mode()], file_handle())),
         ("system.io.File", "readAllText", 1) => Some((vec![Type::StringT], Type::StringT)),
         ("system.io.File", "writeAllText", 2) => Some((vec![Type::StringT, Type::StringT], Type::Void)),
+        ("system.io.File", "glob", 2) => Some((vec![Type::StringT, Type::StringT], string_array)),
         ("system.io.Directory", "list", 1) => Some((vec![Type::StringT], string_array)),
         ("system.io.Directory", "create", 1) => Some((vec![Type::StringT], Type::Void)),
         ("system.io.Directory", "remove", 1) => Some((vec![Type::StringT], Type::Void)),
@@ -128,6 +161,7 @@ pub fn throws(fqcn: &str, name: &str) -> &'static [&'static str] {
         ("system.io.File", "open") => &["FileNotFoundException"],
         ("system.io.File", "readAllText") => &["FileNotFoundException", "IOException"],
         ("system.io.File", "writeAllText") => &["IOException"],
+        ("system.io.File", "glob") => &["IOException"],
         ("system.io.Directory", "list" | "create" | "remove") => &["IOException"],
         ("system.io.FileHandle", "read" | "readLine" | "write" | "flush") => &["IOException"],
         _ => &[],

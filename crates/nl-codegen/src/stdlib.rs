@@ -30,6 +30,25 @@ fn file_handle() -> Type {
     Type::Named("system.io.FileHandle".to_string())
 }
 
+fn file_mode() -> Type {
+    Type::Named("system.io.FileMode".to_string())
+}
+
+/// `system.io.FileMode.<name>` int constant, or `None` if unknown — mirrors
+/// `nl_sema::stdlib::enum_const_ty`/`FILE_MODES` (same list, same order;
+/// the position *is* the runtime tag `nl_vm::native`'s `File.open` switches
+/// on). See that module's doc comment for why this is a constant rather
+/// than a real enum.
+pub fn enum_const_value(fqcn: &str, name: &str) -> Option<i64> {
+    if fqcn != "system.io.FileMode" {
+        return None;
+    }
+    ["Read", "Write", "Append", "ReadWrite", "ReadWriteTruncate", "ReadWriteAppend"]
+        .iter()
+        .position(|&m| m == name)
+        .map(|i| i as i64)
+}
+
 /// The one native class whose *instances* the user manipulates
 /// (`system.io.File.open` returns one): its methods compile to an ordinary
 /// `INVOKE_INSTANCE` (the VM intercepts by the receiver's runtime class,
@@ -121,8 +140,10 @@ pub fn signature(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>, Type
         ("system.String", "split", 2) => Some((vec![Type::StringT, Type::StringT], string_array)),
         ("system.io.File", "exists", 1) => Some((vec![Type::StringT], Type::Bool)),
         ("system.io.File", "open", 1) => Some((vec![Type::StringT], file_handle())),
+        ("system.io.File", "open", 2) => Some((vec![Type::StringT, file_mode()], file_handle())),
         ("system.io.File", "readAllText", 1) => Some((vec![Type::StringT], Type::StringT)),
         ("system.io.File", "writeAllText", 2) => Some((vec![Type::StringT, Type::StringT], Type::Void)),
+        ("system.io.File", "glob", 2) => Some((vec![Type::StringT, Type::StringT], string_array)),
         ("system.io.Directory", "list", 1) => Some((vec![Type::StringT], string_array)),
         ("system.io.Directory", "create", 1) => Some((vec![Type::StringT], Type::Void)),
         ("system.io.Directory", "remove", 1) => Some((vec![Type::StringT], Type::Void)),

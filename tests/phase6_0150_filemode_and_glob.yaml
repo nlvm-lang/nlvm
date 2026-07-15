@@ -1,0 +1,64 @@
+---
+title: "Phase 6 — system.io.FileMode overload on File.open and File.glob"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "AAABBB caught ZZZ 2 hassub"
+---
+
+#NLFILE phase6/filemodeglob/Main.nl
+namespace phase6.filemodeglob;
+class Main {
+	public static int main(string[] args) {
+		try {
+			system.io.Directory.create("target/tmp_phase6glob/sub");
+
+			auto w = system.io.File.open("target/tmp_phase6glob/a.txt", system.io.FileMode.Write);
+			w.write("AAA");
+			w.close();
+
+			auto ap = system.io.File.open("target/tmp_phase6glob/a.txt", system.io.FileMode.Append);
+			ap.write("BBB");
+			ap.close();
+
+			system.Out.print(system.io.File.readAllText("target/tmp_phase6glob/a.txt"));
+			system.Out.print(" ");
+
+			auto r = system.io.File.open("target/tmp_phase6glob/a.txt", system.io.FileMode.Read);
+			r.close();
+
+			bool caughtMissing = false;
+			try {
+				system.io.File.open("target/tmp_phase6glob/missing.txt", system.io.FileMode.Read);
+			} catch (system.io.FileNotFoundException e) {
+				caughtMissing = true;
+			}
+			system.Out.print(caughtMissing ? "caught" : "notcaught");
+			system.Out.print(" ");
+
+			auto rwt = system.io.File.open("target/tmp_phase6glob/a.txt", system.io.FileMode.ReadWriteTruncate);
+			rwt.write("ZZZ");
+			rwt.close();
+			system.Out.print(system.io.File.readAllText("target/tmp_phase6glob/a.txt"));
+			system.Out.print(" ");
+
+			system.io.File.writeAllText("target/tmp_phase6glob/one.nl", "1");
+			system.io.File.writeAllText("target/tmp_phase6glob/two.txt", "2");
+			system.io.File.writeAllText("target/tmp_phase6glob/sub/three.nl", "3");
+
+			string[] nlFiles = system.io.File.glob("target/tmp_phase6glob", ".*\\.nl");
+			system.Out.print(system.Int.toString(nlFiles.length()));
+			system.Out.print(" ");
+
+			bool hasSubThree = false;
+			for (int i = 0; i < nlFiles.length(); i++) {
+				if (nlFiles[i] == "target/tmp_phase6glob/sub/three.nl") {
+					hasSubThree = true;
+				}
+			}
+			system.Out.print(hasSubThree ? "hassub" : "nosub");
+			return 0;
+		} catch (system.io.IOException e) {
+			return 1;
+		}
+	}
+}

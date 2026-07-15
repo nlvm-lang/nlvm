@@ -938,6 +938,20 @@ impl<'a> Emitter<'a> {
     }
 
     fn compile_field_access(&mut self, target: &Expr, name: &str) -> Result<ExprTy, CodegenError> {
+        // `system.io.FileMode.Read` etc. — a dotted class-path expression
+        // naming an enum-like stdlib int constant, not a value; compiling
+        // `target` normally would try (and fail) to load a local variable
+        // named `system`. Same shape as `compile_method_call`'s
+        // `system.Out.print(...)` check below.
+        if let Some(path) = dotted_path(target) {
+            let leading = path.split('.').next().expect("dotted_path is never empty");
+            if self.lookup_local(leading).is_err() {
+                if let Some(value) = crate::stdlib::enum_const_value(&path, name) {
+                    self.emit_int_const(value);
+                    return Ok(ExprTy::Object(path));
+                }
+            }
+        }
         let target_ty = self.compile_expr(target)?;
         let ExprTy::Object(fqcn) = &target_ty else {
             return Err(CodegenError::Unsupported(format!(

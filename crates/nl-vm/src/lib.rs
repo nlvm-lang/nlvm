@@ -1,5 +1,6 @@
 pub mod error;
 pub mod interpreter;
+mod mini_regex;
 mod native;
 pub mod program;
 pub mod value;

@@ -11,9 +11,12 @@
 //! (`system.Out`/`system.Err`), `system.In.readLine`, int/float/bool
 //! parsing/formatting, `system.String` (instance methods on `string`
 //! values and their static equivalents — both compile to the same
-//! `INVOKE_STATIC system.String.<name>`, see `nl_codegen::stdlib`), and
-//! `system.List<T>`/`system.Map<K,V>` (see the section below). File I/O,
-//! threads, etc. are future work.
+//! `INVOKE_STATIC system.String.<name>`, see `nl_codegen::stdlib`),
+//! `system.List<T>`/`system.Map<K,V>` (see the section below), and
+//! `system.io.*` file I/O including `File.open`'s `FileMode` overload and
+//! `File.glob` (backed by `crate::mini_regex`, since patterns are matched
+//! as regex — see that module's doc comment). Threads, network, etc. are
+//! future work.
 //!
 //! ## `system.List<T>` / `system.Map<K,V>`
 //!
@@ -215,12 +218,22 @@ pub fn dispatch(program: &Program, fqcn: &str, name: &str, mut args: Vec<Value>)
         ("system.io.File", "open") => {
             let path = str_at(&args, 0)?;
             // 1-argument open == `FileMode.ReadWrite` (stdlib.md): read and
-            // write, file must already exist, positioned at the start.
-            let file = std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(&path)
-                .map_err(|e| throw_io_error(&path, e))?;
+            // write, file must already exist, positioned at the start. The
+            // 2-argument form's mode int is the position of the variant
+            // name in `nl_codegen::stdlib::enum_const_value`'s list (same
+            // order as stdlib.md's `FileMode` table).
+            let mode = if args.len() > 1 { int_at(&args, 1)? } else { 3 };
+            let mut opts = std::fs::OpenOptions::new();
+            match mode {
+                0 => opts.read(true),                                             // Read
+                1 => opts.write(true).create(true).truncate(true),                // Write
+                2 => opts.write(true).create(true).append(true),                  // Append
+                3 => opts.read(true).write(true),                                 // ReadWrite
+                4 => opts.read(true).write(true).create(true).truncate(true),     // ReadWriteTruncate
+                5 => opts.read(true).write(true).create(true).append(true),       // ReadWriteAppend
+                _ => return Err(VmError::Malformed("invalid FileMode value")),
+            };
+            let file = opts.open(&path).map_err(|e| throw_io_error(&path, e))?;
             let id = program.register_file(file);
             let mut fields = HashMap::new();
             fields.insert("__fd__".to_string(), Value::Int(id));
@@ -239,6 +252,18 @@ pub fn dispatch(program: &Program, fqcn: &str, name: &str, mut args: Vec<Value>)
             let content = str_at(&args, 1)?;
             std::fs::write(&path, content).map_err(|e| throw_io_error(&path, e))?;
             Ok(None)
+        }
+        ("system.io.File", "glob") => {
+            let base = str_at(&args, 0)?;
+            let pattern = str_at(&args, 1)?;
+            let regex = crate::mini_regex::Regex::compile(&pattern)
+                .map_err(|e| throw_native("IOException", format!("invalid glob pattern '{pattern}': {e}")))?;
+            let base_path = std::path::Path::new(&base);
+            let mut matches = Vec::new();
+            collect_glob_matches(base_path, base_path, &regex, &mut matches).map_err(|e| throw_io_error(&base, e))?;
+            matches.sort();
+            let values = matches.into_iter().map(|p| Value::Str(Rc::new(p))).collect();
+            Ok(Some(Value::Array(Rc::new(RefCell::new(values)))))
         }
         ("system.io.Directory", "list") => {
             let path = str_at(&args, 0)?;
@@ -400,6 +425,36 @@ fn normalize_path(path: &str) -> String {
         (false, true) => ".".to_string(),
         (false, false) => joined,
     }
+}
+
+/// Recursively walks `dir` (starting at `base`, the `glob` call's
+/// `basePath`), testing each regular file's path *relative to `base`*
+/// (forward-slash separated, even on Windows, so patterns are portable)
+/// against `regex`, and collecting the *full* path of every match — per
+/// stdlib.md: "an array of full paths under basePath whose relative path
+/// matches pattern". Directories themselves are never matched, only
+/// recursed into; symlinks are followed (`Path::is_dir` does), consistent
+/// with stdlib.md's path-traversal warning for the rest of `system.io.File`.
+fn collect_glob_matches(
+    base: &std::path::Path,
+    dir: &std::path::Path,
+    regex: &crate::mini_regex::Regex,
+    out: &mut Vec<String>,
+) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_glob_matches(base, &path, regex, out)?;
+        } else {
+            let rel = path.strip_prefix(base).unwrap_or(&path);
+            let rel_str = rel.to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/");
+            if regex.is_match(&rel_str) {
+                out.push(path.to_string_lossy().into_owned());
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Maps a host I/O error to the spec's exception types — stdlib.md:

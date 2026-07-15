@@ -606,6 +606,19 @@ impl<'a> MethodChecker<'a> {
                 Ok(Type::Array(Box::new(self.resolve_ty(elem_ty))))
             }
             Expr::FieldAccess(target, name) => {
+                // `system.io.FileMode.Read` etc. — a dotted class-path
+                // expression naming an enum-like stdlib constant, not a
+                // value; same recognition-before-resolution shape as the
+                // `Expr::MethodCall` arm's `system.Out.print(...)` check
+                // below (see `crate::stdlib`'s module doc comment).
+                if let Some(path) = dotted_path(target) {
+                    let leading = path.split('.').next().expect("dotted_path is never empty");
+                    if self.resolve(leading).is_none() {
+                        if let Some(ty) = crate::stdlib::enum_const_ty(&path, name) {
+                            return Ok(ty);
+                        }
+                    }
+                }
                 let target_ty = self.check_expr(target, assigned)?;
                 let Type::Named(fqcn) = &target_ty else {
                     return Ok(Type::Void);
