@@ -1,6 +1,7 @@
 mod checker;
 mod class_table;
 pub mod error;
+mod native_generics;
 mod stdlib;
 mod types;
 

@@ -622,6 +622,24 @@ impl<'a> MethodChecker<'a> {
                             None => Ok(Type::Void),
                         }
                     }
+                    // `list.size()`/`map.get(k)` etc. — `fqcn` is already a
+                    // monomorphized instantiation FQCN like
+                    // `"system.List<int>"` (nl_syntax::monomorphize mangles
+                    // `new system.List<int>(...)`/`system.List<int>`-typed
+                    // locals before nl-sema ever runs), so the element
+                    // type(s) are recovered straight from it — see
+                    // `crate::native_generics`'s doc comment.
+                    Type::Named(fqcn) if crate::native_generics::is_instance(fqcn) => {
+                        match crate::native_generics::method_signature(fqcn, name, args.len()) {
+                            Some((param_types, return_ty)) => {
+                                for (actual, expected) in arg_types.iter().zip(&param_types) {
+                                    self.check_assignable(actual, expected)?;
+                                }
+                                Ok(return_ty)
+                            }
+                            None => Ok(Type::Void),
+                        }
+                    }
                     Type::Named(fqcn) => {
                         for t in self.method_throws(fqcn, name, args.len()) {
                             if let Type::Named(exc_fqcn) = t {

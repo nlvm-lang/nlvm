@@ -348,6 +348,15 @@ fn exec_step(
             Opcode::New => {
                 let class_index = read_u16!();
                 let fqcn = resolve_class_name(module, class_index)?.to_string();
+                // `system.List<T>`/`system.Map<K,V>` — see
+                // `nl_vm::native`'s module doc comment: no backing bytecode
+                // `Module`, so the usual field-walk below would fail to
+                // resolve `fqcn` at all.
+                if crate::native::is_native_generic_class(&fqcn) {
+                    stack.push(crate::native::new_generic_object(&fqcn));
+                    *pc_ref = pc;
+                    return Ok(Step::Continue);
+                }
                 // Fields are collected across the whole `extends` chain (a
                 // subclass's own fields, if any, take precedence over a
                 // same-named ancestor field) so an inherited field like
@@ -523,6 +532,18 @@ fn exec_step(
                     return Err(VmError::Malformed("INVOKE_INSTANCE on non-object"));
                 };
                 let runtime_class = obj.borrow().class_name.clone();
+                // `list.size()`/`map.get(k)` etc. — see `nl_vm::native`'s
+                // module doc comment. Keyed by the *runtime* class like the
+                // ordinary path below it, so this also covers a `List<T>`
+                // reference held through e.g. an interface-typed variable
+                // (not that either collection implements one today).
+                if crate::native::is_native_generic_class(&runtime_class) {
+                    if let Some(result) = crate::native::dispatch_instance(&runtime_class, &name, &receiver, call_args)? {
+                        stack.push(result);
+                    }
+                    *pc_ref = pc;
+                    return Ok(Step::Continue);
+                }
                 // Not necessarily declared on `runtime_class` itself — walk
                 // the `extends` chain for an inherited-but-not-overridden
                 // method (vm.md § Method dispatch, Instance methods).
@@ -571,6 +592,13 @@ fn exec_step(
                 let receiver = stack.pop().ok_or(VmError::Malformed("stack underflow"))?;
                 if receiver.is_null() {
                     return Err(throw_native("NullPointerException", "null pointer dereference"));
+                }
+                // `system.List<T>(...)`/`system.Map<K,V>()` construction —
+                // see `nl_vm::native`'s module doc comment.
+                if crate::native::is_native_generic_class(&class_fqcn) {
+                    crate::native::construct_generic(&receiver, &class_fqcn, call_args)?;
+                    *pc_ref = pc;
+                    return Ok(Step::Continue);
                 }
                 // No virtual dispatch: always the exact class named in the
                 // ref (constructors, `super.method(...)`) — but that class
@@ -830,7 +858,7 @@ fn float_binop(stack: &mut Vec<Value>, f: impl Fn(f64, f64) -> f64) -> Result<()
     Ok(())
 }
 
-fn values_equal(a: &Value, b: &Value) -> bool {
+pub(crate) fn values_equal(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Null, Value::Null) => true,
         (Value::Null, _) | (_, Value::Null) => false,

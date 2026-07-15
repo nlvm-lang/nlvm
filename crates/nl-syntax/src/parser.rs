@@ -479,7 +479,20 @@ impl Parser {
                     Ok(Type::StringT)
                 }
                 _ => {
-                    let name = self.eat_ident()?;
+                    // Dotted namespace-qualified class name — needed for
+                    // `new system.List<int>(...)`/`new system.Map<K,V>(...)`
+                    // (stdlib.md § system.List/system.Map). Only `new`
+                    // itself follows this position (`<`, `[`, or `(`), so
+                    // greedily consuming `.`-separated segments is
+                    // unambiguous here, unlike in expression position where
+                    // `.` starts a field/method access.
+                    let mut name = self.eat_ident()?;
+                    while self.is_punct(Punct::Dot) {
+                        self.bump();
+                        let seg = self.eat_ident()?;
+                        name.push('.');
+                        name.push_str(&seg);
+                    }
                     if self.is_punct(Punct::Lt) {
                         Ok(Type::Generic(name, self.parse_generic_args()?))
                     } else {

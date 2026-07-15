@@ -1,0 +1,45 @@
+---
+title: "Phase 6 — system.List<T> instance methods"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "3 0123 0 3 3 42 42 yes no"
+---
+
+#NLFILE phase6/listtest/Main.nl
+namespace phase6.listtest;
+class Main {
+	public static int main(string[] args) {
+		auto list = new system.List<int>();
+		list.pushBack(1);
+		list.pushBack(2);
+		list.pushBack(3);
+		system.Out.print(system.Int.toString(list.size()));
+		system.Out.print(" ");
+		list.pushFront(0);
+		int i = 0;
+		while (i < list.size()) {
+			system.Out.print(system.Int.toString(list.get(i)));
+			i = i + 1;
+		}
+		system.Out.print(" ");
+		int first = list.popFront();
+		int last = list.popBack();
+		system.Out.print(system.Int.toString(first));
+		system.Out.print(" ");
+		system.Out.print(system.Int.toString(last));
+		system.Out.print(" ");
+		list.add(9);
+		system.Out.print(system.Int.toString(list.size()));
+		system.Out.print(" ");
+		list.set(0, 42);
+		system.Out.print(system.Int.toString(list.get(0)));
+		system.Out.print(" ");
+		int removed = list.remove(0);
+		system.Out.print(system.Int.toString(removed));
+		system.Out.print(" ");
+		system.Out.print(list.contains(2) ? "yes" : "no");
+		system.Out.print(" ");
+		system.Out.print(list.contains(100) ? "yes" : "no");
+		return 0;
+	}
+}

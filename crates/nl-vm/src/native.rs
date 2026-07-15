@@ -9,18 +9,63 @@
 //!
 //! Only part of stdlib.md is covered so far (PLAN.md Phase 6): output
 //! (`system.Out`/`system.Err`), `system.In.readLine`, int/float/bool
-//! parsing/formatting, and `system.String` (instance methods on `string`
+//! parsing/formatting, `system.String` (instance methods on `string`
 //! values and their static equivalents — both compile to the same
-//! `INVOKE_STATIC system.String.<name>`, see `nl_codegen::stdlib`). File
-//! I/O, List/Map, threads, etc. are future work.
+//! `INVOKE_STATIC system.String.<name>`, see `nl_codegen::stdlib`), and
+//! `system.List<T>`/`system.Map<K,V>` (see the section below). File I/O,
+//! threads, etc. are future work.
+//!
+//! ## `system.List<T>` / `system.Map<K,V>`
+//!
+//! Unlike every native class above, these are real heap objects created
+//! with `new` (vm.md § Templates (monomorphization) — "native template
+//! classes"), not static-only utility classes. `interpreter::exec_step`
+//! intercepts all three opcodes that touch them — `NEW` (`new_generic_object`
+//! instead of the usual module-based field walk), `INVOKE_SPECIAL` on
+//! `<construct>` (`construct_generic`), and `INVOKE_INSTANCE` keyed by the
+//! *receiver's* runtime class (`dispatch_instance`) — via
+//! `is_native_generic_class`, mirroring how `is_native_class` intercepts
+//! `INVOKE_STATIC` for the utility classes. `nl_sema`/`nl_codegen`'s
+//! `native_generics` modules recover each instantiation's concrete element
+//! type(s) by parsing the mangled FQCN (e.g. `"system.Map<string, int>"`);
+//! this module only needs the *values*, not their static types, so it
+//! doesn't need that parsing.
+//!
+//! Representation: a `List<T>` instance is a plain `Value::Object` with one
+//! field, `"__data__"`, holding the backing `Value::Array`. A `Map<K,V>`
+//! instance has two parallel array fields, `"__keys__"`/`"__values__"` (same
+//! index in both = one entry) — chosen over a real hash map because key
+//! equality follows `values_equal` (§ below), which isn't `Hash`-compatible
+//! in general (e.g. float, or reference-identity for plain objects), and
+//! map sizes in test programs are small enough that O(n) lookup is not a
+//! concern. `keys()`/`values()` return a *copy* of the backing array (a
+//! fresh `Rc`), not a live view — mutating the returned array must not
+//! desync it from the map, per stdlib.md's "Returns an array containing".
+//!
+//! Key/element equality for `contains`/map lookups reuses
+//! `interpreter::values_equal` (primitives and `string` by value,
+//! everything else by reference identity) — this is the same rule
+//! stdlib.md documents as the *fallback* for types that don't implement
+//! `ValueEquatable`; `ValueEquatable` itself is not implemented, so that
+//! optimization never kicks in (reference types with structural key/element
+//! equality always fall back to identity here).
+//!
+//! Not implemented (PLAN.md Phase 6 gap): `system.List`'s `T[] initial`
+//! constructor works, but `entries()`/`forEach` on `Map` do not (they need
+//! a synthetic `MapEntry<K,V>` class and closures-as-native-callbacks,
+//! neither of which exist yet), and neither collection supports the
+//! for-each loop (`for (const auto x : list)`) — vm.md's desugaring for
+//! that relies on `entries()` for maps and hasn't been wired into
+//! nl-codegen for either collection.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::error::VmError;
+use crate::interpreter::values_equal;
 use crate::program::Program;
-use crate::value::Value;
+use crate::value::{Object, Value};
 
 pub fn is_native_class(fqcn: &str) -> bool {
     matches!(
@@ -213,4 +258,175 @@ fn throw_native(class_name: &str, message: impl Into<String>) -> VmError {
         class_name: class_name.to_string(),
         fields,
     }))))
+}
+
+pub fn is_native_generic_class(fqcn: &str) -> bool {
+    fqcn.starts_with("system.List<") || fqcn.starts_with("system.Map<")
+}
+
+/// `Opcode::New` against a native generic class — see this module's doc
+/// comment for the field layout. Both collections start out empty; a
+/// `List<T>(T[] initial)` constructor call fills `__data__` afterwards via
+/// `construct_generic`.
+pub fn new_generic_object(fqcn: &str) -> Value {
+    let mut fields = HashMap::new();
+    if fqcn.starts_with("system.List<") {
+        fields.insert("__data__".to_string(), Value::Array(Rc::new(RefCell::new(Vec::new()))));
+    } else {
+        fields.insert("__keys__".to_string(), Value::Array(Rc::new(RefCell::new(Vec::new()))));
+        fields.insert("__values__".to_string(), Value::Array(Rc::new(RefCell::new(Vec::new()))));
+    }
+    Value::Object(Rc::new(RefCell::new(Object { class_name: fqcn.to_string(), fields })))
+}
+
+/// `Opcode::InvokeSpecial` on a native generic class's `<construct>`. Only
+/// `system.List<T>(T[] initial)` does anything; `List()` and `Map()` leave
+/// the empty fields `new_generic_object` already set up untouched.
+pub fn construct_generic(receiver: &Value, fqcn: &str, mut args: Vec<Value>) -> Result<(), VmError> {
+    if fqcn.starts_with("system.List<") {
+        if let Some(Value::Array(initial)) = args.pop() {
+            list_data(receiver)?.borrow_mut().extend(initial.borrow().iter().cloned());
+        }
+    }
+    Ok(())
+}
+
+/// `Opcode::InvokeInstance` against a native generic class — dispatched by
+/// the *receiver's* runtime class, same as `resolve_virtual` would for a
+/// bytecode-backed class.
+pub fn dispatch_instance(fqcn: &str, name: &str, receiver: &Value, args: Vec<Value>) -> Result<Option<Value>, VmError> {
+    if fqcn.starts_with("system.List<") {
+        dispatch_list(name, receiver, args)
+    } else {
+        dispatch_map(name, receiver, args)
+    }
+}
+
+type ArrayRc = Rc<RefCell<Vec<Value>>>;
+
+fn list_data(receiver: &Value) -> Result<ArrayRc, VmError> {
+    let Value::Object(obj) = receiver else {
+        return Err(VmError::Malformed("expected List receiver"));
+    };
+    match obj.borrow().fields.get("__data__") {
+        Some(Value::Array(a)) => Ok(Rc::clone(a)),
+        _ => Err(VmError::Malformed("malformed List object")),
+    }
+}
+
+fn dispatch_list(name: &str, receiver: &Value, mut args: Vec<Value>) -> Result<Option<Value>, VmError> {
+    let data = list_data(receiver)?;
+    match name {
+        "size" => Ok(Some(Value::Int(data.borrow().len() as i64))),
+        "get" => {
+            let idx = expect_int(&mut args)?;
+            let d = data.borrow();
+            if idx < 0 || idx as usize >= d.len() {
+                return Err(throw_native("IndexOutOfBoundsException", format!("index {idx}, length {}", d.len())));
+            }
+            Ok(Some(d[idx as usize].clone()))
+        }
+        "set" => {
+            let value = args.pop().ok_or(VmError::Malformed("missing value argument"))?;
+            let idx = expect_int(&mut args)?;
+            let mut d = data.borrow_mut();
+            if idx < 0 || idx as usize >= d.len() {
+                return Err(throw_native("IndexOutOfBoundsException", format!("index {idx}, length {}", d.len())));
+            }
+            d[idx as usize] = value;
+            Ok(None)
+        }
+        "pushBack" | "add" => {
+            let value = args.pop().ok_or(VmError::Malformed("missing value argument"))?;
+            data.borrow_mut().push(value);
+            Ok(None)
+        }
+        "pushFront" => {
+            let value = args.pop().ok_or(VmError::Malformed("missing value argument"))?;
+            data.borrow_mut().insert(0, value);
+            Ok(None)
+        }
+        "popBack" => match data.borrow_mut().pop() {
+            Some(v) => Ok(Some(v)),
+            None => Err(throw_native("IndexOutOfBoundsException", "popBack on empty list")),
+        },
+        "popFront" => {
+            let mut d = data.borrow_mut();
+            if d.is_empty() {
+                return Err(throw_native("IndexOutOfBoundsException", "popFront on empty list"));
+            }
+            Ok(Some(d.remove(0)))
+        }
+        "remove" => {
+            let idx = expect_int(&mut args)?;
+            let mut d = data.borrow_mut();
+            if idx < 0 || idx as usize >= d.len() {
+                return Err(throw_native("IndexOutOfBoundsException", format!("index {idx}, length {}", d.len())));
+            }
+            Ok(Some(d.remove(idx as usize)))
+        }
+        "contains" => {
+            let value = args.pop().ok_or(VmError::Malformed("missing value argument"))?;
+            Ok(Some(Value::Bool(data.borrow().iter().any(|v| values_equal(v, &value)))))
+        }
+        _ => Err(VmError::MethodNotFound(format!("system.List.{name}"))),
+    }
+}
+
+fn map_storage(receiver: &Value) -> Result<(ArrayRc, ArrayRc), VmError> {
+    let Value::Object(obj) = receiver else {
+        return Err(VmError::Malformed("expected Map receiver"));
+    };
+    let obj = obj.borrow();
+    match (obj.fields.get("__keys__"), obj.fields.get("__values__")) {
+        (Some(Value::Array(k)), Some(Value::Array(v))) => Ok((Rc::clone(k), Rc::clone(v))),
+        _ => Err(VmError::Malformed("malformed Map object")),
+    }
+}
+
+fn dispatch_map(name: &str, receiver: &Value, mut args: Vec<Value>) -> Result<Option<Value>, VmError> {
+    let (keys, values) = map_storage(receiver)?;
+    match name {
+        "size" => Ok(Some(Value::Int(keys.borrow().len() as i64))),
+        "get" => {
+            let key = args.pop().ok_or(VmError::Malformed("missing key argument"))?;
+            let idx = keys.borrow().iter().position(|k| values_equal(k, &key));
+            Ok(Some(match idx {
+                Some(i) => values.borrow()[i].clone(),
+                None => Value::Null,
+            }))
+        }
+        "set" => {
+            let value = args.pop().ok_or(VmError::Malformed("missing value argument"))?;
+            let key = args.pop().ok_or(VmError::Malformed("missing key argument"))?;
+            let idx = keys.borrow().iter().position(|k| values_equal(k, &key));
+            match idx {
+                Some(i) => values.borrow_mut()[i] = value,
+                None => {
+                    keys.borrow_mut().push(key);
+                    values.borrow_mut().push(value);
+                }
+            }
+            Ok(None)
+        }
+        "remove" => {
+            let key = args.pop().ok_or(VmError::Malformed("missing key argument"))?;
+            let idx = keys.borrow().iter().position(|k| values_equal(k, &key));
+            match idx {
+                Some(i) => {
+                    keys.borrow_mut().remove(i);
+                    values.borrow_mut().remove(i);
+                    Ok(Some(Value::Bool(true)))
+                }
+                None => Ok(Some(Value::Bool(false))),
+            }
+        }
+        "has" => {
+            let key = args.pop().ok_or(VmError::Malformed("missing key argument"))?;
+            Ok(Some(Value::Bool(keys.borrow().iter().any(|k| values_equal(k, &key)))))
+        }
+        "keys" => Ok(Some(Value::Array(Rc::new(RefCell::new(keys.borrow().clone()))))),
+        "values" => Ok(Some(Value::Array(Rc::new(RefCell::new(values.borrow().clone()))))),
+        _ => Err(VmError::MethodNotFound(format!("system.Map.{name}"))),
+    }
 }

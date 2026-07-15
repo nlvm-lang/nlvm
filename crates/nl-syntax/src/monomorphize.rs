@@ -18,11 +18,24 @@
 //! After `expand` returns, neither `Type::Generic` nor a non-empty type-arg
 //! list on `Expr::New` should appear anywhere in the result.
 //!
+//! **Native template classes** (`system.List<T>`, `system.Map<K,V>` — vm.md
+//! § Templates (monomorphization), stdlib.md § system.List/system.Map) go
+//! through the exact same name-mangling here (`is_native_generic`) even
+//! though there is no `ClassDecl` to substitute into: no `SourceFile` is
+//! synthesized for them (`nl_vm::native` provides the implementation
+//! directly, keyed by the mangled FQCN), only the rewrite step runs, same
+//! mangled-name format as user templates. This is why `expand` no longer
+//! short-circuits when there are zero user templates in the program — a
+//! program with only `system.List`/`system.Map` usages and no user
+//! `template class` still needs the rewrite pass.
+//!
 //! Deliberately out of scope (see PLAN.md's generics gap): bounded type
 //! parameters are parsed but not enforced, template *methods* are not
 //! supported (only template classes), and there is no `Self`/`type`
 //! contextual sugar inside a template body — bodies must spell out the type
-//! parameter's own name.
+//! parameter's own name. Native templates nested inside another native or
+//! user template's type argument (e.g. `system.List<system.List<int>>`) are
+//! not exercised/tested.
 
 use std::collections::HashMap;
 
@@ -43,9 +56,6 @@ pub fn expand(files: Vec<SourceFile>) -> Vec<SourceFile> {
                 templates.insert(fqcn_of(file), TemplateInfo { namespace: file.namespace.clone(), decl: class.clone() });
             }
         }
-    }
-    if templates.is_empty() {
-        return files;
     }
 
     // mangled FQCN ("ns.Vector<int>") -> (template FQCN, resolved concrete args).
@@ -128,6 +138,15 @@ fn import_map(file: &SourceFile, all_files: &[SourceFile]) -> HashMap<String, St
 
 fn resolve_name(name: &str, imports: &HashMap<String, String>) -> String {
     imports.get(name).cloned().unwrap_or_else(|| name.to_string())
+}
+
+/// `system.List`/`system.Map` — the two native template classes (vm.md §
+/// Templates (monomorphization)). Unlike a user `template class`, there is
+/// no `ClassDecl` to substitute into; only the name gets mangled the same
+/// way, and `nl_vm::native`/`nl_sema`/`nl_codegen`'s own `native_generics`
+/// modules recognize the mangled FQCN directly.
+fn is_native_generic(fqcn: &str) -> bool {
+    matches!(fqcn, "system.List" | "system.Map")
 }
 
 /// Canonical string form of a type, used both for the mangled class name
@@ -404,7 +423,7 @@ fn rewrite_type(ty: &Type, imports: &HashMap<String, String>, templates: &HashMa
         Type::Generic(name, args) => {
             let args: Vec<Type> = args.iter().map(|a| rewrite_type(a, imports, templates)).collect();
             let fqcn = resolve_name(name, imports);
-            if templates.contains_key(&fqcn) {
+            if templates.contains_key(&fqcn) || is_native_generic(&fqcn) {
                 let resolved_args: Vec<Type> = args.iter().map(|a| resolve_type_names(a, imports)).collect();
                 Type::Named(format!("{fqcn}<{}>", resolved_args.iter().map(mangle_type).collect::<Vec<_>>().join(", ")))
             } else {
@@ -467,7 +486,7 @@ fn rewrite_expr(expr: &Expr, imports: &HashMap<String, String>, templates: &Hash
         Expr::New(name, type_args, args) => {
             let rw_args: Vec<Type> = type_args.iter().map(|a| rewrite_type(a, imports, templates)).collect();
             let fqcn = resolve_name(name, imports);
-            if !type_args.is_empty() && templates.contains_key(&fqcn) {
+            if !type_args.is_empty() && (templates.contains_key(&fqcn) || is_native_generic(&fqcn)) {
                 let resolved_args: Vec<Type> = rw_args.iter().map(|a| resolve_type_names(a, imports)).collect();
                 let mangled = format!("{fqcn}<{}>", resolved_args.iter().map(mangle_type).collect::<Vec<_>>().join(", "));
                 Expr::New(mangled, Vec::new(), args.iter().map(|a| rewrite_expr(a, imports, templates)).collect())

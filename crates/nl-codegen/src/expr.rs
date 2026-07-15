@@ -809,18 +809,35 @@ impl<'a> Emitter<'a> {
         self.op_u16(Opcode::New, class_index, 1);
         self.op(Opcode::Dup, 1);
 
-        let ctor = find_ctor(self.classes, &fqcn, args.len())
-            .cloned()
-            .ok_or_else(|| {
-                CodegenError::Unsupported(format!(
-                    "no constructor of '{fqcn}' with {} argument(s)",
-                    args.len()
-                ))
-            })?;
-        let param_tys: Vec<ExprTy> = ctor.params.iter().map(expr_ty_of).collect();
+        // `new system.List<int>(...)`/`new system.Map<K,V>(...)` — `fqcn`
+        // is already the monomorphized instantiation name by this point
+        // (nl_syntax::monomorphize), same as any user template. No
+        // `ClassInfo` is registered for it (native, no `.nl` source), so
+        // `find_ctor` below would always fail; `crate::native_generics`
+        // recovers the constructor's parameter types straight from the
+        // mangled name instead — see its doc comment. The emitted bytecode
+        // shape (`NEW`/`DUP`/args/`INVOKE_SPECIAL <construct>`) is
+        // identical either way; only the parameter-type source differs, and
+        // `nl_vm::interpreter` intercepts `INVOKE_SPECIAL` against a native
+        // generic class before ever consulting `Program`'s module map (like
+        // `nl_vm::native::is_native_class` does for `INVOKE_STATIC`).
+        let params: Vec<Type> = if let Some(param_types) = crate::native_generics::ctor_param_types(&fqcn, args.len()) {
+            param_types
+        } else {
+            find_ctor(self.classes, &fqcn, args.len())
+                .cloned()
+                .ok_or_else(|| {
+                    CodegenError::Unsupported(format!(
+                        "no constructor of '{fqcn}' with {} argument(s)",
+                        args.len()
+                    ))
+                })?
+                .params
+        };
+        let param_tys: Vec<ExprTy> = params.iter().map(expr_ty_of).collect();
         self.compile_call_args(args, &param_tys, &fqcn)?;
 
-        let descriptor = method_descriptor(&ctor.params, &Type::Void);
+        let descriptor = method_descriptor(&params, &Type::Void);
         let name_index = self.cp.add_utf8("<construct>");
         let descriptor_index = self.cp.add_type_desc(&descriptor);
         let method_ref = self.cp.add_method_ref(class_index, name_index, descriptor_index);
@@ -977,18 +994,27 @@ impl<'a> Emitter<'a> {
             }
             ExprTy::Object(fqcn) => {
                 let fqcn = fqcn.clone();
-                let method = find_method(self.classes, &fqcn, name, args.len())
-                    .cloned()
-                    .ok_or_else(|| {
-                        CodegenError::Unsupported(format!(
-                            "unknown method '{name}' on '{fqcn}' with {} argument(s)",
-                            args.len()
-                        ))
-                    })?;
-                let param_tys: Vec<ExprTy> = method.params.iter().map(expr_ty_of).collect();
+                // `list.size()`/`map.get(k)` etc. — see `compile_new`'s
+                // matching comment and `crate::native_generics`'s doc
+                // comment. Falls through to the ordinary user-class path
+                // below when `fqcn` isn't a native generic instantiation.
+                let (params, return_ty) = if let Some(sig) = crate::native_generics::method_signature(&fqcn, name, args.len()) {
+                    sig
+                } else {
+                    let method = find_method(self.classes, &fqcn, name, args.len())
+                        .cloned()
+                        .ok_or_else(|| {
+                            CodegenError::Unsupported(format!(
+                                "unknown method '{name}' on '{fqcn}' with {} argument(s)",
+                                args.len()
+                            ))
+                        })?;
+                    (method.params, method.return_ty)
+                };
+                let param_tys: Vec<ExprTy> = params.iter().map(expr_ty_of).collect();
                 self.compile_call_args(args, &param_tys, name)?;
 
-                let descriptor = method_descriptor(&method.params, &method.return_ty);
+                let descriptor = method_descriptor(&params, &return_ty);
                 let name_index = self.cp.add_utf8(name.to_string());
                 let descriptor_index = self.cp.add_type_desc(&descriptor);
                 // The static type's class is enough here: the VM re-resolves
@@ -997,10 +1023,10 @@ impl<'a> Emitter<'a> {
                 // its own (interface dispatch — vm.md § Interface dispatch).
                 let class_index = self.cp.add_class(&fqcn);
                 let method_ref = self.cp.add_method_ref(class_index, name_index, descriptor_index);
-                let return_ty = expr_ty_of(&method.return_ty);
-                let result_delta = if return_ty == ExprTy::Void { 0 } else { 1 };
+                let return_expr_ty = expr_ty_of(&return_ty);
+                let result_delta = if return_expr_ty == ExprTy::Void { 0 } else { 1 };
                 self.op_u16(Opcode::InvokeInstance, method_ref, result_delta - args.len() as i32 - 1);
-                Ok(return_ty)
+                Ok(return_expr_ty)
             }
             other => Err(CodegenError::Unsupported(format!(
                 "method call on unsupported type {other:?}"

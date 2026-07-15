@@ -2,6 +2,7 @@ mod class_table;
 mod closure;
 pub mod error;
 mod expr;
+mod native_generics;
 mod stdlib;
 mod stmt;
 mod type_desc;

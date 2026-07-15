@@ -1,0 +1,39 @@
+---
+title: "Phase 6 — system.Map<K,V> instance methods"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "2 yes no yes 1 null 1 two 22"
+---
+
+#NLFILE phase6/maptest/Main.nl
+namespace phase6.maptest;
+class Main {
+	public static int main(string[] args) {
+		auto map = new system.Map<string, int>();
+		map.set("one", 1);
+		map.set("two", 2);
+		system.Out.print(system.Int.toString(map.size()));
+		system.Out.print(" ");
+		system.Out.print(map.has("one") ? "yes" : "no");
+		system.Out.print(" ");
+		system.Out.print(map.has("three") ? "yes" : "no");
+		system.Out.print(" ");
+		bool removed = map.remove("one");
+		system.Out.print(removed ? "yes" : "no");
+		system.Out.print(" ");
+		system.Out.print(system.Int.toString(map.size()));
+		system.Out.print(" ");
+		int|null missing = map.get("one");
+		system.Out.print(missing == null ? "null" : "notnull");
+		system.Out.print(" ");
+		map.set("two", 22);
+		system.Out.print(system.Int.toString(map.size()));
+		system.Out.print(" ");
+		string[] k = map.keys();
+		int[] vals = map.values();
+		system.Out.print(k[0]);
+		system.Out.print(" ");
+		system.Out.print(system.Int.toString(vals[0]));
+		return 0;
+	}
+}
