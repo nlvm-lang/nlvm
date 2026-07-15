@@ -1,0 +1,40 @@
+---
+title: "Checked exceptions compile and run fine once caught (or declared and propagated to a caller that catches it)"
+file_separator: "#NLFILE"
+expected_exit_code: 7
+expected_stdout: ""
+---
+
+#NLFILE phase5/e015ok/Boom.nl
+namespace phase5.e015ok;
+class Boom extends Exception {
+	public construct(string message) {
+		super(message);
+	}
+}
+
+#NLFILE phase5/e015ok/Risky.nl
+namespace phase5.e015ok;
+use phase5.e015ok.Boom;
+class Risky {
+	public construct() {}
+	public void risky() throws Boom {
+		throw new Boom("bang");
+	}
+}
+
+#NLFILE phase5/e015ok/Main.nl
+namespace phase5.e015ok;
+use phase5.e015ok.Boom;
+use phase5.e015ok.Risky;
+class Main {
+	public static int main(string[] args) {
+		Risky r = new Risky();
+		try {
+			r.risky();
+			return 1;
+		} catch (Boom b) {
+			return 7;
+		}
+	}
+}

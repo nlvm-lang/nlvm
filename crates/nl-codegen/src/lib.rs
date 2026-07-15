@@ -1,4 +1,5 @@
 mod class_table;
+mod closure;
 pub mod error;
 mod expr;
 mod stdlib;
@@ -21,14 +22,24 @@ use type_desc::method_descriptor;
 /// entries. See `nl_vm::Program` for how these modules are linked at load
 /// time.
 pub fn compile_program(files: &[SourceFile]) -> Result<Vec<Module>, CodegenError> {
+    // Template classes (specs.md § Template class) are expanded into
+    // ordinary monomorphized classes before anything else sees them — see
+    // nl_syntax::monomorphize. nl-sema expands the *same* input the same
+    // way, so both crates always agree on the expanded program.
+    let expanded = nl_syntax::monomorphize::expand(files.to_vec());
+
     // Built-in exception classes (nl_syntax::prelude) are implicitly part of
     // every program — see class_table::import_map, which seeds their simple
     // names so user code can reference them without a `use`.
     let mut all_files = nl_syntax::prelude::files();
-    all_files.extend_from_slice(files);
+    all_files.extend(expanded);
 
     let classes = build_class_table(&all_files);
-    all_files.iter().map(|f| compile_file(f, &all_files, &classes)).collect()
+    let mut modules = Vec::new();
+    for file in &all_files {
+        modules.extend(compile_file(file, &all_files, &classes)?);
+    }
+    Ok(modules)
 }
 
 /// Single-file convenience wrapper — still valid for programs that don't
@@ -44,14 +55,17 @@ pub fn compile_source_file(file: &SourceFile) -> Result<Module, CodegenError> {
         .expect("compile_program always compiles the input file's own module"))
 }
 
-fn compile_file(file: &SourceFile, all_files: &[SourceFile], classes: &HashMap<String, ClassInfo>) -> Result<Module, CodegenError> {
+/// Returns the file's own module first, followed by any synthetic closure
+/// classes generated while compiling its methods (vm.md § Closures — "the
+/// compiler generates a synthetic class for each closure").
+fn compile_file(file: &SourceFile, all_files: &[SourceFile], classes: &HashMap<String, ClassInfo>) -> Result<Vec<Module>, CodegenError> {
     let imports = import_map(file, all_files);
     let fqcn = fqcn_of(file);
     let mut cp = ConstantPool::new();
     let this_class = cp.add_class(&fqcn);
 
     match &file.item {
-        SourceItem::Interface(_) => Ok(Module {
+        SourceItem::Interface(_) => Ok(vec![Module {
             version: nl_bytecode::module::VERSION,
             constant_pool: cp,
             this_class,
@@ -61,7 +75,7 @@ fn compile_file(file: &SourceFile, all_files: &[SourceFile], classes: &HashMap<S
             fields: Vec::new(),
             methods: Vec::new(),
             hash_algo: HashAlgo::Sha256,
-        }),
+        }]),
         SourceItem::Class(class) => {
             let super_class = match &class.extends {
                 Some(name) => {
@@ -122,11 +136,15 @@ fn compile_file(file: &SourceFile, all_files: &[SourceFile], classes: &HashMap<S
             }
 
             let mut methods = Vec::with_capacity(class.methods.len());
-            for m in &class.methods {
-                methods.push(compile_method(m.name.as_str(), m, class, &mut cp, this_class, &fqcn, &imports, classes, &static_sigs)?);
+            let mut closure_modules = Vec::new();
+            for (method_index, m) in class.methods.iter().enumerate() {
+                let (descriptor, closures) =
+                    compile_method(m.name.as_str(), method_index, m, class, &mut cp, this_class, &fqcn, &imports, classes, &static_sigs)?;
+                methods.push(descriptor);
+                closure_modules.extend(closures);
             }
 
-            Ok(Module {
+            let mut modules = vec![Module {
                 version: nl_bytecode::module::VERSION,
                 constant_pool: cp,
                 this_class,
@@ -136,7 +154,9 @@ fn compile_file(file: &SourceFile, all_files: &[SourceFile], classes: &HashMap<S
                 fields,
                 methods,
                 hash_algo: HashAlgo::Sha256,
-            })
+            }];
+            modules.extend(closure_modules);
+            Ok(modules)
         }
     }
 }
@@ -144,6 +164,7 @@ fn compile_file(file: &SourceFile, all_files: &[SourceFile], classes: &HashMap<S
 #[allow(clippy::too_many_arguments)]
 fn compile_method(
     name: &str,
+    method_index: usize,
     method: &nl_syntax::ast::MethodDecl,
     class: &ClassDecl,
     cp: &mut ConstantPool,
@@ -152,7 +173,7 @@ fn compile_method(
     imports: &HashMap<String, String>,
     classes: &HashMap<String, ClassInfo>,
     static_sigs: &HashMap<String, MethodSig>,
-) -> Result<MethodDescriptor, CodegenError> {
+) -> Result<(MethodDescriptor, Vec<Module>), CodegenError> {
     let _ = class;
     let name_index = cp.add_utf8(name.to_string());
     let resolved_params: Vec<Type> = method.params.iter().map(|p| resolve_type(&p.ty, imports)).collect();
@@ -161,6 +182,7 @@ fn compile_method(
     let descriptor_index = cp.add_type_desc(&descriptor);
 
     let mut emitter = Emitter::new(cp, static_sigs, classes, imports, this_class, this_fqcn.to_string());
+    emitter.closure_name_prefix = format!("{this_fqcn}$m{method_index}");
     emitter.push_scope();
     if !method.is_static {
         emitter.declare_local("this".to_string(), expr::ExprTy::Object(this_fqcn.to_string()));
@@ -176,8 +198,9 @@ fn compile_method(
     }
     emitter.pop_scope();
 
-    // Descriptive metadata only — checked-exception declaration/propagation
-    // (E016/E017) is not statically enforced this phase (PLAN.md Phase 5).
+    // Metadata only at this layer — checked-exception propagation (E015)
+    // and override compatibility (E016/E017) are enforced by nl-sema
+    // (crate::checker), not re-derived from this bytecode-level list.
     let throws_types: Vec<u16> = method
         .throws
         .iter()
@@ -197,7 +220,7 @@ fn compile_method(
         MethodKind::Normal => {}
     }
 
-    Ok(MethodDescriptor {
+    let descriptor = MethodDescriptor {
         flags,
         name_index,
         descriptor_index,
@@ -207,7 +230,8 @@ fn compile_method(
         code: emitter.code,
         exception_table: emitter.exception_table,
         line_table: Vec::new(),
-    })
+    };
+    Ok((descriptor, emitter.closures))
 }
 
 fn visibility_field_flag(v: Visibility) -> u16 {

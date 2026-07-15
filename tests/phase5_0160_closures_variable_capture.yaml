@@ -1,0 +1,34 @@
+---
+title: "Anonymous functions — capturing one and multiple variables from the enclosing scope (by value: snapshotted at creation)"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "50 10 1"
+---
+
+#NLFILE phase5/closures_capture/Main.nl
+namespace phase5.closures_capture;
+class Main {
+	public static int main(string[] args) {
+		int multiplier = 10;
+		auto multiplyBy = (int value) => { return value * multiplier; };
+		int result = multiplyBy(5);
+
+		int x = 5;
+		int y = 3;
+		auto addXY = (int z) => { return x + y + z; };
+		int result2 = addXY(2);
+
+		// Capture is by value: mutating 'n' after the closure is created
+		// does not change what the closure sees.
+		int n = 1;
+		auto readN = () => { return n; };
+		n = 99;
+
+		system.Out.print(system.Int.toString(result));
+		system.Out.print(" ");
+		system.Out.print(system.Int.toString(result2));
+		system.Out.print(" ");
+		system.Out.print(system.Int.toString(readN()));
+		return 0;
+	}
+}

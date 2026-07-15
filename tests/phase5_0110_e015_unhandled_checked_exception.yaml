@@ -1,0 +1,22 @@
+---
+title: "E015 — a checked exception must be caught or declared in 'throws'"
+file_separator: "#NLFILE"
+expected_compile_error: "E015"
+---
+
+#NLFILE phase5/e015/Boom.nl
+namespace phase5.e015;
+class Boom extends Exception {
+	public construct(string message) {
+		super(message);
+	}
+}
+
+#NLFILE phase5/e015/Main.nl
+namespace phase5.e015;
+use phase5.e015.Boom;
+class Main {
+	public static int main(string[] args) {
+		throw new Boom("bang");
+	}
+}

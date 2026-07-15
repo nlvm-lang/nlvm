@@ -84,6 +84,7 @@ fn exception_class(name: &str, parent: Option<&str>) -> ClassDecl {
     };
     ClassDecl {
         name: name.to_string(),
+        type_params: Vec::new(),
         extends: parent.map(str::to_string),
         implements: Vec::new(),
         fields,

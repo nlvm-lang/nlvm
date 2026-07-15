@@ -18,7 +18,7 @@ class MyException extends Exception {
 namespace phase5.uncaught;
 use phase5.uncaught.MyException;
 class Main {
-	public static int main(string[] args) {
+	public static int main(string[] args) throws MyException {
 		throw new MyException("nope");
 	}
 }

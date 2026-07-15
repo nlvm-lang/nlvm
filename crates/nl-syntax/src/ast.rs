@@ -28,6 +28,13 @@ pub enum Visibility {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClassDecl {
     pub name: String,
+    /// `template <type T, type U, ...>` parameter names, empty for an
+    /// ordinary (non-template) class — specs.md § Template class. Bounds
+    /// (`extends Bound`) are parsed and discarded (not enforced — see
+    /// PLAN.md's generics gap); `Self`/`type` contextual sugar inside a
+    /// template body is not supported, bodies must spell out the type
+    /// parameter's own name instead.
+    pub type_params: Vec<String>,
     pub extends: Option<String>,
     pub implements: Vec<String>,
     pub fields: Vec<FieldDecl>,
@@ -105,6 +112,12 @@ pub enum Type {
     NullT,
     /// `Type1|Type2|...` — see specs.md § Union types and explicit nullable.
     Union(Vec<Type>),
+    /// `Name<Arg1, Arg2, ...>` — a reference to a template class with
+    /// concrete type arguments (specs.md § Template class), e.g.
+    /// `Vector<int>`. Resolved away by `nl_syntax::monomorphize` before
+    /// `nl-sema`/`nl-codegen` ever see it — they only ever encounter the
+    /// monomorphized class's plain `Type::Named("ns.Vector<int>")`.
+    Generic(String, Vec<Type>),
 }
 
 pub type Block = Vec<Stmt>;
@@ -205,8 +218,11 @@ pub enum Expr {
     Ident(String),
     Assign(LValue, Box<Expr>),
     Call(String, Vec<Expr>),
-    /// `new ClassName(args)`.
-    New(String, Vec<Expr>),
+    /// `new ClassName(args)` or `new ClassName<TypeArgs>(args)` — see
+    /// `nl_syntax::monomorphize`, which rewrites the latter into the
+    /// former (against a mangled class name) before this ever reaches
+    /// `nl-sema`/`nl-codegen`.
+    New(String, Vec<Type>, Vec<Expr>),
     /// `new T[size]` — fixed-size single-dimension array creation.
     NewArray(Box<Type>, Box<Expr>),
     /// `target.field`.
@@ -229,6 +245,27 @@ pub enum Expr {
     /// 10 (below `||`, above `??`/`?:` elvis — the latter two are not
     /// implemented yet).
     Ternary(Box<Expr>, Box<Expr>, Box<Expr>),
+    /// `(params) => body` — specs.md § Anonymous Functions. `return_type`
+    /// is `None` when deduced from the body (only an explicit *primitive*
+    /// return type is parseable today — see `nl_syntax::parser`'s
+    /// `parse_closure` for why a `Named` return type is out of scope: it's
+    /// ambiguous with the start of an expression body). Captured variables
+    /// are copied by value at the closure's creation point (`nl-codegen`);
+    /// the spec's by-reference/boxed capture (so a closure can observe or
+    /// make visible mutations to a captured variable) is not implemented —
+    /// see PLAN.md Phase 5.
+    Closure {
+        params: Vec<Param>,
+        return_type: Option<Type>,
+        throws: Vec<String>,
+        body: ClosureBody,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ClosureBody {
+    Block(Block),
+    Expr(Box<Expr>),
 }
 
 #[derive(Debug, Clone, PartialEq)]

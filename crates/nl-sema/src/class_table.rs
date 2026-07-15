@@ -17,6 +17,15 @@ pub struct MethodInfo {
     pub name: String,
     pub params: Vec<Type>,
     pub return_ty: Type,
+    pub is_static: bool,
+    /// Resolved (FQCN) `throws` clause — compiler.md § Exception checking.
+    pub throws: Vec<Type>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CtorInfo {
+    pub params: Vec<Type>,
+    pub throws: Vec<Type>,
 }
 
 #[derive(Debug, Clone)]
@@ -28,6 +37,7 @@ pub struct ClassInfo {
     pub implements: Vec<String>,
     pub fields: Vec<FieldInfo>,
     pub methods: Vec<MethodInfo>,
+    pub ctors: Vec<CtorInfo>,
 }
 
 /// Whether `sub` is `sup` itself or (transitively) extends it — used for
@@ -105,6 +115,29 @@ pub fn resolve_type(ty: &Type, imports: &HashMap<String, String>) -> Type {
     }
 }
 
+/// Best-effort constructor resolution by arity — mirrors `nl_codegen`'s
+/// `find_ctor` (constructor overloads are only distinguished by arity this
+/// phase; see PLAN.md).
+pub fn find_ctor<'c>(classes: &'c ClassTable, fqcn: &str, argc: usize) -> Option<&'c CtorInfo> {
+    classes.get(fqcn)?.ctors.iter().find(|c| c.params.len() == argc)
+}
+
+/// Walks `fqcn`'s direct-superclass chain (starting at `fqcn` itself)
+/// looking for a method with the exact same name and parameter types.
+/// Unlike `find_method`'s arity-only matching (good enough for resolving a
+/// call site), overriding requires an exact signature match — used by
+/// E016/E017 to find the specific parent method a subclass method overrides.
+pub fn find_method_exact<'c>(classes: &'c ClassTable, fqcn: &str, name: &str, params: &[Type]) -> Option<&'c MethodInfo> {
+    let mut current = fqcn;
+    loop {
+        let info = classes.get(current)?;
+        if let Some(m) = info.methods.iter().find(|m| m.name == name && m.params == params) {
+            return Some(m);
+        }
+        current = info.extends.as_deref()?;
+    }
+}
+
 pub fn build_class_table(files: &[SourceFile]) -> ClassTable {
     let mut table = HashMap::with_capacity(files.len());
     for file in files {
@@ -120,6 +153,9 @@ pub fn build_class_table(files: &[SourceFile]) -> ClassTable {
                         ty: resolve_type(&f.ty, &imports),
                     })
                     .collect();
+                let resolve_throws = |m: &nl_syntax::ast::MethodDecl| -> Vec<Type> {
+                    m.throws.iter().map(|n| Type::Named(imports.get(n).cloned().unwrap_or_else(|| n.clone()))).collect()
+                };
                 let methods = class
                     .methods
                     .iter()
@@ -128,6 +164,17 @@ pub fn build_class_table(files: &[SourceFile]) -> ClassTable {
                         name: m.name.clone(),
                         params: m.params.iter().map(|p| resolve_type(&p.ty, &imports)).collect(),
                         return_ty: resolve_type(&m.return_type, &imports),
+                        is_static: m.is_static,
+                        throws: resolve_throws(m),
+                    })
+                    .collect();
+                let ctors = class
+                    .methods
+                    .iter()
+                    .filter(|m| m.kind == MethodKind::Constructor)
+                    .map(|m| CtorInfo {
+                        params: m.params.iter().map(|p| resolve_type(&p.ty, &imports)).collect(),
+                        throws: resolve_throws(m),
                     })
                     .collect();
                 let implements = class
@@ -136,7 +183,7 @@ pub fn build_class_table(files: &[SourceFile]) -> ClassTable {
                     .map(|n| imports.get(n).cloned().unwrap_or_else(|| n.clone()))
                     .collect();
                 let extends = class.extends.as_ref().map(|n| imports.get(n).cloned().unwrap_or_else(|| n.clone()));
-                ClassInfo { extends, implements, fields, methods }
+                ClassInfo { extends, implements, fields, methods, ctors }
             }
             SourceItem::Interface(iface) => {
                 let methods = iface
@@ -146,9 +193,11 @@ pub fn build_class_table(files: &[SourceFile]) -> ClassTable {
                         name: m.name.clone(),
                         params: m.params.iter().map(|p| resolve_type(&p.ty, &imports)).collect(),
                         return_ty: resolve_type(&m.return_type, &imports),
+                        is_static: false,
+                        throws: Vec::new(),
                     })
                     .collect();
-                ClassInfo { extends: None, implements: Vec::new(), fields: Vec::new(), methods }
+                ClassInfo { extends: None, implements: Vec::new(), fields: Vec::new(), methods, ctors: Vec::new() }
             }
         };
         table.insert(fqcn, info);

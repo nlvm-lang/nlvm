@@ -1,0 +1,37 @@
+---
+title: "Phase 5 — 'finally' runs on 'return'/'break' exits, not just normal completion or propagation"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "BA fff 2"
+---
+
+#NLFILE phase5/finallyexit/Main.nl
+namespace phase5.finallyexit;
+class Main {
+	public static int main(string[] args) {
+		system.Out.print(helper());
+		system.Out.print(" ");
+		int i = 0;
+		while (i < 5) {
+			try {
+				if (i == 2) {
+					break;
+				}
+			} finally {
+				system.Out.print("f");
+			}
+			i = i + 1;
+		}
+		system.Out.print(" ");
+		system.Out.print(system.Int.toString(i));
+		return 0;
+	}
+
+	public static string helper() {
+		try {
+			return "A";
+		} finally {
+			system.Out.print("B");
+		}
+	}
+}

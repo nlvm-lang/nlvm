@@ -18,10 +18,13 @@ impl<'a> Emitter<'a> {
     pub fn compile_stmt(&mut self, stmt: &Stmt) -> Result<(), CodegenError> {
         match stmt {
             Stmt::Return(Some(expr)) => {
-                self.compile_expr(expr)?;
+                let ty = self.compile_expr(expr)?;
+                self.inferred_return_ty = Some(ty);
+                self.replay_finally_blocks(0)?;
                 self.code.push(Opcode::ReturnValue as u8);
             }
             Stmt::Return(None) => {
+                self.replay_finally_blocks(0)?;
                 self.code.push(Opcode::Return as u8);
             }
             Stmt::Expr(expr) => {
@@ -76,6 +79,7 @@ impl<'a> Emitter<'a> {
                 if self.loops.is_empty() {
                     return Err(CodegenError::Unsupported("'break' outside a loop".to_string()));
                 }
+                self.replay_finally_blocks(self.loops.last().unwrap().finally_depth)?;
                 let patch = self.branch(Opcode::Goto, 0);
                 self.loops.last_mut().unwrap().break_patches.push(patch);
             }
@@ -83,6 +87,7 @@ impl<'a> Emitter<'a> {
                 if self.loops.is_empty() {
                     return Err(CodegenError::Unsupported("'continue' outside a loop".to_string()));
                 }
+                self.replay_finally_blocks(self.loops.last().unwrap().finally_depth)?;
                 let patch = self.branch(Opcode::Goto, 0);
                 self.loops.last_mut().unwrap().continue_patches.push(patch);
             }
@@ -99,11 +104,16 @@ impl<'a> Emitter<'a> {
     /// 0`) entry covering the body *and* every catch handler, plus a second
     /// copy of its code inline on the normal-completion path.
     ///
-    /// Known gap versus the spec (documented, not implemented this phase):
-    /// `return`/`break`/`continue` inside a `try`/`catch` jump straight out
-    /// without running an enclosing `finally` — the spec requires
-    /// duplicating `finally` at every such exit point, which is deferred.
+    /// `return`/`break`/`continue` inside the `try` body or a `catch`
+    /// handler run a clone of `finally` first (`Emitter::finally_stack`,
+    /// pushed here and popped before `finally`'s own code is emitted, so a
+    /// `finally` block's own exits don't re-trigger it but still trigger
+    /// any *outer* enclosing `finally`).
     fn compile_try(&mut self, body: &Block, catches: &[CatchClause], finally: &Option<Block>) -> Result<(), CodegenError> {
+        if let Some(finally_body) = finally {
+            self.finally_stack.push(finally_body.clone());
+        }
+
         let try_start = self.code.len();
         self.compile_block(body)?;
         let try_end = self.code.len();
@@ -128,6 +138,10 @@ impl<'a> Emitter<'a> {
             catch_entries.push((handler_pc, catch_type));
         }
         let catches_end = self.code.len();
+
+        if finally.is_some() {
+            self.finally_stack.pop();
+        }
 
         let finally_handler_pc = if let Some(finally_body) = finally {
             let handler_pc = self.code.len();
@@ -200,6 +214,7 @@ impl<'a> Emitter<'a> {
         self.loops.push(LoopCtx {
             break_patches: Vec::new(),
             continue_patches: Vec::new(),
+            finally_depth: self.finally_stack.len(),
         });
         self.compile_block(body)?;
         let ctx = self.loops.pop().unwrap();
@@ -240,6 +255,7 @@ impl<'a> Emitter<'a> {
         self.loops.push(LoopCtx {
             break_patches: Vec::new(),
             continue_patches: Vec::new(),
+            finally_depth: self.finally_stack.len(),
         });
         self.compile_block(body)?;
         let ctx = self.loops.pop().unwrap();

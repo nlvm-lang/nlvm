@@ -26,6 +26,12 @@ pub enum SemaError {
     MatchNotExhaustive(String),
     #[error("E048 — Unreachable catch clause: '{0}' is already caught by earlier clause '{1}'")]
     UnreachableCatch(String, String),
+    #[error("E015 — Unhandled checked exception '{0}' — must be caught or declared in 'throws'")]
+    UnhandledCheckedException(String),
+    #[error("E016 — Overriding method '{0}' does not declare exception '{1}' from parent method")]
+    MissingThrowsInOverride(String, String),
+    #[error("E017 — Overriding method '{0}' declares exception '{1}' not thrown by parent method")]
+    ExtraThrowsInOverride(String, String),
 
     #[error("E027 — No 'main' method found")]
     NoMainMethod,
@@ -52,6 +58,9 @@ impl SemaError {
             SemaError::DelegationCycle(_) => "E046",
             SemaError::MatchNotExhaustive(_) => "E047",
             SemaError::UnreachableCatch(_, _) => "E048",
+            SemaError::UnhandledCheckedException(_) => "E015",
+            SemaError::MissingThrowsInOverride(_, _) => "E016",
+            SemaError::ExtraThrowsInOverride(_, _) => "E017",
             SemaError::NoMainMethod => "E027",
             SemaError::MultipleMainMethods => "E028",
             SemaError::BadMainSignature => "E029",

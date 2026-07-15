@@ -112,12 +112,56 @@ impl Parser {
             uses.push(segments.join("."));
         }
 
-        let item = if self.is_keyword(Keyword::Interface) {
+        let item = if self.is_keyword(Keyword::Template) {
+            let type_params = self.parse_template_prefix()?;
+            SourceItem::Class(self.parse_class_decl(type_params)?)
+        } else if self.is_keyword(Keyword::Interface) {
             SourceItem::Interface(self.parse_interface_decl()?)
         } else {
-            SourceItem::Class(self.parse_class_decl()?)
+            SourceItem::Class(self.parse_class_decl(Vec::new())?)
         };
         Ok(SourceFile { namespace, uses, item })
+    }
+
+    /// `template <type T [extends Bound], ...>` before a `class` — specs.md
+    /// § Template class / § Bounded type parameters. Returns just the
+    /// parameter names; a bound is parsed and discarded (not enforced —
+    /// see PLAN.md's generics gap). Only template *classes* are supported
+    /// this phase, not template methods (a `template <...>` prefix inside a
+    /// class body, before a single method, is not recognized).
+    fn parse_template_prefix(&mut self) -> Result<Vec<String>, SyntaxError> {
+        self.eat_keyword(Keyword::Template)?;
+        self.eat_punct(Punct::Lt)?;
+        let mut params = Vec::new();
+        loop {
+            self.eat_keyword(Keyword::TypeKw)?;
+            let name = self.eat_ident()?;
+            if self.is_keyword(Keyword::Extends) {
+                self.bump();
+                self.eat_ident()?;
+            }
+            params.push(name);
+            if self.is_punct(Punct::Comma) {
+                self.bump();
+            } else {
+                break;
+            }
+        }
+        self.eat_punct(Punct::Gt)?;
+        Ok(params)
+    }
+
+    /// `<Type1, Type2, ...>` — concrete type arguments for a template
+    /// reference (`Vector<int>`), in either a type position or after `new`.
+    fn parse_generic_args(&mut self) -> Result<Vec<Type>, SyntaxError> {
+        self.eat_punct(Punct::Lt)?;
+        let mut args = vec![self.parse_type()?];
+        while self.is_punct(Punct::Comma) {
+            self.bump();
+            args.push(self.parse_type()?);
+        }
+        self.eat_punct(Punct::Gt)?;
+        Ok(args)
     }
 
     fn parse_interface_decl(&mut self) -> Result<InterfaceDecl, SyntaxError> {
@@ -148,7 +192,7 @@ impl Parser {
         Ok(InterfaceDecl { name, methods })
     }
 
-    fn parse_class_decl(&mut self) -> Result<ClassDecl, SyntaxError> {
+    fn parse_class_decl(&mut self, type_params: Vec<String>) -> Result<ClassDecl, SyntaxError> {
         self.eat_keyword(Keyword::Class)?;
         let name = self.eat_ident()?;
 
@@ -179,7 +223,7 @@ impl Parser {
             self.parse_member(&mut fields, &mut methods)?;
         }
         self.eat_punct(Punct::RBrace)?;
-        Ok(ClassDecl { name, extends, implements, fields, methods })
+        Ok(ClassDecl { name, type_params, extends, implements, fields, methods })
     }
 
     /// `throws Type1, Type2, ...` — optional, after a method/constructor's
@@ -384,7 +428,14 @@ impl Parser {
                     self.bump();
                     Type::StringT
                 }
-                _ => Type::Named(self.eat_ident()?),
+                _ => {
+                    let name = self.eat_ident()?;
+                    if self.is_punct(Punct::Lt) {
+                        Type::Generic(name, self.parse_generic_args()?)
+                    } else {
+                        Type::Named(name)
+                    }
+                }
             },
             other => {
                 return Err(SyntaxError::Parse(
@@ -427,7 +478,14 @@ impl Parser {
                     self.bump();
                     Ok(Type::StringT)
                 }
-                _ => Ok(Type::Named(self.eat_ident()?)),
+                _ => {
+                    let name = self.eat_ident()?;
+                    if self.is_punct(Punct::Lt) {
+                        Ok(Type::Generic(name, self.parse_generic_args()?))
+                    } else {
+                        Ok(Type::Named(name))
+                    }
+                }
             },
             other => Err(SyntaxError::Parse(
                 format!("expected type after 'new', found {other:?}"),
@@ -531,12 +589,47 @@ impl Parser {
             ) {
                 return true;
             }
+            if matches!(self.peek_at(1), Some(TokenKind::Punct(Punct::Lt))) {
+                return self.looks_like_generic_type_decl();
+            }
             return matches!(
                 (self.peek_at(1), self.peek_at(2)),
                 (Some(TokenKind::Punct(Punct::LBracket)), Some(TokenKind::Punct(Punct::RBracket)))
             );
         }
         false
+    }
+
+    /// `Name<...> ident` — e.g. `Box<int> a`. Without this lookahead,
+    /// `Box<int>` is indistinguishable from the chained relational
+    /// expression `Box < int > a`; scans forward from the `<` at offset 1,
+    /// tracking nesting depth (for `Box<Box<int>>`), bailing out (not a
+    /// generic type) on any token that couldn't plausibly appear inside a
+    /// type-argument list.
+    fn looks_like_generic_type_decl(&self) -> bool {
+        let mut depth = 0i32;
+        let mut offset = 1usize;
+        loop {
+            match self.peek_at(offset) {
+                Some(TokenKind::Punct(Punct::Lt)) => depth += 1,
+                Some(TokenKind::Punct(Punct::Gt)) => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return matches!(self.peek_at(offset + 1), Some(TokenKind::Ident(_)));
+                    }
+                }
+                Some(TokenKind::Ident(_))
+                | Some(TokenKind::Punct(Punct::Comma))
+                | Some(TokenKind::Punct(Punct::LBracket))
+                | Some(TokenKind::Punct(Punct::RBracket))
+                | Some(TokenKind::Punct(Punct::Pipe)) => {}
+                _ => return false,
+            }
+            offset += 1;
+            if offset > 64 {
+                return false;
+            }
+        }
     }
 
     fn parse_var_decl(&mut self) -> Result<Stmt, SyntaxError> {
@@ -905,6 +998,14 @@ impl Parser {
         if self.is_keyword(Keyword::Match) {
             return self.parse_match_expr();
         }
+        // `(` is otherwise only a parenthesized-expression grouping (below)
+        // — a closure is the one other thing it can start, disambiguated by
+        // tentatively parsing one and backtracking on failure.
+        if self.is_punct(Punct::LParen) {
+            if let Some(closure) = self.try_parse_closure()? {
+                return Ok(closure);
+            }
+        }
         match self.bump().kind {
             TokenKind::IntLiteral(v) => Ok(Expr::IntLit(v)),
             TokenKind::FloatLiteral(v) => Ok(Expr::FloatLit(v)),
@@ -954,22 +1055,105 @@ impl Parser {
             self.eat_punct(Punct::RBracket)?;
             Ok(Expr::NewArray(Box::new(base_ty), Box::new(size)))
         } else if self.is_punct(Punct::LParen) {
-            let Type::Named(class_name) = base_ty else {
-                return Err(SyntaxError::Parse(
-                    "'new' on a primitive type requires array syntax 'new T[size]'".to_string(),
-                    self.line(),
-                ));
+            let (class_name, type_args) = match base_ty {
+                Type::Named(name) => (name, Vec::new()),
+                Type::Generic(name, args) => (name, args),
+                _ => {
+                    return Err(SyntaxError::Parse(
+                        "'new' on a primitive type requires array syntax 'new T[size]'".to_string(),
+                        self.line(),
+                    ))
+                }
             };
             self.bump();
             let args = self.parse_args()?;
             self.eat_punct(Punct::RParen)?;
-            Ok(Expr::New(class_name, args))
+            Ok(Expr::New(class_name, type_args, args))
         } else {
             Err(SyntaxError::Parse(
                 "expected '(' or '[' after 'new <type>'".to_string(),
                 self.line(),
             ))
         }
+    }
+
+    /// Attempts `(params) => body` at the current position, restoring
+    /// `self.pos` and returning `None` if it turns out not to be a closure
+    /// (falls back to ordinary `(expr)` grouping in `parse_primary`) —
+    /// there is no other lookahead that distinguishes `(int a, int b) => …`
+    /// from a parenthesized expression without a param list that happens to
+    /// start with a type-like identifier.
+    fn try_parse_closure(&mut self) -> Result<Option<Expr>, SyntaxError> {
+        let save = self.pos;
+        match self.parse_closure() {
+            Ok(closure) => Ok(Some(closure)),
+            Err(_) => {
+                self.pos = save;
+                Ok(None)
+            }
+        }
+    }
+
+    /// specs.md § Anonymous Functions: `(params) => body`, with an optional
+    /// `throws` clause and/or explicit return type before the body.
+    ///
+    /// Only a *primitive* return type (`int`/`float`/.../`void`) is
+    /// supported, and only when immediately followed by `{` — e.g.
+    /// `(int a, int b) => float { ... }`. A `Named` (class/interface) return
+    /// type is genuinely ambiguous with the start of an expression-bodied
+    /// closure (`(int a) => a` — is `a` a return type awaiting a body, or
+    /// the body itself?); real implementations resolve this with deeper
+    /// lookahead this parser doesn't attempt. Not implemented — a Named
+    /// return type after `=>` is instead parsed as the closure's (invalid,
+    /// will fail elsewhere) expression body.
+    fn parse_closure(&mut self) -> Result<Expr, SyntaxError> {
+        self.eat_punct(Punct::LParen)?;
+        let mut params = Vec::new();
+        while !self.is_punct(Punct::RParen) {
+            // `const` on a closure parameter (specs.md's `(const string
+            // text) => ...`) is parsed and discarded — const-correctness
+            // enforcement is out of scope, same as everywhere else in this
+            // implementation (see PLAN.md).
+            if self.is_keyword(Keyword::Const) {
+                self.bump();
+            }
+            let ty = self.parse_type()?;
+            let name = self.eat_ident()?;
+            params.push(Param { name, ty });
+            if self.is_punct(Punct::Comma) {
+                self.bump();
+            } else {
+                break;
+            }
+        }
+        self.eat_punct(Punct::RParen)?;
+        self.eat_punct(Punct::FatArrow)?;
+
+        let throws = self.parse_throws_clause()?;
+        let return_type = if self.peek_is_primitive_return_type() {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+
+        let body = if self.is_punct(Punct::LBrace) {
+            ClosureBody::Block(self.parse_block()?)
+        } else {
+            ClosureBody::Expr(Box::new(self.parse_expr()?))
+        };
+        Ok(Expr::Closure { params, return_type, throws, body })
+    }
+
+    /// Whether the current token could start a primitive/`void` return type
+    /// immediately followed by `{` — the only return-type shape
+    /// `parse_closure` accepts (see its doc comment).
+    fn peek_is_primitive_return_type(&self) -> bool {
+        let is_primitive = match &self.peek().kind {
+            TokenKind::Keyword(Keyword::Void) => true,
+            TokenKind::Ident(name) => matches!(name.as_str(), "int" | "float" | "bool" | "byte" | "string"),
+            _ => false,
+        };
+        is_primitive && matches!(self.peek_at(1), Some(TokenKind::Punct(Punct::LBrace)))
     }
 }
 

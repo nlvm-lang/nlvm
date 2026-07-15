@@ -22,7 +22,7 @@ use crate::types;
 
 /// A method's signature, as seen from call sites within the same class
 /// (bare, unqualified calls — always static, as before this phase).
-type MethodSig = (Vec<Type>, Type);
+type MethodSig = (Vec<Type>, Type, Vec<Type>);
 
 pub fn check_source_file(file: &SourceFile, all_files: &[SourceFile], classes: &ClassTable) -> Result<(), SemaError> {
     let SourceItem::Class(class) = &file.item else {
@@ -41,12 +41,74 @@ pub fn check_source_file(file: &SourceFile, all_files: &[SourceFile], classes: &
         if m.is_static && m.kind == MethodKind::Normal {
             let param_types: Vec<Type> = m.params.iter().map(|p| class_table::resolve_type(&p.ty, &imports)).collect();
             let return_ty = class_table::resolve_type(&m.return_type, &imports);
-            sigs.insert(m.name.clone(), (param_types, return_ty));
+            let throws = resolve_throws(m, &imports);
+            sigs.insert(m.name.clone(), (param_types, return_ty, throws));
         }
     }
 
     for method in &class.methods {
         check_method(method, &sigs, classes, &imports, &this_fqcn)?;
+        // compiler.md § Exception inheritance rules — E016/E017. Only
+        // meaningful for instance methods (static methods hide, not
+        // override) that actually override an ancestor's method.
+        if !method.is_static && method.kind == MethodKind::Normal {
+            check_exception_override(method, classes, &imports, &this_fqcn)?;
+        }
+    }
+    Ok(())
+}
+
+fn resolve_throws(m: &MethodDecl, imports: &HashMap<String, String>) -> Vec<Type> {
+    m.throws.iter().map(|n| Type::Named(imports.get(n).cloned().unwrap_or_else(|| n.clone()))).collect()
+}
+
+/// compiler.md § Exception inheritance rules — E016/E017. Compares the
+/// *checked* members only of `method`'s `throws` clause against the nearest
+/// ancestor method it overrides (exact name + parameter-type match);
+/// runtime exceptions are exempt from this rule on both sides.
+fn check_exception_override(
+    method: &MethodDecl,
+    classes: &ClassTable,
+    imports: &HashMap<String, String>,
+    this_fqcn: &str,
+) -> Result<(), SemaError> {
+    let Some(super_fqcn) = classes.get(this_fqcn).and_then(|c| c.extends.clone()) else {
+        return Ok(());
+    };
+    let params: Vec<Type> = method.params.iter().map(|p| class_table::resolve_type(&p.ty, imports)).collect();
+    let Some(parent) = class_table::find_method_exact(classes, &super_fqcn, &method.name, &params) else {
+        return Ok(());
+    };
+    if parent.is_static {
+        return Ok(());
+    }
+    let child_throws = resolve_throws(method, imports);
+    let is_checked = |t: &Type| {
+        let Type::Named(fqcn) = t else { return false };
+        class_table::is_subclass_or_same(classes, fqcn, "Exception") && !class_table::is_subclass_or_same(classes, fqcn, "RuntimeException")
+    };
+    // "child throws type C covers parent throws type P" iff C is P or a
+    // subclass of P — the single relation both E016 and E017 check, just
+    // iterated in opposite directions.
+    let covers = |c: &str, p: &str| class_table::is_subclass_or_same(classes, c, p);
+
+    // E016: every checked exception the parent declares must be covered by
+    // some type the child declares.
+    for parent_exc in parent.throws.iter().filter(|t| is_checked(t)) {
+        let Type::Named(parent_fqcn) = parent_exc else { continue };
+        let handled = child_throws.iter().any(|c| matches!(c, Type::Named(child_fqcn) if covers(child_fqcn, parent_fqcn)));
+        if !handled {
+            return Err(SemaError::MissingThrowsInOverride(method.name.clone(), parent_fqcn.clone()));
+        }
+    }
+    // E017: every checked exception the child declares must itself be
+    // covered by something the parent already declares.
+    for child_exc in child_throws.iter().filter(|t| is_checked(t)) {
+        let Type::Named(child_fqcn) = child_exc else { continue };
+        let handled = parent.throws.iter().any(|p| matches!(p, Type::Named(parent_fqcn) if covers(child_fqcn, parent_fqcn)));
+        if !handled {
+            return Err(SemaError::ExtraThrowsInOverride(method.name.clone(), child_fqcn.clone()));
+        }
     }
     Ok(())
 }
@@ -136,6 +198,12 @@ fn check_method(
         scopes: Vec::new(),
         next_id: 0,
         return_ty: class_table::resolve_type(&method.return_type, imports),
+        skip_return_check: false,
+        method_throws: resolve_throws(method, imports)
+            .into_iter()
+            .filter_map(|t| if let Type::Named(fqcn) = t { Some(fqcn) } else { None })
+            .collect(),
+        catch_stack: Vec::new(),
     };
     checker.push_scope();
     let mut assigned = HashSet::new();
@@ -172,6 +240,19 @@ struct MethodChecker<'a> {
     scopes: Vec<HashMap<String, VarEntry>>,
     next_id: u32,
     return_ty: Type,
+    /// While checking a closure body with no explicit return type
+    /// (deduced — see `Expr::Closure` below), `return_ty` has nothing
+    /// meaningful to hold, so `Stmt::Return`'s assignability check against
+    /// it is skipped entirely rather than risk a false E004 against
+    /// whatever `return_ty` happened to be left over (e.g. the *enclosing
+    /// method's* return type, which is unrelated).
+    skip_return_check: bool,
+    /// Resolved (FQCN) `throws` clause of the method currently being
+    /// checked — compiler.md § Checked exception propagation, E015.
+    method_throws: Vec<String>,
+    /// Resolved (FQCN) catch types of every `try` currently enclosing the
+    /// code being checked, innermost last — pushed/popped in `check_try`.
+    catch_stack: Vec<Vec<String>>,
 }
 
 impl<'a> MethodChecker<'a> {
@@ -223,6 +304,27 @@ impl<'a> MethodChecker<'a> {
         }
     }
 
+    /// compiler.md § Checked exception propagation — E015. `exc_fqcn` is
+    /// exempt if it isn't a checked exception at all (not `Exception` or a
+    /// non-`RuntimeException` subclass of it); otherwise it must be caught
+    /// by an enclosing `try` (`catch_stack`) or declared in the current
+    /// method's own `throws` clause.
+    fn require_handled(&self, exc_fqcn: &str) -> Result<(), SemaError> {
+        if !class_table::is_subclass_or_same(self.classes, exc_fqcn, "Exception")
+            || class_table::is_subclass_or_same(self.classes, exc_fqcn, "RuntimeException")
+        {
+            return Ok(());
+        }
+        let covers = |declared: &str| class_table::is_subclass_or_same(self.classes, exc_fqcn, declared);
+        if self.catch_stack.iter().rev().any(|catches| catches.iter().any(|c| covers(c))) {
+            return Ok(());
+        }
+        if self.method_throws.iter().any(|t| covers(t)) {
+            return Ok(());
+        }
+        Err(SemaError::UnhandledCheckedException(exc_fqcn.to_string()))
+    }
+
     fn method_return_ty(&self, fqcn: &str, name: &str, argc: usize) -> Option<Type> {
         let mut current = fqcn;
         loop {
@@ -231,6 +333,18 @@ impl<'a> MethodChecker<'a> {
                 return Some(m.return_ty.clone());
             }
             current = info.extends.as_deref()?;
+        }
+    }
+
+    fn method_throws(&self, fqcn: &str, name: &str, argc: usize) -> Vec<Type> {
+        let mut current = fqcn;
+        loop {
+            let Some(info) = self.classes.get(current) else { return Vec::new() };
+            if let Some(m) = info.methods.iter().find(|m| m.name == name && m.params.len() == argc) {
+                return m.throws.clone();
+            }
+            let Some(parent) = info.extends.as_deref() else { return Vec::new() };
+            current = parent;
         }
     }
 
@@ -262,7 +376,9 @@ impl<'a> MethodChecker<'a> {
         match stmt {
             Stmt::Return(Some(expr)) => {
                 let ty = self.check_expr(expr, &mut assigned)?;
-                self.check_assignable(&ty, &self.return_ty.clone())?;
+                if !self.skip_return_check {
+                    self.check_assignable(&ty, &self.return_ty.clone())?;
+                }
                 Ok((assigned, true))
             }
             Stmt::Return(None) => Ok((assigned, true)),
@@ -277,7 +393,10 @@ impl<'a> MethodChecker<'a> {
                 Ok((assigned, false))
             }
             Stmt::Throw(expr) => {
-                self.check_expr(expr, &mut assigned)?;
+                let ty = self.check_expr(expr, &mut assigned)?;
+                if let Type::Named(fqcn) = &ty {
+                    self.require_handled(fqcn)?;
+                }
                 Ok((assigned, true))
             }
             Stmt::Try { body, catches, finally } => self.check_try(body, catches, finally, assigned),
@@ -349,6 +468,16 @@ impl<'a> MethodChecker<'a> {
     }
 
     fn check_assignable(&self, value_ty: &Type, target_ty: &Type) -> Result<(), SemaError> {
+        // `Type::Void` here means "not actually modeled as a real type by
+        // this checker" (an unresolved call, a closure literal — see
+        // `Expr::Closure` above — or any of several other lenient
+        // fallbacks throughout `check_expr`), not a genuine `void` value —
+        // treated as a wildcard so those fallbacks don't produce a false
+        // E004. A truly void-returning call assigned somewhere non-void
+        // still fails, just at nl-codegen instead (`coerce_value`).
+        if matches!(value_ty, Type::Void) {
+            return Ok(());
+        }
         if matches!(value_ty, Type::NullT) && !types::is_nullable(target_ty) {
             return Err(SemaError::NullToNonNullable(types::display(target_ty)));
         }
@@ -407,21 +536,34 @@ impl<'a> MethodChecker<'a> {
                     arg_types.push(self.check_expr(a, assigned)?);
                 }
                 // Unresolved calls: no dedicated E-code, deferred to nl-codegen.
-                let Some((param_types, return_ty)) = self.sigs.get(name) else {
+                let Some((param_types, return_ty, throws)) = self.sigs.get(name).cloned() else {
                     return Ok(Type::Void);
                 };
                 if arg_types.len() == param_types.len() {
-                    for (actual, expected) in arg_types.iter().zip(param_types) {
+                    for (actual, expected) in arg_types.iter().zip(&param_types) {
                         self.check_assignable(actual, expected)?;
                     }
                 }
-                Ok(return_ty.clone())
+                for t in &throws {
+                    if let Type::Named(fqcn) = t {
+                        self.require_handled(fqcn)?;
+                    }
+                }
+                Ok(return_ty)
             }
-            Expr::New(class_name, args) => {
+            Expr::New(class_name, _type_args, args) => {
                 for a in args {
                     self.check_expr(a, assigned)?;
                 }
-                Ok(Type::Named(self.class_fqcn(class_name)))
+                let fqcn = self.class_fqcn(class_name);
+                if let Some(ctor) = class_table::find_ctor(self.classes, &fqcn, args.len()) {
+                    for t in ctor.throws.clone() {
+                        if let Type::Named(exc_fqcn) = t {
+                            self.require_handled(&exc_fqcn)?;
+                        }
+                    }
+                }
+                Ok(Type::Named(fqcn))
             }
             Expr::NewArray(elem_ty, size) => {
                 let size_ty = self.check_expr(size, assigned)?;
@@ -461,7 +603,14 @@ impl<'a> MethodChecker<'a> {
                 }
                 match &target_ty {
                     Type::Array(_) if name == "length" && args.is_empty() => Ok(Type::Int),
-                    Type::Named(fqcn) => Ok(self.method_return_ty(fqcn, name, args.len()).unwrap_or(Type::Void)),
+                    Type::Named(fqcn) => {
+                        for t in self.method_throws(fqcn, name, args.len()) {
+                            if let Type::Named(exc_fqcn) = t {
+                                self.require_handled(&exc_fqcn)?;
+                            }
+                        }
+                        Ok(self.method_return_ty(fqcn, name, args.len()).unwrap_or(Type::Void))
+                    }
                     _ => Ok(Type::Void),
                 }
             }
@@ -509,6 +658,44 @@ impl<'a> MethodChecker<'a> {
                 // time, where it also has `ExprTy` to work with.
                 self.check_expr(else_e, assigned)?;
                 Ok(then_ty)
+            }
+            // vm.md § Closures — checked like a nested block with its own
+            // additional param declarations, so definite assignment on a
+            // *captured* variable still applies (it must be assigned by the
+            // time the closure literal is created — capture is by value,
+            // see nl-codegen's `ExprTy::Closure`). No dedicated static type
+            // to report (no `Type::Function` this phase — see PLAN.md's
+            // closures gap), so `Type::Void`, same leniency `check_assignable`
+            // already gives every other not-yet-modeled expression form.
+            Expr::Closure { params, body, return_type, .. } => {
+                self.push_scope();
+                let mut inner_assigned = assigned.clone();
+                for p in params {
+                    let ty = self.resolve_ty(&p.ty);
+                    let id = self.declare(&p.name, ty);
+                    inner_assigned.insert(id);
+                }
+                // A closure's `return` statements must be checked against
+                // *its own* declared/deduced return type, not whatever
+                // `self.return_ty` holds for the enclosing method.
+                let saved_return_ty = std::mem::replace(&mut self.return_ty, Type::Void);
+                let saved_skip = self.skip_return_check;
+                match return_type {
+                    Some(t) => {
+                        self.return_ty = self.resolve_ty(t);
+                        self.skip_return_check = false;
+                    }
+                    None => self.skip_return_check = true,
+                }
+                let body_result = match body {
+                    nl_syntax::ast::ClosureBody::Block(block) => self.check_stmts(block, inner_assigned).map(|_| ()),
+                    nl_syntax::ast::ClosureBody::Expr(e) => self.check_expr(e, &mut inner_assigned).map(|_| ()),
+                };
+                self.return_ty = saved_return_ty;
+                self.skip_return_check = saved_skip;
+                self.pop_scope();
+                body_result?;
+                Ok(Type::Void)
             }
         }
     }
@@ -571,7 +758,11 @@ impl<'a> MethodChecker<'a> {
             }
         }
 
-        self.check_block(body, assigned.clone())?;
+        let catch_types: Vec<String> = catches.iter().map(|c| self.class_fqcn(&c.ty)).collect();
+        self.catch_stack.push(catch_types);
+        let body_result = self.check_block(body, assigned.clone());
+        self.catch_stack.pop();
+        body_result?;
         for catch in catches {
             self.push_scope();
             let ty = self.resolve_ty(&Type::Named(catch.ty.clone()));

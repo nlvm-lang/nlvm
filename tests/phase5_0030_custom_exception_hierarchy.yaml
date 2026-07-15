@@ -20,7 +20,7 @@ namespace phase5.custom_exception;
 use phase5.custom_exception.MyException;
 class Risky {
 	public construct() {}
-	public void doSomethingRisky() {
+	public void doSomethingRisky() throws MyException {
 		throw new MyException("nope", 42);
 	}
 }

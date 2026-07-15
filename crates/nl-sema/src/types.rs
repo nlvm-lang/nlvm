@@ -91,5 +91,10 @@ pub fn display(ty: &Type) -> String {
         Type::Array(inner) => format!("{}[]", display(inner)),
         Type::Named(name) => name.clone(),
         Type::Union(members) => members.iter().map(display).collect::<Vec<_>>().join("|"),
+        // Should already be resolved to a plain `Type::Named` by
+        // `nl_syntax::monomorphize` before this checker ever runs; formatted
+        // rather than panicking since this is only ever used for an error
+        // message, and a best-effort rendering beats crashing the compiler.
+        Type::Generic(name, args) => format!("{name}<{}>", args.iter().map(display).collect::<Vec<_>>().join(", ")),
     }
 }

@@ -213,6 +213,10 @@ pub enum Punct {
     QuestionQuestion,
     QuestionColon,
     Arrow,
+    /// `=>` — anonymous function parameter/body separator (specs.md §
+    /// Anonymous Functions), also used for `match`-like function-type
+    /// syntax. Distinct from `Arrow` (`->`, unused by the parser today).
+    FatArrow,
     PlusPlus,
     MinusMinus,
     Spaceship,

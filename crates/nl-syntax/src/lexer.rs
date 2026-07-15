@@ -217,6 +217,7 @@ impl<'a> Lexer<'a> {
             (b'%', Some(b'=')) => two!(Punct::PercentEq),
             (b'%', _) => one!(Punct::Percent),
             (b'=', Some(b'=')) => two!(Punct::EqEq),
+            (b'=', Some(b'>')) => two!(Punct::FatArrow),
             (b'=', _) => one!(Punct::Assign),
             (b'!', Some(b'=')) => two!(Punct::NotEq),
             (b'!', _) => one!(Punct::Not),

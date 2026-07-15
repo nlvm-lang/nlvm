@@ -1,0 +1,26 @@
+---
+title: "Anonymous functions — block body, expression body, explicit return type, no params"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "8 24 4.5 42"
+---
+
+#NLFILE phase5/closures_basic/Main.nl
+namespace phase5.closures_basic;
+class Main {
+	public static int main(string[] args) {
+		auto add = (int a, int b) => { return a + b; };
+		auto multiply = (int a, int b) => a * b;
+		auto toHalf = (int n) => float { return n + 0.5; };
+		auto getValue = () => { return 42; };
+
+		system.Out.print(system.Int.toString(add(5, 3)));
+		system.Out.print(" ");
+		system.Out.print(system.Int.toString(multiply(4, 6)));
+		system.Out.print(" ");
+		system.Out.print(system.Float.toString(toHalf(4)));
+		system.Out.print(" ");
+		system.Out.print(system.Int.toString(getValue()));
+		return 0;
+	}
+}

@@ -20,6 +20,45 @@ pub enum ExprTy {
     Object(String),
     /// Array element type.
     Array(Box<ExprTy>),
+    /// A closure value — vm.md § Closures and anonymous functions. `fqcn`
+    /// is the synthetic closure class generated for this specific literal
+    /// (see `crate::closure`); a closure's *static* type is therefore
+    /// really "the type of this one literal", not a structural function
+    /// type shared across literals with the same shape — there is no
+    /// `typedef`'d function-type syntax to unify them against yet (out of
+    /// scope this phase, see PLAN.md).
+    Closure {
+        params: Vec<ExprTy>,
+        return_ty: Box<ExprTy>,
+        fqcn: String,
+    },
+}
+
+/// Inverse of `expr_ty_of`, needed to build field/method descriptors for
+/// synthesized closure classes, which only ever deal in `ExprTy` (computed
+/// from already-compiled expressions) rather than the source `Type`s
+/// `nl-sema`/the rest of `nl-codegen` resolve ahead of time. Closures
+/// themselves have no `Type` representation (see `ExprTy::Closure`'s doc
+/// comment) — reachable only if a closure captures another closure, which
+/// isn't exercised; falls back to `Type::Void` rather than panicking.
+fn expr_ty_to_type(ty: &ExprTy) -> Type {
+    match ty {
+        ExprTy::Int => Type::Int,
+        ExprTy::Float => Type::Float,
+        ExprTy::Bool => Type::Bool,
+        ExprTy::Byte => Type::Byte,
+        ExprTy::StringT => Type::StringT,
+        ExprTy::Null => Type::NullT,
+        ExprTy::Void => Type::Void,
+        ExprTy::Object(fqcn) => Type::Named(fqcn.clone()),
+        ExprTy::Array(inner) => Type::Array(Box::new(expr_ty_to_type(inner))),
+        ExprTy::Closure { .. } => Type::Void,
+    }
+}
+
+pub(crate) enum IdentRef {
+    Local(LocalSlot),
+    CapturedField(ExprTy),
 }
 
 pub fn expr_ty_of(ty: &Type) -> ExprTy {
@@ -44,6 +83,9 @@ pub fn expr_ty_of(ty: &Type) -> ExprTy {
             .find(|m| !matches!(m, Type::NullT))
             .map(expr_ty_of)
             .unwrap_or(ExprTy::Null),
+        // nl_syntax::monomorphize resolves every `Type::Generic` to a plain
+        // `Type::Named` before nl-codegen ever runs — see its module doc.
+        Type::Generic(name, args) => unreachable!("unresolved generic type '{name}<...>' ({} args) reached codegen", args.len()),
     }
 }
 
@@ -67,6 +109,12 @@ pub(crate) struct LocalSlot {
 pub(crate) struct LoopCtx {
     pub break_patches: Vec<(usize, usize)>,
     pub continue_patches: Vec<(usize, usize)>,
+    /// `Emitter.finally_stack.len()` when this loop was entered — `break`/
+    /// `continue` only replay `finally` blocks pushed *after* this point
+    /// (i.e. a `try`/`finally` nested inside the loop body), not ones
+    /// wrapping the loop itself (compiler.md's `finally` duplication rule
+    /// only fires for exits that actually leave the protected region).
+    pub finally_depth: usize,
 }
 
 pub struct Emitter<'a> {
@@ -86,6 +134,38 @@ pub struct Emitter<'a> {
     /// Accumulated across every `try` statement in this method — vm.md §
     /// Exception table.
     pub exception_table: Vec<nl_bytecode::ExceptionTableEntry>,
+    /// Enclosing `finally` blocks currently protecting the code being
+    /// compiled, innermost last — compiler.md's `finally` duplication rule:
+    /// `return`/`break`/`continue` must run every `finally` block they exit
+    /// through. Cloned (not borrowed) to sidestep threading an AST lifetime
+    /// through `Emitter`; these blocks are small and this is compile-time
+    /// only. See `Stmt::Return`/`Break`/`Continue` in `stmt.rs`.
+    pub(crate) finally_stack: Vec<nl_syntax::ast::Block>,
+    /// Non-empty only inside a closure's synthesized `invoke` method — name
+    /// -> type of each captured variable, backed by a field of the same
+    /// name on `this`. Consulted as a fallback *after* `self.scopes` (so an
+    /// inner declaration that shadows a capture's name still wins — see
+    /// `resolve_ident`). See `crate::closure`.
+    pub(crate) captured_fields: HashMap<String, ExprTy>,
+    /// Synthetic closure classes generated while compiling this method,
+    /// collected here and threaded back up to `compile_program` so they're
+    /// included in the linked program's module set (vm.md § Closures: "The
+    /// compiler generates a synthetic class for each closure").
+    pub(crate) closures: Vec<nl_bytecode::Module>,
+    /// Disambiguates synthetic closure class names within this method
+    /// (`{this_fqcn}${method_name}$closure{N}`) — see `crate::closure`.
+    pub(crate) closure_counter: u32,
+    /// Set by `Stmt::Return(Some(_))` as it compiles — the only way this
+    /// crate has to learn an expression's type without a separate
+    /// inference pass. Ignored by ordinary methods; consulted by a
+    /// block-bodied closure with no explicit return type to deduce one
+    /// (specs.md's `() => { return 42; }` — deduced `int`).
+    pub(crate) inferred_return_ty: Option<ExprTy>,
+    /// `"{this_fqcn}$m{method_index}"` — base for this method's synthetic
+    /// closure class names (`$closure0`, `$closure1`, ...). Keyed by
+    /// position in `class.methods` rather than just the method's name so
+    /// overloads (same name, different params) don't collide.
+    pub(crate) closure_name_prefix: String,
 }
 
 impl<'a> Emitter<'a> {
@@ -97,6 +177,7 @@ impl<'a> Emitter<'a> {
         this_class: u16,
         this_fqcn: String,
     ) -> Self {
+        let closure_name_prefix = this_fqcn.clone();
         Self {
             code: Vec::new(),
             cp,
@@ -112,7 +193,26 @@ impl<'a> Emitter<'a> {
             max_locals: 0,
             loops: Vec::new(),
             exception_table: Vec::new(),
+            finally_stack: Vec::new(),
+            captured_fields: HashMap::new(),
+            closures: Vec::new(),
+            closure_counter: 0,
+            inferred_return_ty: None,
+            closure_name_prefix,
         }
+    }
+
+    /// Emits a clone of every currently-active `finally` block, innermost
+    /// first — used by `return`/`break`/`continue` before they jump out of
+    /// the region those blocks protect (see `finally_stack`).
+    pub(crate) fn replay_finally_blocks(&mut self, from: usize) -> Result<(), CodegenError> {
+        let blocks: Vec<nl_syntax::ast::Block> = self.finally_stack[from..].iter().rev().cloned().collect();
+        for block in &blocks {
+            for stmt in block {
+                self.compile_stmt(stmt)?;
+            }
+        }
+        Ok(())
     }
 
     pub fn max_stack(&self) -> u16 {
@@ -224,13 +324,39 @@ impl<'a> Emitter<'a> {
         self.declare_local(name, ty)
     }
 
-    fn lookup_local(&self, name: &str) -> Result<LocalSlot, CodegenError> {
+    pub(crate) fn lookup_local(&self, name: &str) -> Result<LocalSlot, CodegenError> {
         for scope in self.scopes.iter().rev() {
             if let Some(slot) = scope.get(name) {
                 return Ok(slot.clone());
             }
         }
         Err(CodegenError::Unsupported(format!("undefined variable '{name}'")))
+    }
+
+    /// `name` resolves either to an ordinary local (`self.scopes`, checked
+    /// first so a shadowing declaration wins) or, inside a closure's
+    /// `invoke` method, to a captured variable's field on `this`
+    /// (`self.captured_fields`).
+    pub(crate) fn resolve_ident(&self, name: &str) -> Result<IdentRef, CodegenError> {
+        if let Ok(slot) = self.lookup_local(name) {
+            return Ok(IdentRef::Local(slot));
+        }
+        if let Some(ty) = self.captured_fields.get(name) {
+            return Ok(IdentRef::CapturedField(ty.clone()));
+        }
+        Err(CodegenError::Unsupported(format!("undefined variable '{name}'")))
+    }
+
+    /// Emits `this.name` (`GET_FIELD` off local 0) for a captured variable
+    /// — the closure's synthetic class always has a field of the same name
+    /// as the capture (see `crate::closure`).
+    fn emit_get_captured_field(&mut self, name: &str, ty: &ExprTy) {
+        self.op_u16(Opcode::Load, 0, 1);
+        let class_index = self.cp.add_class(&self.this_fqcn.clone());
+        let name_index = self.cp.add_utf8(name.to_string());
+        let type_index = self.cp.add_type_desc(&type_descriptor(&expr_ty_to_type(ty)));
+        let field_ref = self.cp.add_field_ref(class_index, name_index, type_index);
+        self.op_u16(Opcode::GetField, field_ref, 0);
     }
 
     pub(crate) fn resolve_class_name(&self, name: &str) -> String {
@@ -291,14 +417,19 @@ impl<'a> Emitter<'a> {
                 self.op_u16(Opcode::Load, 0, 1);
                 Ok(ExprTy::Object(super_fqcn))
             }
-            Expr::Ident(name) => {
-                let slot = self.lookup_local(name)?;
-                self.op_u16(Opcode::Load, slot.index, 1);
-                Ok(slot.ty)
-            }
+            Expr::Ident(name) => match self.resolve_ident(name)? {
+                IdentRef::Local(slot) => {
+                    self.op_u16(Opcode::Load, slot.index, 1);
+                    Ok(slot.ty)
+                }
+                IdentRef::CapturedField(ty) => {
+                    self.emit_get_captured_field(name, &ty);
+                    Ok(ty)
+                }
+            },
             Expr::Assign(target, value) => self.compile_assign(target, value),
             Expr::Call(name, args) => self.compile_call(name, args),
-            Expr::New(class_name, args) => self.compile_new(class_name, args),
+            Expr::New(class_name, _type_args, args) => self.compile_new(class_name, args),
             Expr::NewArray(elem_ty, size) => self.compile_new_array(elem_ty, size),
             Expr::FieldAccess(target, name) => self.compile_field_access(target, name),
             Expr::MethodCall(target, name, args) => self.compile_method_call(target, name, args),
@@ -310,7 +441,160 @@ impl<'a> Emitter<'a> {
             Expr::Binary(op, lhs, rhs) => self.compile_binary(*op, lhs, rhs),
             Expr::Match(subject, arms) => self.compile_match(subject, arms),
             Expr::Ternary(cond, then_e, else_e) => self.compile_ternary(cond, then_e, else_e),
+            Expr::Closure { params, return_type, throws, body } => {
+                let _ = throws; // parsed only — see PLAN.md's closures gap (checked-exception verification not extended into closure bodies).
+                self.compile_closure(params, return_type, body)
+            }
         }
+    }
+
+    /// `(params) => body` — vm.md § Closures and anonymous functions.
+    /// Generates a synthetic closure class (one field per captured
+    /// variable, one `invoke` method compiled from `body`) and emits the
+    /// creation site: `NEW` + one `SET_FIELD` per capture, copying each
+    /// captured variable's *current* value (by-value capture — see
+    /// `ExprTy::Closure`'s doc comment for the boxing gap versus the spec).
+    fn compile_closure(
+        &mut self,
+        params: &[nl_syntax::ast::Param],
+        return_type: &Option<Type>,
+        body: &nl_syntax::ast::ClosureBody,
+    ) -> Result<ExprTy, CodegenError> {
+        let param_names: std::collections::HashSet<&str> = params.iter().map(|p| p.name.as_str()).collect();
+        let mut candidates: Vec<String> = crate::closure::referenced_names(body).into_iter().collect();
+        candidates.retain(|n| !param_names.contains(n.as_str()));
+        candidates.sort();
+
+        // Only names that actually resolve as a local in *this* (enclosing)
+        // scope are real captures; anything else (a class reference, or a
+        // name declared inside the closure body itself) is left for the
+        // inner emitter to resolve normally.
+        let captures: Vec<(String, ExprTy, u16)> = candidates
+            .into_iter()
+            .filter_map(|name| self.lookup_local(&name).ok().map(|slot| (name, slot.ty, slot.index)))
+            .collect();
+
+        let synth_fqcn = format!("{}$closure{}", self.closure_name_prefix, self.closure_counter);
+        self.closure_counter += 1;
+
+        let resolved_params: Vec<Type> = params.iter().map(|p| resolve_type(&p.ty, self.imports)).collect();
+        let param_expr_tys: Vec<ExprTy> = resolved_params.iter().map(expr_ty_of).collect();
+
+        let mut synth_cp = ConstantPool::new();
+        let synth_this_class = synth_cp.add_class(&synth_fqcn);
+        let captured_fields: HashMap<String, ExprTy> = captures.iter().map(|(n, ty, _)| (n.clone(), ty.clone())).collect();
+
+        let deduced_return_ty;
+        let invoke_method;
+        let mut nested_closures;
+        {
+            let mut inner = Emitter::new(&mut synth_cp, self.static_sigs, self.classes, self.imports, synth_this_class, synth_fqcn.clone());
+            inner.captured_fields = captured_fields;
+            inner.push_scope();
+            inner.declare_local("this".to_string(), ExprTy::Object(synth_fqcn.clone()));
+            for (param, resolved_ty) in params.iter().zip(&resolved_params) {
+                inner.declare_local(param.name.clone(), expr_ty_of(resolved_ty));
+            }
+            deduced_return_ty = match body {
+                nl_syntax::ast::ClosureBody::Block(block) => {
+                    for stmt in block {
+                        inner.compile_stmt(stmt)?;
+                    }
+                    let ret = match return_type {
+                        Some(t) => expr_ty_of(&resolve_type(t, self.imports)),
+                        None => inner.inferred_return_ty.clone().unwrap_or(ExprTy::Void),
+                    };
+                    if ret == ExprTy::Void {
+                        inner.op(Opcode::Return, 0);
+                    }
+                    ret
+                }
+                nl_syntax::ast::ClosureBody::Expr(e) => {
+                    let value_ty = inner.compile_expr(e)?;
+                    inner.op(Opcode::ReturnValue, 0);
+                    match return_type {
+                        Some(t) => expr_ty_of(&resolve_type(t, self.imports)),
+                        None => value_ty,
+                    }
+                }
+            };
+            inner.pop_scope();
+
+            let descriptor = method_descriptor(&resolved_params, &expr_ty_to_type(&deduced_return_ty));
+            let name_index = inner.cp.add_utf8("invoke".to_string());
+            let descriptor_index = inner.cp.add_type_desc(&descriptor);
+            invoke_method = nl_bytecode::MethodDescriptor {
+                flags: nl_bytecode::method_flags::PUBLIC,
+                name_index,
+                descriptor_index,
+                throws_types: Vec::new(),
+                max_locals: inner.max_locals(),
+                max_stack: inner.max_stack(),
+                code: inner.code,
+                exception_table: inner.exception_table,
+                line_table: Vec::new(),
+            };
+            nested_closures = inner.closures;
+        }
+
+        let fields: Vec<nl_bytecode::FieldDescriptor> = captures
+            .iter()
+            .map(|(name, ty, _)| {
+                let name_index = synth_cp.add_utf8(name.clone());
+                let type_index = synth_cp.add_type_desc(&type_descriptor(&expr_ty_to_type(ty)));
+                nl_bytecode::FieldDescriptor { flags: nl_bytecode::field_flags::PUBLIC, name_index, type_index }
+            })
+            .collect();
+
+        self.closures.push(nl_bytecode::Module {
+            version: nl_bytecode::module::VERSION,
+            constant_pool: synth_cp,
+            this_class: synth_this_class,
+            class_flags: 0,
+            super_class: 0,
+            interfaces: Vec::new(),
+            fields,
+            methods: vec![invoke_method],
+            hash_algo: nl_bytecode::HashAlgo::Sha256,
+        });
+        self.closures.append(&mut nested_closures);
+
+        // Creation site: allocate, then copy each capture's current value
+        // into the new object's field of the same name.
+        let class_index = self.cp.add_class(&synth_fqcn);
+        self.op_u16(Opcode::New, class_index, 1);
+        for (name, ty, outer_index) in &captures {
+            self.op(Opcode::Dup, 1);
+            self.op_u16(Opcode::Load, *outer_index, 1);
+            let field_class_index = self.cp.add_class(&synth_fqcn);
+            let name_index = self.cp.add_utf8(name.clone());
+            let type_index = self.cp.add_type_desc(&type_descriptor(&expr_ty_to_type(ty)));
+            let field_ref = self.cp.add_field_ref(field_class_index, name_index, type_index);
+            self.op_u16(Opcode::SetField, field_ref, -2);
+        }
+
+        Ok(ExprTy::Closure { params: param_expr_tys, return_ty: Box::new(deduced_return_ty), fqcn: synth_fqcn })
+    }
+
+    /// Invokes a closure whose receiver has already been pushed onto the
+    /// stack (by `compile_call`, from either a local or a captured field).
+    fn compile_closure_invoke(
+        &mut self,
+        params: &[ExprTy],
+        return_ty: &ExprTy,
+        fqcn: &str,
+        args: &[Expr],
+    ) -> Result<ExprTy, CodegenError> {
+        self.compile_call_args(args, params, "closure call")?;
+        let class_index = self.cp.add_class(fqcn);
+        let name_index = self.cp.add_utf8("invoke".to_string());
+        let param_types: Vec<Type> = params.iter().map(expr_ty_to_type).collect();
+        let descriptor = method_descriptor(&param_types, &expr_ty_to_type(return_ty));
+        let descriptor_index = self.cp.add_type_desc(&descriptor);
+        let method_ref = self.cp.add_method_ref(class_index, name_index, descriptor_index);
+        let result_delta = if *return_ty == ExprTy::Void { 0 } else { 1 };
+        self.op_u16(Opcode::InvokeClosure, method_ref, result_delta - args.len() as i32 - 1);
+        Ok(return_ty.clone())
     }
 
     /// `cond ? then : else` — a conditional branch, mirroring
@@ -371,16 +655,33 @@ impl<'a> Emitter<'a> {
 
     fn compile_assign(&mut self, target: &LValue, value: &Expr) -> Result<ExprTy, CodegenError> {
         match target {
-            LValue::Local(name) => {
-                let slot = self.lookup_local(name)?;
-                let value_ty = self.compile_expr(value)?;
-                self.coerce_value(&value_ty, &slot.ty, name)?;
-                // Leave a copy as the expression's own value (assignment is
-                // an expression, e.g. usable as `a = b = 1;`).
-                self.op(Opcode::Dup, 1);
-                self.op_u16(Opcode::Store, slot.index, -1);
-                Ok(slot.ty)
-            }
+            LValue::Local(name) => match self.resolve_ident(name)? {
+                IdentRef::Local(slot) => {
+                    let value_ty = self.compile_expr(value)?;
+                    self.coerce_value(&value_ty, &slot.ty, name)?;
+                    // Leave a copy as the expression's own value (assignment
+                    // is an expression, e.g. usable as `a = b = 1;`).
+                    self.op(Opcode::Dup, 1);
+                    self.op_u16(Opcode::Store, slot.index, -1);
+                    Ok(slot.ty)
+                }
+                IdentRef::CapturedField(field_ty) => {
+                    let value_ty = self.compile_expr(value)?;
+                    self.coerce_value(&value_ty, &field_ty, name)?;
+                    self.op(Opcode::Dup, 1);
+                    let tmp = self.declare_scratch_local(field_ty.clone());
+                    self.emit_store(tmp);
+                    self.op_u16(Opcode::Load, 0, 1);
+                    self.op(Opcode::Swap, 0);
+                    let class_index = self.cp.add_class(&self.this_fqcn.clone());
+                    let name_index = self.cp.add_utf8(name.clone());
+                    let type_index = self.cp.add_type_desc(&type_descriptor(&expr_ty_to_type(&field_ty)));
+                    let field_ref = self.cp.add_field_ref(class_index, name_index, type_index);
+                    self.op_u16(Opcode::SetField, field_ref, -2);
+                    self.op_u16(Opcode::Load, tmp, 1);
+                    Ok(field_ty)
+                }
+            },
             LValue::Field(target_expr, field_name) => {
                 let target_ty = self.compile_expr(target_expr)?;
                 let ExprTy::Object(fqcn) = &target_ty else {
@@ -444,7 +745,20 @@ impl<'a> Emitter<'a> {
     }
 
     fn compile_incr(&mut self, name: &str, delta: i16) -> Result<ExprTy, CodegenError> {
-        let slot = self.lookup_local(name)?;
+        let slot = match self.resolve_ident(name)? {
+            IdentRef::Local(slot) => slot,
+            // `IINC` operates on a local-variable slot by index; a captured
+            // variable is a field on `this` instead, which would need a
+            // separate load/add/store sequence — not implemented (rare
+            // enough in practice, and by-value capture already means the
+            // mutation wouldn't be observable outside the closure anyway;
+            // see `ExprTy::Closure`'s doc comment).
+            IdentRef::CapturedField(_) => {
+                return Err(CodegenError::Unsupported(format!(
+                    "'++'/'--' on captured closure variable '{name}' is not supported"
+                )))
+            }
+        };
         if slot.ty != ExprTy::Int {
             return Err(CodegenError::Unsupported(format!(
                 "'++'/'--' only supported on int, found {:?}",
@@ -456,6 +770,24 @@ impl<'a> Emitter<'a> {
     }
 
     fn compile_call(&mut self, name: &str, args: &[Expr]) -> Result<ExprTy, CodegenError> {
+        // `add(5, 3)` where `add` is a closure-typed local/capture, not a
+        // same-class static method — vm.md § Closures: "the compiler
+        // determines the closure's type signature at compile time".
+        match self.resolve_ident(name) {
+            Ok(IdentRef::Local(slot)) => {
+                if let ExprTy::Closure { params, return_ty, fqcn } = slot.ty {
+                    self.op_u16(Opcode::Load, slot.index, 1);
+                    return self.compile_closure_invoke(&params, &return_ty, &fqcn, args);
+                }
+            }
+            Ok(IdentRef::CapturedField(ty)) => {
+                if let ExprTy::Closure { params, return_ty, fqcn } = ty.clone() {
+                    self.emit_get_captured_field(name, &ty);
+                    return self.compile_closure_invoke(&params, &return_ty, &fqcn, args);
+                }
+            }
+            Err(_) => {}
+        }
         let sig = self
             .static_sigs
             .get(name)

@@ -19,11 +19,17 @@ pub use error::SemaError;
 /// an unresolved class/field/method defers to nl-codegen's harder error,
 /// same as unresolved calls already did before this phase.
 pub fn check_compile(files: &[SourceFile]) -> Result<(), SemaError> {
+    // Template classes (specs.md § Template class) are expanded into
+    // ordinary monomorphized classes before anything else sees them — see
+    // nl_syntax::monomorphize. Runs ahead of the prelude prepend below
+    // since exception classes are never templates.
+    let expanded = nl_syntax::monomorphize::expand(files.to_vec());
+
     // Built-in exception classes (nl_syntax::prelude) are implicitly part of
     // every program — see class_table::import_map, which seeds their simple
     // names so user code can reference them without a `use`.
     let mut all_files = nl_syntax::prelude::files();
-    all_files.extend_from_slice(files);
+    all_files.extend(expanded);
 
     check_duplicate_classes(&all_files)?;
     let classes = class_table::build_class_table(&all_files);

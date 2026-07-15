@@ -1,0 +1,36 @@
+---
+title: "Template class — Box<T> monomorphized to Box<int> and Box<float>"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "20 3.5"
+---
+
+#NLFILE phase5/templates/Box.nl
+namespace phase5.templates;
+template <type T>
+class Box {
+	private T value;
+	public construct(T value) {
+		this.value = value;
+	}
+	public T get() {
+		return this.value;
+	}
+	public void set(T value) {
+		this.value = value;
+	}
+}
+
+#NLFILE phase5/templates/Main.nl
+namespace phase5.templates;
+class Main {
+	public static int main(string[] args) {
+		Box<int> a = new Box<int>(10);
+		Box<float> b = new Box<float>(3.5);
+		a.set(20);
+		system.Out.print(system.Int.toString(a.get()));
+		system.Out.print(" ");
+		system.Out.print(system.Float.toString(b.get()));
+		return 0;
+	}
+}

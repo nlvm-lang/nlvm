@@ -1,0 +1,43 @@
+---
+title: "E017 — an overriding method may not declare a checked exception its parent didn't"
+file_separator: "#NLFILE"
+expected_compile_error: "E017"
+---
+
+#NLFILE phase5/e017/Boom.nl
+namespace phase5.e017;
+class Boom extends Exception {
+	public construct(string message) {
+		super(message);
+	}
+}
+
+#NLFILE phase5/e017/Zap.nl
+namespace phase5.e017;
+class Zap extends Exception {
+	public construct(string message) {
+		super(message);
+	}
+}
+
+#NLFILE phase5/e017/Base.nl
+namespace phase5.e017;
+class Base {
+	public construct() {}
+	public void risky() throws Boom {}
+}
+
+#NLFILE phase5/e017/Derived.nl
+namespace phase5.e017;
+class Derived extends Base {
+	public construct() { super(); }
+	public void risky() throws Boom, Zap {}
+}
+
+#NLFILE phase5/e017/Main.nl
+namespace phase5.e017;
+class Main {
+	public static int main(string[] args) {
+		return 0;
+	}
+}

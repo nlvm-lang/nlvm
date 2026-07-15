@@ -1,0 +1,36 @@
+---
+title: "E016 — an overriding method must keep declaring every checked exception its parent declares"
+file_separator: "#NLFILE"
+expected_compile_error: "E016"
+---
+
+#NLFILE phase5/e016/Boom.nl
+namespace phase5.e016;
+class Boom extends Exception {
+	public construct(string message) {
+		super(message);
+	}
+}
+
+#NLFILE phase5/e016/Base.nl
+namespace phase5.e016;
+use phase5.e016.Boom;
+class Base {
+	public construct() {}
+	public void risky() throws Boom {}
+}
+
+#NLFILE phase5/e016/Derived.nl
+namespace phase5.e016;
+class Derived extends Base {
+	public construct() { super(); }
+	public void risky() {}
+}
+
+#NLFILE phase5/e016/Main.nl
+namespace phase5.e016;
+class Main {
+	public static int main(string[] args) {
+		return 0;
+	}
+}

@@ -532,6 +532,34 @@ fn exec_step(
                     stack.push(result);
                 }
             }
+            Opcode::InvokeClosure => {
+                // vm.md § Closures: "pops the closure reference and the
+                // arguments from the stack, then calls the closure's
+                // invoke method." A closure is just an ordinary object
+                // whose synthetic class has one `invoke` method and one
+                // field per captured variable (see nl_codegen::closure) —
+                // dispatch is therefore identical to INVOKE_INSTANCE.
+                let method_ref_idx = read_u16!();
+                let (_static_fqcn, name, descriptor) = resolve_method_ref(module, method_ref_idx)?;
+                let param_count = count_params(&descriptor);
+                if stack.len() < param_count + 1 {
+                    return Err(VmError::Malformed("stack underflow on INVOKE_CLOSURE"));
+                }
+                let call_args = stack.split_off(stack.len() - param_count);
+                let receiver = stack.pop().ok_or(VmError::Malformed("stack underflow"))?;
+                if receiver.is_null() {
+                    return Err(throw_native("NullPointerException", "null pointer dereference"));
+                }
+                let Value::Object(obj) = &receiver else {
+                    return Err(VmError::Malformed("INVOKE_CLOSURE on non-object"));
+                };
+                let runtime_class = obj.borrow().class_name.clone();
+                let (target_module, target) = resolve_virtual(program, &runtime_class, &name, &descriptor)
+                    .ok_or_else(|| VmError::MethodNotFound(format!("{runtime_class}.{name}")))?;
+                if let Some(result) = call_instance(program, target_module, target, receiver, call_args)? {
+                    stack.push(result);
+                }
+            }
             Opcode::InvokeSpecial => {
                 let method_ref_idx = read_u16!();
                 let (class_fqcn, name, descriptor) = resolve_method_ref(module, method_ref_idx)?;
@@ -578,11 +606,6 @@ fn exec_step(
                 return Err(VmError::Thrown(v));
             }
 
-            other => {
-                return Err(VmError::Unsupported(format!(
-                    "{other:?} lands in a later milestone"
-                )))
-            }
         }
     *pc_ref = pc;
     Ok(Step::Continue)
