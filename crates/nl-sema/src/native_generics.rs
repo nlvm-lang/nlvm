@@ -17,12 +17,17 @@
 //! used as another native/user generic's own type argument (e.g.
 //! `system.List<system.List<int>>`) parses in principle (the split is
 //! bracket-depth-aware) but is out of scope for PLAN.md Phase 6 and
-//! untested. `entries()`/`forEach` (which need a synthetic `MapEntry<K,V>`
-//! class and closures-as-native-callbacks respectively) are not
+//! untested. `forEach` (which needs closures-as-native-callbacks) is not
 //! implemented, nor is the `T[] initial` list constructor's interaction
 //! with `ValueEquatable` — `contains`/map key equality fall back to
 //! primitive/string value equality or reference identity (see
 //! `nl_vm::native`), never `valueEquals`/`valueHash`.
+//!
+//! `system.MapEntry<K, V>` (stdlib.md § Result types) is covered as a
+//! third native generic: never constructed by user code, only returned by
+//! `Map.entries()` (and the for-each loop over a map, which desugars
+//! through it), with two public fields `key`/`value` typed from the
+//! mangled name like everything else here.
 
 use nl_syntax::ast::Type;
 
@@ -120,9 +125,42 @@ pub fn method_signature(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type
                 ("has", 1) => Some((vec![k.clone()], Type::Bool)),
                 ("keys", 0) => Some((vec![], Type::Array(Box::new(k.clone())))),
                 ("values", 0) => Some((vec![], Type::Array(Box::new(v.clone())))),
+                ("entries", 0) => Some((vec![], Type::Array(Box::new(Type::Named(entry_fqcn_of_map(fqcn)))))),
                 _ => None,
             }
         }
+        _ => None,
+    }
+}
+
+/// The mangled `MapEntry` instantiation matching a mangled `Map`
+/// instantiation — same type-argument list verbatim, so
+/// `"system.Map<string, int>"` -> `"system.MapEntry<string, int>"`.
+fn entry_fqcn_of_map(map_fqcn: &str) -> String {
+    format!("system.MapEntry<{}", &map_fqcn["system.Map<".len()..])
+}
+
+/// Public fields of a native generic result type — only
+/// `system.MapEntry<K, V>` has any (stdlib.md § system.MapEntry).
+pub fn field_ty(fqcn: &str, name: &str) -> Option<Type> {
+    if !fqcn.starts_with("system.MapEntry<") {
+        return None;
+    }
+    let args = type_args(fqcn);
+    match name {
+        "key" => args.first().cloned(),
+        "value" => args.get(1).cloned(),
+        _ => None,
+    }
+}
+
+/// Element type seen by a for-each loop over a native generic collection
+/// (vm.md § For-each loops): `T` for `system.List<T>`, `MapEntry<K, V>`
+/// for `system.Map<K, V>` (iteration goes through `entries()`).
+pub fn foreach_element_ty(fqcn: &str) -> Option<Type> {
+    match kind_of(fqcn)? {
+        "system.List" => type_args(fqcn).first().cloned(),
+        "system.Map" => Some(Type::Named(entry_fqcn_of_map(fqcn))),
         _ => None,
     }
 }

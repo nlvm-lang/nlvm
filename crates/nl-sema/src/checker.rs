@@ -442,17 +442,15 @@ impl<'a> MethodChecker<'a> {
             }
             Stmt::ForEach { ty, var, iterable, body } => {
                 let iterable_ty = self.check_expr(iterable, &mut assigned)?;
-                // Element type: `T` for a `T[]`, the `get(i)` return type
-                // for a `system.List<T>` instantiation. Anything else is
-                // left lenient (`Void`) — nl-codegen produces the precise
-                // "not iterable" error, same division of labor as unknown
-                // classes/methods. `system.Map` iteration needs `entries()`
-                // (vm.md § For-each loops), not implemented — see PLAN.md.
+                // Element type: `T` for a `T[]`, `T` for `system.List<T>`,
+                // `MapEntry<K, V>` for `system.Map<K, V>` (iteration
+                // desugars through `entries()` — vm.md § For-each loops).
+                // Anything else is left lenient (`Void`) — nl-codegen
+                // produces the precise "not iterable" error, same division
+                // of labor as unknown classes/methods.
                 let elem_ty = match &iterable_ty {
                     Type::Array(elem) => (**elem).clone(),
-                    Type::Named(fqcn) => crate::native_generics::method_signature(fqcn, "get", 1)
-                        .map(|(_, ret)| ret)
-                        .unwrap_or(Type::Void),
+                    Type::Named(fqcn) => crate::native_generics::foreach_element_ty(fqcn).unwrap_or(Type::Void),
                     _ => Type::Void,
                 };
                 self.push_scope();
@@ -612,6 +610,11 @@ impl<'a> MethodChecker<'a> {
                 let Type::Named(fqcn) = &target_ty else {
                     return Ok(Type::Void);
                 };
+                // `entry.key`/`entry.value` on a `system.MapEntry<K, V>` —
+                // native result type, absent from `self.classes`.
+                if let Some(ty) = crate::native_generics::field_ty(fqcn, name) {
+                    return Ok(ty);
+                }
                 Ok(self.field_ty(fqcn, name).unwrap_or(Type::Void))
             }
             Expr::MethodCall(target, name, args) => {

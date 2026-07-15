@@ -296,7 +296,18 @@ impl<'a> Emitter<'a> {
         body: &Block,
     ) -> Result<(), CodegenError> {
         self.push_scope();
-        let iterable_ty = self.compile_expr(iterable)?;
+        let mut iterable_ty = self.compile_expr(iterable)?;
+        // A map is iterated through its `entries()` array (vm.md § For-each
+        // loops): call it right away and loop over the result exactly like
+        // a plain array of `MapEntry<K, V>`.
+        if let ExprTy::Object(fqcn) = &iterable_ty {
+            if fqcn.starts_with("system.Map<") {
+                let (_, ret) = crate::native_generics::method_signature(fqcn, "entries", 0)
+                    .expect("system.Map instantiation always has entries()");
+                self.emit_native_instance_call(&fqcn.clone(), "entries", 0)?;
+                iterable_ty = expr_ty_of(&ret);
+            }
+        }
         let (list_fqcn, elem_ty) = match &iterable_ty {
             ExprTy::Array(elem) => (None, (**elem).clone()),
             ExprTy::Object(fqcn) if fqcn.starts_with("system.List<") => {
@@ -306,7 +317,7 @@ impl<'a> Emitter<'a> {
             }
             other => {
                 return Err(CodegenError::Unsupported(format!(
-                    "for-each over non-iterable type {other:?} (arrays and system.List only)"
+                    "for-each over non-iterable type {other:?} (arrays, system.List and system.Map only)"
                 )))
             }
         };

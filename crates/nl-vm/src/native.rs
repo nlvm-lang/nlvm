@@ -702,6 +702,29 @@ fn dispatch_map(name: &str, receiver: &Value, mut args: Vec<Value>) -> Result<Op
         }
         "keys" => Ok(Some(Value::Array(Rc::new(RefCell::new(keys.borrow().clone()))))),
         "values" => Ok(Some(Value::Array(Rc::new(RefCell::new(values.borrow().clone()))))),
+        // stdlib.md § system.MapEntry — result objects with two public
+        // fields, classed under the matching mangled `MapEntry`
+        // instantiation (`"system.Map<string, int>"` ->
+        // `"system.MapEntry<string, int>"`). Iteration order == `keys()`'s,
+        // as the spec requires ("consistent").
+        "entries" => {
+            let Value::Object(obj) = receiver else {
+                return Err(VmError::Malformed("expected Map receiver"));
+            };
+            let entry_class = format!("system.MapEntry<{}", &obj.borrow().class_name["system.Map<".len()..]);
+            let entries: Vec<Value> = keys
+                .borrow()
+                .iter()
+                .zip(values.borrow().iter())
+                .map(|(k, v)| {
+                    let mut fields = HashMap::new();
+                    fields.insert("key".to_string(), k.clone());
+                    fields.insert("value".to_string(), v.clone());
+                    Value::Object(Rc::new(RefCell::new(Object { class_name: entry_class.clone(), fields })))
+                })
+                .collect();
+            Ok(Some(Value::Array(Rc::new(RefCell::new(entries)))))
+        }
         _ => Err(VmError::MethodNotFound(format!("system.Map.{name}"))),
     }
 }

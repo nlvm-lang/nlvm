@@ -131,9 +131,32 @@ pub fn method_signature(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type
                 ("has", 1) => Some((vec![k.clone()], Type::Bool)),
                 ("keys", 0) => Some((vec![], Type::Array(Box::new(k.clone())))),
                 ("values", 0) => Some((vec![], Type::Array(Box::new(v.clone())))),
+                ("entries", 0) => Some((vec![], Type::Array(Box::new(Type::Named(entry_fqcn_of_map(fqcn)))))),
                 _ => None,
             }
         }
+        _ => None,
+    }
+}
+
+/// The mangled `MapEntry` instantiation matching a mangled `Map`
+/// instantiation — same type-argument list verbatim, so
+/// `"system.Map<string, int>"` -> `"system.MapEntry<string, int>"`.
+fn entry_fqcn_of_map(map_fqcn: &str) -> String {
+    format!("system.MapEntry<{}", &map_fqcn["system.Map<".len()..])
+}
+
+/// Public fields of a native generic result type — only
+/// `system.MapEntry<K, V>` has any (stdlib.md § system.MapEntry). Mirrors
+/// `nl_sema::native_generics::field_ty`.
+pub fn field_ty(fqcn: &str, name: &str) -> Option<Type> {
+    if !fqcn.starts_with("system.MapEntry<") {
+        return None;
+    }
+    let args = type_args(fqcn);
+    match name {
+        "key" => args.first().cloned(),
+        "value" => args.get(1).cloned(),
         _ => None,
     }
 }

@@ -939,7 +939,13 @@ impl<'a> Emitter<'a> {
             )));
         };
         let fqcn = fqcn.clone();
-        let field = self.lookup_field(&fqcn, name)?;
+        // `entry.key`/`entry.value` on a `system.MapEntry<K, V>` — native
+        // result type with no `ClassInfo`, field types come from the
+        // mangled name (see `crate::native_generics::field_ty`).
+        let field = match crate::native_generics::field_ty(&fqcn, name) {
+            Some(ty) => ty,
+            None => self.lookup_field(&fqcn, name)?,
+        };
         let field_ty = expr_ty_of(&field);
         let class_index = self.cp.add_class(&fqcn);
         let name_index = self.cp.add_utf8(name.to_string());

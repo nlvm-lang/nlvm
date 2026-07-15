@@ -1,0 +1,28 @@
+---
+title: "Phase 6 — Map.entries() and for-each over a map (MapEntry)"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "2 one->1 two->2 |one=1|two=2"
+---
+
+#NLFILE phase6/mapentries/Main.nl
+namespace phase6.mapentries;
+class Main {
+	public static int main(string[] args) {
+		auto map = new system.Map<string, int>();
+		map.set("one", 1);
+		map.set("two", 2);
+		auto pairs = map.entries();
+		system.Out.print(system.Int.toString(pairs.length()));
+		system.Out.print(" ");
+		for (int i = 0; i < pairs.length(); i++) {
+			auto entry = pairs[i];
+			system.Out.print(entry.key + "->" + system.Int.toString(entry.value));
+			system.Out.print(" ");
+		}
+		for (const auto entry : map) {
+			system.Out.print("|" + entry.key + "=" + system.Int.toString(entry.value));
+		}
+		return 0;
+	}
+}
