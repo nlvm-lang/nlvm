@@ -85,6 +85,8 @@ pub fn is_native_class(fqcn: &str) -> bool {
             | "system.io.Path"
             | "system.SecureRandom"
             | "system.Uuid"
+            | "system.net.TcpStream"
+            | "system.net.Http"
     )
 }
 
@@ -348,6 +350,31 @@ pub fn dispatch(program: &Program, fqcn: &str, name: &str, mut args: Vec<Value>)
         // stdlib.md § system.Uuid — UUID v4, 122 random bits from the same
         // CSPRNG as SecureRandom, version/variant nibbles set per RFC 4122.
         ("system.Uuid", "random") => Ok(Some(Value::Str(Rc::new(uuid_v4()?)))),
+        // stdlib.md § system.net.TcpStream — the one *static* TcpStream
+        // method (the rest is instance dispatch, see `dispatch_tcp_stream`);
+        // same object-building shape as `system.io.File.open`.
+        ("system.net.TcpStream", "connect") => {
+            let host = str_at(&args, 0)?;
+            let port = int_at(&args, 1)?;
+            let stream = std::net::TcpStream::connect((host.as_str(), port as u16))
+                .map_err(|e| throw_native("IOException", format!("connect {host}:{port}: {e}")))?;
+            let id = program.register_tcp_stream(stream);
+            let mut fields = HashMap::new();
+            fields.insert("__fd__".to_string(), Value::Int(id));
+            Ok(Some(Value::Object(Rc::new(RefCell::new(Object {
+                class_name: "system.net.TcpStream".to_string(),
+                fields,
+            })))))
+        }
+        ("system.net.Http", "get") => {
+            let url = str_at(&args, 0)?;
+            crate::net_http::http_request(&url, "GET", None).map(Some)
+        }
+        ("system.net.Http", "post") => {
+            let url = str_at(&args, 0)?;
+            let body = str_at(&args, 1)?;
+            crate::net_http::http_request(&url, "POST", Some(&body)).map(Some)
+        }
         _ => Err(VmError::MethodNotFound(format!("{fqcn}.{name}"))),
     }
 }
@@ -516,7 +543,7 @@ fn throw_format_error(message: impl Into<String>) -> VmError {
     throw_native("NumberFormatException", message)
 }
 
-fn throw_native(class_name: &str, message: impl Into<String>) -> VmError {
+pub(crate) fn throw_native(class_name: &str, message: impl Into<String>) -> VmError {
     let mut fields = HashMap::new();
     fields.insert("message".to_string(), Value::Str(Rc::new(message.into())));
     VmError::Thrown(Value::Object(Rc::new(RefCell::new(crate::value::Object {
@@ -534,7 +561,14 @@ fn throw_native(class_name: &str, message: impl Into<String>) -> VmError {
 /// `is_random_class`/`dispatch_random` below) and ignores `program`
 /// entirely.
 pub fn is_native_instance_class(fqcn: &str) -> bool {
-    matches!(fqcn, "system.io.FileHandle" | "system.Random")
+    matches!(
+        fqcn,
+        "system.io.FileHandle"
+            | "system.Random"
+            | "system.net.TcpListener"
+            | "system.net.TcpStream"
+            | "system.net.UdpSocket"
+    )
 }
 
 pub fn dispatch_native_instance(
@@ -548,8 +582,19 @@ pub fn dispatch_native_instance(
     let Value::Object(obj) = receiver else {
         return Err(VmError::Malformed("expected native instance receiver"));
     };
-    if obj.borrow().class_name == "system.Random" {
-        return dispatch_random(name, receiver, args);
+    // A `.clone()`'d owned `String` rather than matching directly on
+    // `obj.borrow().class_name.as_str()` — a match scrutinee's temporary
+    // `Ref` is kept alive for the whole match, including the arm bodies,
+    // and `dispatch_random`/`dispatch_tcp_*` all re-borrow the same
+    // `RefCell` (e.g. `dispatch_random`'s `obj.borrow_mut()`), which would
+    // panic with "already borrowed" otherwise.
+    let class_name = obj.borrow().class_name.clone();
+    match class_name.as_str() {
+        "system.Random" => return dispatch_random(name, receiver, args),
+        "system.net.TcpListener" => return dispatch_tcp_listener(program, name, receiver, args),
+        "system.net.TcpStream" => return dispatch_tcp_stream(program, name, receiver, args),
+        "system.net.UdpSocket" => return dispatch_udp_socket(program, name, receiver, args),
+        _ => {}
     }
     let id = match obj.borrow().fields.get("__fd__") {
         Some(Value::Int(id)) => *id,
@@ -746,6 +791,232 @@ fn dispatch_random(name: &str, receiver: &Value, mut args: Vec<Value>) -> Result
     };
     obj.borrow_mut().fields.insert("__state__".to_string(), Value::Int(state as i64));
     Ok(Some(result))
+}
+
+/// stdlib.md § system.net.TcpListener/TcpStream/UdpSocket — real OS
+/// sockets via `std::net`. Same shape as `system.io.FileHandle`: the
+/// object only carries an `"__fd__"` index into a `Program`-level table
+/// (`Program::{tcp_listeners,tcp_streams,udp_sockets}`), since the actual
+/// `std::net` value can't live on a `Value::Object` field. `TcpListener`
+/// and `UdpSocket` are constructible directly by user code (`new
+/// system.net.TcpListener(...)`), so — like `system.Random` — they're
+/// intercepted at `NEW`/`INVOKE_SPECIAL <construct>` in
+/// `interpreter::exec_step` (`is_net_listener_class`/`is_net_udp_class`)
+/// rather than built by a static factory. `TcpStream` is the opposite:
+/// never constructed with `new`, only via the static
+/// `TcpStream.connect(...)` (handled in `dispatch`, below) or
+/// `TcpListener.accept()` (`dispatch_tcp_listener`) — both build the
+/// object directly, the same way `File.open` builds a `FileHandle`.
+pub fn is_net_listener_class(fqcn: &str) -> bool {
+    fqcn == "system.net.TcpListener"
+}
+
+pub fn is_net_udp_class(fqcn: &str) -> bool {
+    fqcn == "system.net.UdpSocket"
+}
+
+pub fn new_tcp_listener_object() -> Value {
+    let mut fields = HashMap::new();
+    fields.insert("__fd__".to_string(), Value::Int(-1));
+    Value::Object(Rc::new(RefCell::new(Object { class_name: "system.net.TcpListener".to_string(), fields })))
+}
+
+pub fn construct_tcp_listener(program: &Program, receiver: &Value, args: Vec<Value>) -> Result<(), VmError> {
+    let host = str_at(&args, 0)?;
+    let port = int_at(&args, 1)?;
+    let listener = std::net::TcpListener::bind((host.as_str(), port as u16))
+        .map_err(|e| throw_native("IOException", format!("bind {host}:{port}: {e}")))?;
+    let id = program.register_tcp_listener(listener);
+    let Value::Object(obj) = receiver else {
+        return Err(VmError::Malformed("expected TcpListener receiver"));
+    };
+    obj.borrow_mut().fields.insert("__fd__".to_string(), Value::Int(id));
+    Ok(())
+}
+
+fn dispatch_tcp_listener(
+    program: &Program,
+    name: &str,
+    receiver: &Value,
+    _args: Vec<Value>,
+) -> Result<Option<Value>, VmError> {
+    let Value::Object(obj) = receiver else {
+        return Err(VmError::Malformed("expected TcpListener receiver"));
+    };
+    let id = match obj.borrow().fields.get("__fd__") {
+        Some(Value::Int(id)) => *id,
+        _ => return Err(VmError::Malformed("malformed TcpListener object")),
+    };
+    match name {
+        "close" => {
+            program.close_tcp_listener(id);
+            Ok(None)
+        }
+        "accept" => {
+            let (stream, _addr) = program
+                .with_tcp_listener(id, |l| l.accept())
+                .ok_or_else(|| throw_native("IOException", "accept on a closed listener"))?
+                .map_err(|e| throw_native("IOException", e.to_string()))?;
+            let stream_id = program.register_tcp_stream(stream);
+            let mut fields = HashMap::new();
+            fields.insert("__fd__".to_string(), Value::Int(stream_id));
+            Ok(Some(Value::Object(Rc::new(RefCell::new(Object {
+                class_name: "system.net.TcpStream".to_string(),
+                fields,
+            })))))
+        }
+        _ => Err(VmError::MethodNotFound(format!("system.net.TcpListener.{name}"))),
+    }
+}
+
+fn dispatch_tcp_stream(program: &Program, name: &str, receiver: &Value, args: Vec<Value>) -> Result<Option<Value>, VmError> {
+    use std::io::{Read, Write};
+
+    let Value::Object(obj) = receiver else {
+        return Err(VmError::Malformed("expected TcpStream receiver"));
+    };
+    let id = match obj.borrow().fields.get("__fd__") {
+        Some(Value::Int(id)) => *id,
+        _ => return Err(VmError::Malformed("malformed TcpStream object")),
+    };
+    if name == "close" {
+        program.close_tcp_stream(id);
+        return Ok(None);
+    }
+    let closed = || throw_native("IOException", format!("{name} on a closed stream"));
+    // Both `read` and `write` take `(byte[] data, int offset, int length)`
+    // — same bounds-checking rule as `system.io.FileHandle` (stdlib.md).
+    let Some(Value::Array(buffer)) = args.first().cloned() else {
+        return Err(VmError::Malformed("expected byte[] argument to native call"));
+    };
+    let offset = int_at(&args, 1)?;
+    let length = int_at(&args, 2)?;
+    let buf_len = buffer.borrow().len() as i64;
+    if offset < 0 || length < 0 || offset.checked_add(length).is_none_or(|end| end > buf_len) {
+        return Err(throw_native(
+            "IndexOutOfBoundsException",
+            format!("offset {offset}, length {length}, buffer length {buf_len}"),
+        ));
+    }
+    match name {
+        "read" => {
+            let mut tmp = vec![0u8; length as usize];
+            let n = program
+                .with_tcp_stream(id, |s| s.read(&mut tmp))
+                .ok_or_else(closed)?
+                .map_err(|e| throw_native("IOException", e.to_string()))?;
+            let mut buf = buffer.borrow_mut();
+            for (i, byte) in tmp[..n].iter().enumerate() {
+                buf[offset as usize + i] = Value::Byte(*byte);
+            }
+            Ok(Some(Value::Int(n as i64)))
+        }
+        "write" => {
+            let data: Vec<u8> = buffer.borrow()[offset as usize..(offset + length) as usize]
+                .iter()
+                .map(|v| match v {
+                    Value::Byte(b) => Ok(*b),
+                    Value::Int(i) => Ok(*i as u8),
+                    _ => Err(VmError::Malformed("expected byte[] argument to native call")),
+                })
+                .collect::<Result<_, _>>()?;
+            program
+                .with_tcp_stream(id, |s| s.write_all(&data))
+                .ok_or_else(closed)?
+                .map_err(|e| throw_native("IOException", e.to_string()))?;
+            Ok(None)
+        }
+        _ => Err(VmError::MethodNotFound(format!("system.net.TcpStream.{name}"))),
+    }
+}
+
+pub fn new_udp_socket_object() -> Value {
+    let mut fields = HashMap::new();
+    fields.insert("__fd__".to_string(), Value::Int(-1));
+    Value::Object(Rc::new(RefCell::new(Object { class_name: "system.net.UdpSocket".to_string(), fields })))
+}
+
+/// `construct()` takes no arguments and declares no `throws` (stdlib.md),
+/// but still needs a real OS socket underneath so `send()` works without
+/// an explicit `bind()` first — bound to an ephemeral port, which for a
+/// local allocation essentially never fails; `bind(host, port)` later
+/// swaps in a socket bound to the caller's chosen address (see
+/// `Program::rebind_udp_socket`).
+pub fn construct_udp_socket(program: &Program, receiver: &Value) -> Result<(), VmError> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0")
+        .map_err(|e| throw_native("IOException", format!("failed to create UDP socket: {e}")))?;
+    let id = program.register_udp_socket(socket);
+    let Value::Object(obj) = receiver else {
+        return Err(VmError::Malformed("expected UdpSocket receiver"));
+    };
+    obj.borrow_mut().fields.insert("__fd__".to_string(), Value::Int(id));
+    Ok(())
+}
+
+fn dispatch_udp_socket(program: &Program, name: &str, receiver: &Value, args: Vec<Value>) -> Result<Option<Value>, VmError> {
+    let Value::Object(obj) = receiver else {
+        return Err(VmError::Malformed("expected UdpSocket receiver"));
+    };
+    let id = match obj.borrow().fields.get("__fd__") {
+        Some(Value::Int(id)) => *id,
+        _ => return Err(VmError::Malformed("malformed UdpSocket object")),
+    };
+    match name {
+        "close" => {
+            program.close_udp_socket(id);
+            Ok(None)
+        }
+        "bind" => {
+            let host = str_at(&args, 0)?;
+            let port = int_at(&args, 1)?;
+            let socket = std::net::UdpSocket::bind((host.as_str(), port as u16))
+                .map_err(|e| throw_native("IOException", format!("bind {host}:{port}: {e}")))?;
+            program.rebind_udp_socket(id, socket);
+            Ok(None)
+        }
+        "send" => {
+            let host = str_at(&args, 0)?;
+            let port = int_at(&args, 1)?;
+            let Some(Value::Array(buffer)) = args.get(2).cloned() else {
+                return Err(VmError::Malformed("expected byte[] argument to native call"));
+            };
+            let data: Vec<u8> = buffer
+                .borrow()
+                .iter()
+                .map(|v| match v {
+                    Value::Byte(b) => Ok(*b),
+                    Value::Int(i) => Ok(*i as u8),
+                    _ => Err(VmError::Malformed("expected byte[] argument to native call")),
+                })
+                .collect::<Result<_, _>>()?;
+            program
+                .with_udp_socket(id, |s| s.send_to(&data, (host.as_str(), port as u16)))
+                .ok_or_else(|| throw_native("IOException", "send on a closed socket"))?
+                .map_err(|e| throw_native("IOException", e.to_string()))?;
+            Ok(None)
+        }
+        // No offset/length (stdlib.md): fills from index 0, truncating a
+        // datagram larger than the buffer (`UdpSocket::recv`'s own
+        // behavior on a too-small buffer already matches — the excess is
+        // discarded, not an error).
+        "receive" => {
+            let Some(Value::Array(buffer)) = args.first().cloned() else {
+                return Err(VmError::Malformed("expected byte[] argument to native call"));
+            };
+            let buf_len = buffer.borrow().len();
+            let mut tmp = vec![0u8; buf_len];
+            let n = program
+                .with_udp_socket(id, |s| s.recv(&mut tmp))
+                .ok_or_else(|| throw_native("IOException", "receive on a closed socket"))?
+                .map_err(|e| throw_native("IOException", e.to_string()))?;
+            let mut buf = buffer.borrow_mut();
+            for (i, byte) in tmp[..n].iter().enumerate() {
+                buf[i] = Value::Byte(*byte);
+            }
+            Ok(Some(Value::Int(n as i64)))
+        }
+        _ => Err(VmError::MethodNotFound(format!("system.net.UdpSocket.{name}"))),
+    }
 }
 
 pub fn is_native_generic_class(fqcn: &str) -> bool {

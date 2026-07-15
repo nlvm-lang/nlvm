@@ -37,6 +37,14 @@ fn file_mode() -> Type {
     Type::Named("system.io.FileMode".to_string())
 }
 
+fn tcp_stream() -> Type {
+    Type::Named("system.net.TcpStream".to_string())
+}
+
+fn http_response() -> Type {
+    Type::Named("system.net.HttpResponse".to_string())
+}
+
 /// `system.io.FileMode.<name>` — `None` if `fqcn` isn't `"system.io.FileMode"`
 /// or `name` isn't one of the six modes stdlib.md documents. See this
 /// module's doc comment.
@@ -118,6 +126,26 @@ pub fn lookup(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>, Type)> 
         ("system.SecureRandom", "nextInt", 0) => Some((vec![], Type::Int)),
         ("system.SecureRandom", "nextInt", 1) => Some((vec![Type::Int], Type::Int)),
         ("system.Uuid", "random", 0) => Some((vec![], Type::StringT)),
+        // stdlib.md § system.net.TcpStream/Http — `connect`/`get`/`post`
+        // are the only *static* network methods (everything else on these
+        // classes is instance dispatch, see `instance_lookup`).
+        ("system.net.TcpStream", "connect", 2) => Some((vec![Type::StringT, Type::Int], tcp_stream())),
+        ("system.net.Http", "get", 1) => Some((vec![Type::StringT], http_response())),
+        ("system.net.Http", "post", 2) => Some((vec![Type::StringT, Type::StringT], http_response())),
+        _ => None,
+    }
+}
+
+/// `system.net.HttpResponse`'s public fields (stdlib.md § Result types) —
+/// a native result type like `system.MapEntry<K,V>`, but non-generic, so
+/// it doesn't go through `native_generics::field_ty`; only ever produced
+/// by `system.net.Http.get`/`post`, never constructed by user code.
+pub fn result_field_ty(fqcn: &str, name: &str) -> Option<Type> {
+    let nullable = |t: Type| Type::Union(vec![t, Type::NullT]);
+    match (fqcn, name) {
+        ("system.net.HttpResponse", "statusCode") => Some(Type::Int),
+        ("system.net.HttpResponse", "body") => Some(Type::StringT),
+        ("system.net.HttpResponse", "headers") => Some(nullable(Type::Array(Box::new(Type::StringT)))),
         _ => None,
     }
 }
@@ -127,7 +155,10 @@ pub fn lookup(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>, Type)> 
 /// classes in `lookup`, its methods dispatch through `INVOKE_INSTANCE` on
 /// the receiver's runtime class (see `nl_vm::native`).
 pub fn is_native_instance(fqcn: &str) -> bool {
-    matches!(fqcn, "system.io.FileHandle" | "system.Random")
+    matches!(
+        fqcn,
+        "system.io.FileHandle" | "system.Random" | "system.net.TcpListener" | "system.net.TcpStream" | "system.net.UdpSocket"
+    )
 }
 
 /// Instance-method signatures for `is_native_instance` classes, keyed by
@@ -147,6 +178,17 @@ pub fn instance_lookup(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>
         ("system.Random", "nextInt", 0) => Some((vec![], Type::Int)),
         ("system.Random", "nextInt", 1) => Some((vec![Type::Int], Type::Int)),
         ("system.Random", "nextFloat", 0) => Some((vec![], Type::Float)),
+        ("system.net.TcpListener", "accept", 0) => Some((vec![], tcp_stream())),
+        ("system.net.TcpListener", "close", 0) => Some((vec![], Type::Void)),
+        ("system.net.TcpStream", "read", 3) => Some((vec![byte_array.clone(), Type::Int, Type::Int], Type::Int)),
+        ("system.net.TcpStream", "write", 3) => Some((vec![byte_array, Type::Int, Type::Int], Type::Void)),
+        ("system.net.TcpStream", "close", 0) => Some((vec![], Type::Void)),
+        ("system.net.UdpSocket", "bind", 2) => Some((vec![Type::StringT, Type::Int], Type::Void)),
+        ("system.net.UdpSocket", "send", 3) => {
+            Some((vec![Type::StringT, Type::Int, Type::Array(Box::new(Type::Byte))], Type::Void))
+        }
+        ("system.net.UdpSocket", "receive", 1) => Some((vec![Type::Array(Box::new(Type::Byte))], Type::Int)),
+        ("system.net.UdpSocket", "close", 0) => Some((vec![], Type::Void)),
         _ => None,
     }
 }
@@ -164,6 +206,10 @@ pub fn throws(fqcn: &str, name: &str) -> &'static [&'static str] {
         ("system.io.File", "glob") => &["IOException"],
         ("system.io.Directory", "list" | "create" | "remove") => &["IOException"],
         ("system.io.FileHandle", "read" | "readLine" | "write" | "flush") => &["IOException"],
+        ("system.net.TcpListener", "construct" | "accept") => &["IOException"],
+        ("system.net.TcpStream", "connect" | "read" | "write") => &["IOException"],
+        ("system.net.UdpSocket", "bind" | "send" | "receive") => &["IOException"],
+        ("system.net.Http", "get" | "post") => &["IOException"],
         _ => &[],
     }
 }

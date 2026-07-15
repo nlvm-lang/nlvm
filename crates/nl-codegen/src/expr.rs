@@ -964,7 +964,10 @@ impl<'a> Emitter<'a> {
         // mangled name (see `crate::native_generics::field_ty`).
         let field = match crate::native_generics::field_ty(&fqcn, name) {
             Some(ty) => ty,
-            None => self.lookup_field(&fqcn, name)?,
+            None => match crate::stdlib::result_field_ty(&fqcn, name) {
+                Some(ty) => ty,
+                None => self.lookup_field(&fqcn, name)?,
+            },
         };
         let field_ty = expr_ty_of(&field);
         let class_index = self.cp.add_class(&fqcn);

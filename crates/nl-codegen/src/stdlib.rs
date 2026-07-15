@@ -23,6 +23,8 @@ pub fn is_stdlib_class(fqcn: &str) -> bool {
             | "system.io.Path"
             | "system.SecureRandom"
             | "system.Uuid"
+            | "system.net.TcpStream"
+            | "system.net.Http"
     )
 }
 
@@ -32,6 +34,14 @@ fn file_handle() -> Type {
 
 fn file_mode() -> Type {
     Type::Named("system.io.FileMode".to_string())
+}
+
+fn tcp_stream() -> Type {
+    Type::Named("system.net.TcpStream".to_string())
+}
+
+fn http_response() -> Type {
+    Type::Named("system.net.HttpResponse".to_string())
 }
 
 /// `system.io.FileMode.<name>` int constant, or `None` if unknown — mirrors
@@ -67,6 +77,17 @@ pub fn instance_signature(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Ty
         ("system.Random", "nextInt", 0) => Some((vec![], Type::Int)),
         ("system.Random", "nextInt", 1) => Some((vec![Type::Int], Type::Int)),
         ("system.Random", "nextFloat", 0) => Some((vec![], Type::Float)),
+        ("system.net.TcpListener", "accept", 0) => Some((vec![], tcp_stream())),
+        ("system.net.TcpListener", "close", 0) => Some((vec![], Type::Void)),
+        ("system.net.TcpStream", "read", 3) => Some((vec![byte_array.clone(), Type::Int, Type::Int], Type::Int)),
+        ("system.net.TcpStream", "write", 3) => Some((vec![byte_array, Type::Int, Type::Int], Type::Void)),
+        ("system.net.TcpStream", "close", 0) => Some((vec![], Type::Void)),
+        ("system.net.UdpSocket", "bind", 2) => Some((vec![Type::StringT, Type::Int], Type::Void)),
+        ("system.net.UdpSocket", "send", 3) => {
+            Some((vec![Type::StringT, Type::Int, Type::Array(Box::new(Type::Byte))], Type::Void))
+        }
+        ("system.net.UdpSocket", "receive", 1) => Some((vec![Type::Array(Box::new(Type::Byte))], Type::Int)),
+        ("system.net.UdpSocket", "close", 0) => Some((vec![], Type::Void)),
         _ => None,
     }
 }
@@ -80,6 +101,8 @@ pub fn ctor_param_types(fqcn: &str, argc: usize) -> Option<Vec<Type>> {
     match (fqcn, argc) {
         ("system.Random", 0) => Some(vec![]),
         ("system.Random", 1) => Some(vec![Type::Int]),
+        ("system.net.TcpListener", 2) => Some(vec![Type::StringT, Type::Int]),
+        ("system.net.UdpSocket", 0) => Some(vec![]),
         _ => None,
     }
 }
@@ -157,6 +180,24 @@ pub fn signature(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>, Type
         ("system.SecureRandom", "nextInt", 0) => Some((vec![], Type::Int)),
         ("system.SecureRandom", "nextInt", 1) => Some((vec![Type::Int], Type::Int)),
         ("system.Uuid", "random", 0) => Some((vec![], Type::StringT)),
+        ("system.net.TcpStream", "connect", 2) => Some((vec![Type::StringT, Type::Int], tcp_stream())),
+        ("system.net.Http", "get", 1) => Some((vec![Type::StringT], http_response())),
+        ("system.net.Http", "post", 2) => Some((vec![Type::StringT, Type::StringT], http_response())),
+        _ => None,
+    }
+}
+
+/// `system.net.HttpResponse`'s public fields — mirrors
+/// `nl_sema::stdlib::result_field_ty` (same non-generic native result type
+/// as `system.MapEntry<K,V>` but without a mangled name to parse types
+/// out of, so it gets its own small table instead of going through
+/// `native_generics::field_ty`).
+pub fn result_field_ty(fqcn: &str, name: &str) -> Option<Type> {
+    let nullable = |t: Type| Type::Union(vec![t, Type::NullT]);
+    match (fqcn, name) {
+        ("system.net.HttpResponse", "statusCode") => Some(Type::Int),
+        ("system.net.HttpResponse", "body") => Some(Type::StringT),
+        ("system.net.HttpResponse", "headers") => Some(nullable(Type::Array(Box::new(Type::StringT)))),
         _ => None,
     }
 }

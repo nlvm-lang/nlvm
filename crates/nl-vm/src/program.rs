@@ -27,6 +27,13 @@ pub struct Program {
     /// dead — stdlib.md: "After the handle has been closed, any call to
     /// read, readLine, write, or flush throws IOException").
     file_handles: RefCell<Vec<Option<std::fs::File>>>,
+    /// Same pattern as `file_handles`, one table per `system.net.*` handle
+    /// class (see `crate::native`'s network section). Kept as three
+    /// separate tables rather than one enum table since each handle class
+    /// only ever indexes its own.
+    tcp_listeners: RefCell<Vec<Option<std::net::TcpListener>>>,
+    tcp_streams: RefCell<Vec<Option<std::net::TcpStream>>>,
+    udp_sockets: RefCell<Vec<Option<std::net::UdpSocket>>>,
 }
 
 impl Program {
@@ -42,6 +49,9 @@ impl Program {
             stdout: RefCell::new(String::new()),
             stderr: RefCell::new(String::new()),
             file_handles: RefCell::new(Vec::new()),
+            tcp_listeners: RefCell::new(Vec::new()),
+            tcp_streams: RefCell::new(Vec::new()),
+            udp_sockets: RefCell::new(Vec::new()),
         }
     }
 
@@ -80,6 +90,68 @@ impl Program {
     pub fn with_file<R>(&self, id: i64, f: impl FnOnce(&mut std::fs::File) -> R) -> Option<R> {
         let mut handles = self.file_handles.borrow_mut();
         handles.get_mut(id as usize)?.as_mut().map(f)
+    }
+
+    pub fn register_tcp_listener(&self, listener: std::net::TcpListener) -> i64 {
+        let mut listeners = self.tcp_listeners.borrow_mut();
+        listeners.push(Some(listener));
+        (listeners.len() - 1) as i64
+    }
+
+    pub fn close_tcp_listener(&self, id: i64) {
+        if let Some(slot) = self.tcp_listeners.borrow_mut().get_mut(id as usize) {
+            *slot = None;
+        }
+    }
+
+    pub fn with_tcp_listener<R>(&self, id: i64, f: impl FnOnce(&mut std::net::TcpListener) -> R) -> Option<R> {
+        let mut listeners = self.tcp_listeners.borrow_mut();
+        listeners.get_mut(id as usize)?.as_mut().map(f)
+    }
+
+    pub fn register_tcp_stream(&self, stream: std::net::TcpStream) -> i64 {
+        let mut streams = self.tcp_streams.borrow_mut();
+        streams.push(Some(stream));
+        (streams.len() - 1) as i64
+    }
+
+    pub fn close_tcp_stream(&self, id: i64) {
+        if let Some(slot) = self.tcp_streams.borrow_mut().get_mut(id as usize) {
+            *slot = None;
+        }
+    }
+
+    pub fn with_tcp_stream<R>(&self, id: i64, f: impl FnOnce(&mut std::net::TcpStream) -> R) -> Option<R> {
+        let mut streams = self.tcp_streams.borrow_mut();
+        streams.get_mut(id as usize)?.as_mut().map(f)
+    }
+
+    pub fn register_udp_socket(&self, socket: std::net::UdpSocket) -> i64 {
+        let mut sockets = self.udp_sockets.borrow_mut();
+        sockets.push(Some(socket));
+        (sockets.len() - 1) as i64
+    }
+
+    pub fn close_udp_socket(&self, id: i64) {
+        if let Some(slot) = self.udp_sockets.borrow_mut().get_mut(id as usize) {
+            *slot = None;
+        }
+    }
+
+    pub fn with_udp_socket<R>(&self, id: i64, f: impl FnOnce(&mut std::net::UdpSocket) -> R) -> Option<R> {
+        let mut sockets = self.udp_sockets.borrow_mut();
+        sockets.get_mut(id as usize)?.as_mut().map(f)
+    }
+
+    /// `UdpSocket.bind(host, port)` re-binds the *same* handle to a chosen
+    /// address — `construct()` already gave it an OS socket (an ephemeral
+    /// port, so `send()` works without an explicit `bind()`), and `std`
+    /// has no in-place rebind, so this swaps the slot for a freshly bound
+    /// socket instead of allocating a new id/object.
+    pub fn rebind_udp_socket(&self, id: i64, socket: std::net::UdpSocket) {
+        if let Some(slot) = self.udp_sockets.borrow_mut().get_mut(id as usize) {
+            *slot = Some(socket);
+        }
     }
 }
 

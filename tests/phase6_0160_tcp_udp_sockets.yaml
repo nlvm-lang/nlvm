@@ -1,0 +1,77 @@
+---
+title: "Phase 6 — system.net.TcpListener/TcpStream/UdpSocket"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "5 5 closed 4 4"
+---
+
+#NLFILE phase6/net/Main.nl
+namespace phase6.net;
+class Main {
+	public static int main(string[] args) {
+		try {
+			// TCP: bind a listener, connect a client — the connection
+			// completes via the OS backlog queue before accept() is ever
+			// called (no real concurrency needed for a single-threaded
+			// test program), then accept() picks it up immediately.
+			auto listener = new system.net.TcpListener("127.0.0.1", 47180);
+			auto client = system.net.TcpStream.connect("127.0.0.1", 47180);
+			auto server = listener.accept();
+
+			byte[] out1 = new byte[5];
+			client.write(out1, 0, 5);
+			byte[] in1 = new byte[5];
+			int n1 = server.read(in1, 0, 5);
+			server.write(in1, 0, n1);
+			byte[] in2 = new byte[5];
+			int n2 = client.read(in2, 0, n1);
+
+			client.close();
+			client.close(); // idempotent
+			server.close();
+			listener.close();
+
+			bool tcpClosedThrows = false;
+			try {
+				byte[] scratch = new byte[1];
+				client.read(scratch, 0, 1);
+			} catch (system.net.IOException e) {
+				tcpClosedThrows = true;
+			}
+
+			// UDP: two bound sockets exchanging datagrams on loopback, plus
+			// truncation when the receive buffer is smaller than the
+			// datagram (stdlib.md: "excess bytes are discarded").
+			auto a = new system.net.UdpSocket();
+			auto b = new system.net.UdpSocket();
+			a.bind("127.0.0.1", 47181);
+			b.bind("127.0.0.1", 47182);
+
+			byte[] payload = new byte[10];
+			a.send("127.0.0.1", 47182, payload);
+			byte[] small = new byte[4];
+			int received = b.receive(small);
+
+			b.send("127.0.0.1", 47181, small);
+			byte[] echoBack = new byte[4];
+			int received2 = a.receive(echoBack);
+
+			a.close();
+			b.close();
+			b.close(); // idempotent
+
+			system.Out.print(system.Int.toString(n1));
+			system.Out.print(" ");
+			system.Out.print(system.Int.toString(n2));
+			system.Out.print(" ");
+			system.Out.print(tcpClosedThrows ? "closed" : "open");
+			system.Out.print(" ");
+			system.Out.print(system.Int.toString(received));
+			system.Out.print(" ");
+			system.Out.print(system.Int.toString(received2));
+			return 0;
+		} catch (system.net.IOException e) {
+			return 1;
+		}
+	}
+}

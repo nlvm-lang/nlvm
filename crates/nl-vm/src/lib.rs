@@ -2,6 +2,7 @@ pub mod error;
 pub mod interpreter;
 mod mini_regex;
 mod native;
+mod net_http;
 pub mod program;
 pub mod value;
 

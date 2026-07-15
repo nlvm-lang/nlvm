@@ -44,6 +44,7 @@ const HIERARCHY: &[(&str, Option<&str>)] = &[
 pub const NAMESPACED_ALIASES: &[(&str, &str)] = &[
     ("system.io.IOException", "IOException"),
     ("system.io.FileNotFoundException", "FileNotFoundException"),
+    ("system.net.IOException", "IOException"),
 ];
 
 /// Every built-in exception class, as a namespace-less `SourceFile`.

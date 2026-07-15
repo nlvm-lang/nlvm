@@ -1,0 +1,14 @@
+---
+title: "E015 — system.net.Http.get's IOException must be caught or declared"
+file_separator: "#NLFILE"
+expected_compile_error: "E015"
+---
+
+#NLFILE phase6/httpe015/Main.nl
+namespace phase6.httpe015;
+class Main {
+	public static int main(string[] args) {
+		system.net.Http.get("http://127.0.0.1:1/");
+		return 0;
+	}
+}

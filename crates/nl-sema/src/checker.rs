@@ -628,6 +628,12 @@ impl<'a> MethodChecker<'a> {
                 if let Some(ty) = crate::native_generics::field_ty(fqcn, name) {
                     return Ok(ty);
                 }
+                // `response.statusCode`/`.body`/`.headers` on a
+                // `system.net.HttpResponse` — non-generic native result
+                // type, same absence-from-`self.classes` situation.
+                if let Some(ty) = crate::stdlib::result_field_ty(fqcn, name) {
+                    return Ok(ty);
+                }
                 Ok(self.field_ty(fqcn, name).unwrap_or(Type::Void))
             }
             Expr::MethodCall(target, name, args) => {

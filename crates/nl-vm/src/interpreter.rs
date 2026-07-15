@@ -365,6 +365,22 @@ fn exec_step(
                     *pc_ref = pc;
                     return Ok(Step::Continue);
                 }
+                // `new system.net.TcpListener(...)`/`new system.net.UdpSocket()`
+                // — same no-backing-Module situation as `system.Random`
+                // above (see `nl_vm::native`'s network section doc
+                // comment); the actual OS socket is only created on
+                // `INVOKE_SPECIAL <construct>` below, so `NEW` here just
+                // pushes a placeholder object with `__fd__ = -1`.
+                if crate::native::is_net_listener_class(&fqcn) {
+                    stack.push(crate::native::new_tcp_listener_object());
+                    *pc_ref = pc;
+                    return Ok(Step::Continue);
+                }
+                if crate::native::is_net_udp_class(&fqcn) {
+                    stack.push(crate::native::new_udp_socket_object());
+                    *pc_ref = pc;
+                    return Ok(Step::Continue);
+                }
                 // Fields are collected across the whole `extends` chain (a
                 // subclass's own fields, if any, take precedence over a
                 // same-named ancestor field) so an inherited field like
@@ -620,6 +636,16 @@ fn exec_step(
                 }
                 if crate::native::is_random_class(&class_fqcn) {
                     crate::native::construct_random(&receiver, call_args)?;
+                    *pc_ref = pc;
+                    return Ok(Step::Continue);
+                }
+                if crate::native::is_net_listener_class(&class_fqcn) {
+                    crate::native::construct_tcp_listener(program, &receiver, call_args)?;
+                    *pc_ref = pc;
+                    return Ok(Step::Continue);
+                }
+                if crate::native::is_net_udp_class(&class_fqcn) {
+                    crate::native::construct_udp_socket(program, &receiver)?;
                     *pc_ref = pc;
                     return Ok(Step::Continue);
                 }

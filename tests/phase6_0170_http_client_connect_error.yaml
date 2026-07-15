@@ -1,0 +1,27 @@
+---
+title: "Phase 6 — system.net.Http.get connection failure is a catchable IOException"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "caught"
+---
+
+#NLFILE phase6/http/Main.nl
+namespace phase6.http;
+class Main {
+	public static int main(string[] args) {
+		// Port 1 is a privileged port nothing listens on — connection is
+		// refused immediately, no real network access needed. A live
+		// GET/POST round trip needs a real second party the VM (still
+		// single-threaded, no `system.thread` support) can't run
+		// concurrently from NL code alone — covered instead by
+		// `nl_vm::net_http`'s Rust tests, which spin up the server side as
+		// a real OS thread.
+		try {
+			system.net.Http.get("http://127.0.0.1:1/");
+			return 1;
+		} catch (system.net.IOException e) {
+			system.Out.print("caught");
+			return 0;
+		}
+	}
+}
