@@ -459,7 +459,13 @@ fn exec_step(
                 stack.push(Value::Array(Arc::new(Mutex::new(vec![default; size as usize]))));
             }
             Opcode::NewArrayInit => {
-                return Err(VmError::Unsupported(format!("{op:?} lands in a later phase")));
+                let _type_index = read_u16!();
+                let count = read_u16!() as usize;
+                if stack.len() < count {
+                    return Err(VmError::Malformed("stack underflow"));
+                }
+                let elements = stack.split_off(stack.len() - count);
+                stack.push(Value::Array(Arc::new(Mutex::new(elements))));
             }
             Opcode::ArrayLoad => {
                 let (arr, idx) = pop2(stack)?;

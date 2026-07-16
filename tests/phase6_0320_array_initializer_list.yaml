@@ -1,0 +1,43 @@
+---
+title: "Phase 6 — array initializer-list creation `new T[]{...}`"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "1,2,3,4,5 empty:0 6.5,7.5 a-b-c-"
+---
+
+#NLFILE phase6/array_initializer_list/Main.nl
+namespace phase6.array_initializer_list;
+class Main {
+	public static int main(string[] args) {
+		int[] nums = new int[]{1, 2, 3, 4, 5};
+		printInts(nums);
+		system.Out.print(" ");
+
+		int[] empty = new int[]{};
+		system.Out.print("empty:" + system.Int.toString(empty.length()));
+		system.Out.print(" ");
+
+		float[] floats = new float[]{6.5, 7.5};
+		system.Out.print(system.Float.toString(floats[0]) + "," + system.Float.toString(floats[1]));
+		system.Out.print(" ");
+
+		string[] strs = new string[]{"a", "b", "c"};
+		int i = 0;
+		while (i < strs.length()) {
+			system.Out.print(strs[i] + "-");
+			i++;
+		}
+		return 0;
+	}
+
+	static void printInts(int[] values) {
+		int i = 0;
+		while (i < values.length()) {
+			system.Out.print(system.Int.toString(values[i]));
+			if (i < values.length() - 1) {
+				system.Out.print(",");
+			}
+			i++;
+		}
+	}
+}

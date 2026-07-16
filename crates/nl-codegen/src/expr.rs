@@ -241,6 +241,13 @@ impl<'a> Emitter<'a> {
         self.track(stack_delta);
     }
 
+    pub(crate) fn op_u16_u16(&mut self, op: Opcode, operand1: u16, operand2: u16, stack_delta: i32) {
+        self.code.push(op as u8);
+        self.code.extend_from_slice(&operand1.to_be_bytes());
+        self.code.extend_from_slice(&operand2.to_be_bytes());
+        self.track(stack_delta);
+    }
+
     fn op_i8(&mut self, op: Opcode, operand: i8, stack_delta: i32) {
         self.code.push(op as u8);
         self.code.push(operand as u8);
@@ -431,6 +438,7 @@ impl<'a> Emitter<'a> {
             Expr::Call(name, args) => self.compile_call(name, args),
             Expr::New(class_name, _type_args, args) => self.compile_new(class_name, args),
             Expr::NewArray(elem_ty, size) => self.compile_new_array(elem_ty, size),
+            Expr::NewArrayInit(elem_ty, elements) => self.compile_new_array_init(elem_ty, elements),
             Expr::FieldAccess(target, name) => self.compile_field_access(target, name),
             Expr::MethodCall(target, name, args) => self.compile_method_call(target, name, args),
             Expr::Index(target, index) => self.compile_index(target, index),
@@ -935,6 +943,25 @@ impl<'a> Emitter<'a> {
         let type_index = self.cp.add_type_desc(&type_descriptor(&resolved_elem));
         self.op_u16(Opcode::NewArray, type_index, 0);
         Ok(ExprTy::Array(Box::new(expr_ty_of(&resolved_elem))))
+    }
+
+    fn compile_new_array_init(&mut self, elem_ty: &Type, elements: &[Expr]) -> Result<ExprTy, CodegenError> {
+        let resolved_elem = resolve_type(elem_ty, self.imports);
+        let elem_expr_ty = expr_ty_of(&resolved_elem);
+        for e in elements {
+            let actual = self.compile_expr(e)?;
+            self.coerce_value(&actual, &elem_expr_ty, "array element")?;
+        }
+        let count: u16 = elements.len().try_into().map_err(|_| {
+            CodegenError::Unsupported(format!(
+                "array initializer list has {} elements, max supported is {}",
+                elements.len(),
+                u16::MAX
+            ))
+        })?;
+        let type_index = self.cp.add_type_desc(&type_descriptor(&resolved_elem));
+        self.op_u16_u16(Opcode::NewArrayInit, type_index, count, 1 - count as i32);
+        Ok(ExprTy::Array(Box::new(elem_expr_ty)))
     }
 
     fn compile_field_access(&mut self, target: &Expr, name: &str) -> Result<ExprTy, CodegenError> {

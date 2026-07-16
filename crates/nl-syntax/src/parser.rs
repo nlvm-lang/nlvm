@@ -1123,14 +1123,29 @@ impl Parser {
         }
     }
 
-    /// `new ClassName(args)` or `new T[size]` — specs.md § Arrays / § Basic
-    /// class. Multi-dimensional and initializer-list forms are not yet
-    /// supported.
+    /// `new ClassName(args)`, `new T[size]` or `new T[]{ e0, e1, ... }` —
+    /// specs.md § Arrays / § Basic class. Multi-dimensional forms are not
+    /// yet supported.
     fn parse_new_expr(&mut self) -> Result<Expr, SyntaxError> {
         self.eat_keyword(Keyword::New)?;
         let base_ty = self.parse_new_base_type()?;
         if self.is_punct(Punct::LBracket) {
             self.bump();
+            if self.is_punct(Punct::RBracket) {
+                self.bump();
+                self.eat_punct(Punct::LBrace)?;
+                let mut elements = Vec::new();
+                while !self.is_punct(Punct::RBrace) {
+                    elements.push(self.parse_expr()?);
+                    if self.is_punct(Punct::Comma) {
+                        self.bump();
+                    } else {
+                        break;
+                    }
+                }
+                self.eat_punct(Punct::RBrace)?;
+                return Ok(Expr::NewArrayInit(Box::new(base_ty), elements));
+            }
             let size = self.parse_expr()?;
             self.eat_punct(Punct::RBracket)?;
             Ok(Expr::NewArray(Box::new(base_ty), Box::new(size)))

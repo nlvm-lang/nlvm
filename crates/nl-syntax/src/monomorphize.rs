@@ -331,6 +331,12 @@ fn collect_expr(expr: &Expr, imports: &HashMap<String, String>, templates: &Hash
             collect_type(elem_ty, imports, templates, out);
             collect_expr(size, imports, templates, out);
         }
+        Expr::NewArrayInit(elem_ty, elements) => {
+            collect_type(elem_ty, imports, templates, out);
+            for e in elements {
+                collect_expr(e, imports, templates, out);
+            }
+        }
         Expr::FieldAccess(target, _) | Expr::InstanceOf(target, _) => collect_expr(target, imports, templates, out),
         Expr::MethodCall(target, _, args) => {
             collect_expr(target, imports, templates, out);
@@ -508,6 +514,10 @@ fn rewrite_expr(expr: &Expr, imports: &HashMap<String, String>, templates: &Hash
             }
         }
         Expr::NewArray(elem_ty, size) => Expr::NewArray(Box::new(rewrite_type(elem_ty, imports, templates)), Box::new(rewrite_expr(size, imports, templates))),
+        Expr::NewArrayInit(elem_ty, elements) => Expr::NewArrayInit(
+            Box::new(rewrite_type(elem_ty, imports, templates)),
+            elements.iter().map(|e| rewrite_expr(e, imports, templates)).collect(),
+        ),
         Expr::FieldAccess(target, name) => Expr::FieldAccess(Box::new(rewrite_expr(target, imports, templates)), name.clone()),
         Expr::MethodCall(target, name, args) => Expr::MethodCall(
             Box::new(rewrite_expr(target, imports, templates)),
@@ -643,6 +653,9 @@ fn subst_expr(expr: &Expr, subst: &HashMap<String, Type>) -> Expr {
             Expr::New(name.clone(), type_args.iter().map(|t| subst_type(t, subst)).collect(), args.iter().map(|a| subst_expr(a, subst)).collect())
         }
         Expr::NewArray(elem_ty, size) => Expr::NewArray(Box::new(subst_type(elem_ty, subst)), Box::new(subst_expr(size, subst))),
+        Expr::NewArrayInit(elem_ty, elements) => {
+            Expr::NewArrayInit(Box::new(subst_type(elem_ty, subst)), elements.iter().map(|e| subst_expr(e, subst)).collect())
+        }
         Expr::FieldAccess(target, name) => Expr::FieldAccess(Box::new(subst_expr(target, subst)), name.clone()),
         Expr::MethodCall(target, name, args) => {
             Expr::MethodCall(Box::new(subst_expr(target, subst)), name.clone(), args.iter().map(|a| subst_expr(a, subst)).collect())

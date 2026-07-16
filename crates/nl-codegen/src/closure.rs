@@ -103,6 +103,11 @@ fn collect_expr(expr: &Expr, names: &mut HashSet<String>) {
             }
         }
         Expr::NewArray(_, size) => collect_expr(size, names),
+        Expr::NewArrayInit(_, elements) => {
+            for e in elements {
+                collect_expr(e, names);
+            }
+        }
         Expr::FieldAccess(target, _) | Expr::InstanceOf(target, _) => collect_expr(target, names),
         Expr::MethodCall(target, _, args) => {
             collect_expr(target, names);

@@ -236,6 +236,9 @@ pub enum Expr {
     New(String, Vec<Type>, Vec<Expr>),
     /// `new T[size]` — fixed-size single-dimension array creation.
     NewArray(Box<Type>, Box<Expr>),
+    /// `new T[]{ e0, e1, ... }` — initializer-list array creation, size is
+    /// the element count (specs.md § Arrays, "Initializer list").
+    NewArrayInit(Box<Type>, Vec<Expr>),
     /// `target.field`.
     FieldAccess(Box<Expr>, String),
     /// `target.method(args)`.

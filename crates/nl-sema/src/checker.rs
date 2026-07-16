@@ -621,6 +621,12 @@ impl<'a> MethodChecker<'a> {
                 }
                 Ok(Type::Array(Box::new(self.resolve_ty(elem_ty))))
             }
+            Expr::NewArrayInit(elem_ty, elements) => {
+                for e in elements {
+                    self.check_expr(e, assigned)?;
+                }
+                Ok(Type::Array(Box::new(self.resolve_ty(elem_ty))))
+            }
             Expr::FieldAccess(target, name) => {
                 // `system.io.FileMode.Read` etc. — a dotted class-path
                 // expression naming an enum-like stdlib constant, not a
