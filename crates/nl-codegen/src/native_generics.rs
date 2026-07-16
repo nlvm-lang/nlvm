@@ -17,11 +17,12 @@
 //! used as another native/user generic's own type argument (e.g.
 //! `system.List<system.List<int>>`) parses in principle (the split is
 //! bracket-depth-aware) but is out of scope for PLAN.md Phase 6 and
-//! untested. `entries()`/`forEach` (which need a synthetic `MapEntry<K,V>`
-//! class and closures-as-native-callbacks respectively) are not
-//! implemented, nor is the `T[] initial` list constructor's interaction
-//! with `ValueEquatable` — `contains`/map key equality fall back to
-//! primitive/string value equality or reference identity (see
+//! untested. `entries()`/`Map.forEach` are implemented (the latter via
+//! closures-as-native-callbacks, see `nl_vm::native::dispatch_array`'s doc
+//! comment); `List` has no `forEach` of its own — stdlib.md doesn't define
+//! one, only `Map` does. The `T[] initial` list constructor's interaction
+//! with `ValueEquatable` is not implemented — `contains`/map key equality
+//! fall back to primitive/string value equality or reference identity (see
 //! `nl_vm::native`), never `valueEquals`/`valueHash`.
 
 use nl_syntax::ast::Type;
@@ -132,6 +133,12 @@ pub fn method_signature(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type
                 ("keys", 0) => Some((vec![], Type::Array(Box::new(k.clone())))),
                 ("values", 0) => Some((vec![], Type::Array(Box::new(v.clone())))),
                 ("entries", 0) => Some((vec![], Type::Array(Box::new(Type::Named(entry_fqcn_of_map(fqcn)))))),
+                // `map.forEach((K key, V value) => void f)` — `Type::Void`
+                // param, same joker used for `system.thread.Thread`'s
+                // `() => void` constructor argument (`Emitter::coerce_value`
+                // accepts any `ExprTy::Closure` wherever `ExprTy::Void` is
+                // expected).
+                ("forEach", 1) => Some((vec![Type::Void], Type::Void)),
                 _ => None,
             }
         }

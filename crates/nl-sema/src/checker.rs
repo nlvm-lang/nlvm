@@ -694,7 +694,34 @@ impl<'a> MethodChecker<'a> {
                     }
                 }
                 match &target_ty {
-                    Type::Array(_) if name == "length" && args.is_empty() => Ok(Type::Int),
+                    // specs.md § Arrays, Built-in methods — `length` is a
+                    // dedicated opcode (`ARRAY_LENGTH`) rather than a native
+                    // dispatch, but is still checked here like the rest.
+                    // `map`/`filter`/`forEach`/`sort`/`find` take a closure
+                    // argument, which always checks as `Type::Void` (no
+                    // `Type::Function` this phase — see `Expr::Closure`
+                    // above), so nothing more to validate about `arg_types`
+                    // for those; `map`'s actual element type `U` isn't
+                    // statically known either, hence the `Type::Void`
+                    // wildcard return (same joker `check_assignable` already
+                    // gives every other not-yet-modeled expression form) —
+                    // `nl-codegen` recovers the real element type from the
+                    // closure's own deduced return type at emission time.
+                    Type::Array(elem) => match (name.as_str(), args.len()) {
+                        ("length", 0) => Ok(Type::Int),
+                        ("slice", 2) => {
+                            for a in &arg_types {
+                                self.check_assignable(a, &Type::Int)?;
+                            }
+                            Ok(Type::Array(elem.clone()))
+                        }
+                        ("map", 1) => Ok(Type::Void),
+                        ("filter", 1) => Ok(Type::Array(elem.clone())),
+                        ("forEach", 1) => Ok(Type::Void),
+                        ("sort", 1) => Ok(Type::Void),
+                        ("find", 1) => Ok(Type::Union(vec![(**elem).clone(), Type::NullT])),
+                        _ => Ok(Type::Void),
+                    },
                     // `text.trim()` etc. — see `crate::stdlib::lookup`'s
                     // doc comment: instance calls are looked up under the
                     // same table as the static `system.String.trim(text)`

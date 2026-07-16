@@ -17,9 +17,11 @@
 //! used as another native/user generic's own type argument (e.g.
 //! `system.List<system.List<int>>`) parses in principle (the split is
 //! bracket-depth-aware) but is out of scope for PLAN.md Phase 6 and
-//! untested. `forEach` (which needs closures-as-native-callbacks) is not
-//! implemented, nor is the `T[] initial` list constructor's interaction
-//! with `ValueEquatable` — `contains`/map key equality fall back to
+//! untested. `Map.forEach` is implemented (closures-as-native-callbacks,
+//! see `nl_vm::native::dispatch_array`'s doc comment); `List` has no
+//! `forEach` of its own — stdlib.md doesn't define one, only `Map` does.
+//! The `T[] initial` list constructor's interaction with `ValueEquatable`
+//! is not implemented — `contains`/map key equality fall back to
 //! primitive/string value equality or reference identity (see
 //! `nl_vm::native`), never `valueEquals`/`valueHash`.
 //!
@@ -126,6 +128,12 @@ pub fn method_signature(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type
                 ("keys", 0) => Some((vec![], Type::Array(Box::new(k.clone())))),
                 ("values", 0) => Some((vec![], Type::Array(Box::new(v.clone())))),
                 ("entries", 0) => Some((vec![], Type::Array(Box::new(Type::Named(entry_fqcn_of_map(fqcn)))))),
+                // `map.forEach((K key, V value) => void f)` — the callback
+                // parameter has no real static type either (same
+                // `Type::Void` joker every closure checks as, see
+                // `checker.rs`'s `Expr::Closure` arm), so its declared
+                // shape isn't validated against `K`/`V` here.
+                ("forEach", 1) => Some((vec![Type::Void], Type::Void)),
                 _ => None,
             }
         }

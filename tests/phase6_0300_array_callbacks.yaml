@@ -1,0 +1,63 @@
+---
+title: "Phase 6 — array built-in methods with native callbacks (slice/map/filter/forEach/sort/find)"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "2,4,6,8,10 2,4 1-2-3-4-5- 1,2,3,4,9 4 null 2,3,4"
+---
+
+#NLFILE phase6/array_callbacks/Main.nl
+namespace phase6.array_callbacks;
+class Main {
+	public static int main(string[] args) {
+		int[] numbers = new int[5];
+		numbers[0] = 1;
+		numbers[1] = 2;
+		numbers[2] = 3;
+		numbers[3] = 4;
+		numbers[4] = 5;
+
+		int[] doubled = numbers.map((int n) => n * 2);
+		printInts(doubled);
+		system.Out.print(" ");
+
+		int[] evens = numbers.filter((int n) => n % 2 == 0);
+		printInts(evens);
+		system.Out.print(" ");
+
+		numbers.forEach((int n) => { system.Out.print(system.Int.toString(n) + "-"); });
+		system.Out.print(" ");
+
+		int[] toSort = new int[5];
+		toSort[0] = 4;
+		toSort[1] = 1;
+		toSort[2] = 9;
+		toSort[3] = 2;
+		toSort[4] = 3;
+		toSort.sort((int a, int b) => a - b);
+		printInts(toSort);
+		system.Out.print(" ");
+
+		auto found = numbers.find((int n) => n > 3);
+		system.Out.print(found == 4 ? "4" : "?");
+		system.Out.print(" ");
+
+		auto notFound = numbers.find((int n) => n > 100);
+		system.Out.print(notFound == null ? "null" : "not-null");
+		system.Out.print(" ");
+
+		int[] sliced = numbers.slice(1, 4);
+		printInts(sliced);
+		return 0;
+	}
+
+	static void printInts(int[] values) {
+		int i = 0;
+		while (i < values.length()) {
+			system.Out.print(system.Int.toString(values[i]));
+			if (i < values.length() - 1) {
+				system.Out.print(",");
+			}
+			i++;
+		}
+	}
+}

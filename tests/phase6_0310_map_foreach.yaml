@@ -1,0 +1,21 @@
+---
+title: "Phase 6 — system.Map<K,V>.forEach with a native closure callback"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "one=1;two=2;three=3;"
+---
+
+#NLFILE phase6/map_foreach/Main.nl
+namespace phase6.map_foreach;
+class Main {
+	public static int main(string[] args) {
+		auto map = new system.Map<string, int>();
+		map.set("one", 1);
+		map.set("two", 2);
+		map.set("three", 3);
+		map.forEach((string key, int val) => {
+			system.Out.print(key + "=" + system.Int.toString(val) + ";");
+		});
+		return 0;
+	}
+}

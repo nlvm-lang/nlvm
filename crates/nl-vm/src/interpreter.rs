@@ -565,6 +565,18 @@ fn exec_step(
                 if receiver.is_null() {
                     return Err(throw_native("NullPointerException", "null pointer dereference"));
                 }
+                // `numbers.slice/map/filter/forEach/sort/find(...)` — vm.md §
+                // Standard library binding: dispatched by the receiver's
+                // `Value::Array` variant, not by class name (arrays have no
+                // class of their own — `nl_codegen::expr::emit_array_call`'s
+                // method ref just carries a placeholder class name).
+                if let Value::Array(_) = &receiver {
+                    if let Some(result) = crate::native::dispatch_array(program, &name, &receiver, call_args)? {
+                        stack.push(result);
+                    }
+                    *pc_ref = pc;
+                    return Ok(Step::Continue);
+                }
                 // Virtual dispatch: resolve against the receiver's *runtime*
                 // class, not the static type recorded in the method ref —
                 // vm.md § Method dispatch, Instance methods.
@@ -578,7 +590,7 @@ fn exec_step(
                 // reference held through e.g. an interface-typed variable
                 // (not that either collection implements one today).
                 if crate::native::is_native_generic_class(&runtime_class) {
-                    if let Some(result) = crate::native::dispatch_instance(&runtime_class, &name, &receiver, call_args)? {
+                    if let Some(result) = crate::native::dispatch_instance(program, &runtime_class, &name, &receiver, call_args)? {
                         stack.push(result);
                     }
                     *pc_ref = pc;

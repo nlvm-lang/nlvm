@@ -1002,6 +1002,14 @@ impl<'a> Emitter<'a> {
                 self.op(Opcode::ArrayLength, 0);
                 Ok(ExprTy::Int)
             }
+            // `numbers.slice/map/filter/forEach/sort/find(...)` — specs.md §
+            // Arrays, Built-in methods. `length` above is the one dedicated
+            // opcode (`ARRAY_LENGTH`, performance-critical per vm.md); the
+            // rest go through `compile_array_method_call`'s `INVOKE_INSTANCE`.
+            ExprTy::Array(elem) => {
+                let elem_ty = (**elem).clone();
+                self.compile_array_method_call(elem_ty, name, args)
+            }
             // `text.trim()` etc. — stdlib.md § system.String instance
             // methods. The receiver is already compiled and sitting on the
             // stack; look up the *full* signature (receiver included) in
@@ -1065,6 +1073,83 @@ impl<'a> Emitter<'a> {
                 "method call on unsupported type {other:?}"
             ))),
         }
+    }
+
+    /// The six native array methods with callbacks (specs.md § Arrays,
+    /// Built-in methods; `length` is handled by the caller via the
+    /// dedicated `ARRAY_LENGTH` opcode before reaching here). `slice` takes
+    /// two plain ints; the rest take a single closure argument, invoked by
+    /// `nl_vm::native::dispatch_array` once per element (twice per pair for
+    /// `Map.forEach`, a separate call site — see that function's doc
+    /// comment).
+    ///
+    /// `map`'s result element type `U` has no static representation (no
+    /// `Type::Function` this phase — see `ExprTy::Closure`'s doc comment),
+    /// so unlike `filter`/`find` (which keep the receiver's own element
+    /// type, since their callback can't change it) it is recovered directly
+    /// from the closure literal's own *deduced* return type
+    /// (`ExprTy::Closure`'s `return_ty`) rather than guessed — more precise
+    /// than falling back to the `Type::Void` wildcard nl-sema uses (see
+    /// `checker.rs`'s matching arm), and needed so a subsequent
+    /// `U[] result = numbers.map(...)` assignment sees the real `U`.
+    fn compile_array_method_call(&mut self, elem_ty: ExprTy, name: &str, args: &[Expr]) -> Result<ExprTy, CodegenError> {
+        match (name, args.len()) {
+            ("slice", 2) => {
+                self.compile_call_args(args, &[ExprTy::Int, ExprTy::Int], name)?;
+                self.emit_array_call(name, &[ExprTy::Int, ExprTy::Int], ExprTy::Array(Box::new(elem_ty)))
+            }
+            ("map", 1) => {
+                let closure_ty = self.compile_expr(&args[0])?;
+                let result_elem = match &closure_ty {
+                    ExprTy::Closure { return_ty, .. } => (**return_ty).clone(),
+                    _ => return Err(CodegenError::Unsupported(format!("'{name}' expects a closure argument"))),
+                };
+                self.coerce_value(&closure_ty, &ExprTy::Void, name)?;
+                self.emit_array_call(name, &[ExprTy::Void], ExprTy::Array(Box::new(result_elem)))
+            }
+            ("filter", 1) => {
+                let closure_ty = self.compile_expr(&args[0])?;
+                self.coerce_value(&closure_ty, &ExprTy::Void, name)?;
+                self.emit_array_call(name, &[ExprTy::Void], ExprTy::Array(Box::new(elem_ty)))
+            }
+            ("forEach", 1) | ("sort", 1) => {
+                let closure_ty = self.compile_expr(&args[0])?;
+                self.coerce_value(&closure_ty, &ExprTy::Void, name)?;
+                self.emit_array_call(name, &[ExprTy::Void], ExprTy::Void)
+            }
+            ("find", 1) => {
+                let closure_ty = self.compile_expr(&args[0])?;
+                self.coerce_value(&closure_ty, &ExprTy::Void, name)?;
+                // `T|null` — `ExprTy` has no union representation (values
+                // are dynamically tagged at runtime); collapses to `T`,
+                // same as every other nullable native result this codebase
+                // returns (e.g. `Map.get`).
+                self.emit_array_call(name, &[ExprTy::Void], elem_ty)
+            }
+            _ => Err(CodegenError::Unsupported(format!(
+                "unknown array method '{name}' with {} argument(s)",
+                args.len()
+            ))),
+        }
+    }
+
+    /// One `INVOKE_INSTANCE` against an array receiver (already on the
+    /// stack, args already compiled/coerced on top of it) for one of the
+    /// six native callback methods. Arrays have no class of their own to
+    /// key a method ref by — the constant-pool class name here is a
+    /// placeholder (`"system.Array"`, never a real class) since
+    /// `nl_vm::interpreter` dispatches on the receiver's `Value::Array`
+    /// variant rather than by class name (see `nl_vm::native::dispatch_array`).
+    fn emit_array_call(&mut self, name: &str, param_types: &[ExprTy], return_ty: ExprTy) -> Result<ExprTy, CodegenError> {
+        let param_ast_types: Vec<Type> = param_types.iter().map(expr_ty_to_type).collect();
+        let descriptor = method_descriptor(&param_ast_types, &expr_ty_to_type(&return_ty));
+        let name_index = self.cp.add_utf8(name.to_string());
+        let descriptor_index = self.cp.add_type_desc(&descriptor);
+        let class_index = self.cp.add_class("system.Array");
+        let method_ref = self.cp.add_method_ref(class_index, name_index, descriptor_index);
+        let result_delta = if return_ty == ExprTy::Void { 0 } else { 1 };
+        self.op_u16(Opcode::InvokeInstance, method_ref, result_delta - param_types.len() as i32 - 1);
+        Ok(return_ty)
     }
 
     /// Emits an `INVOKE_STATIC` against a native `system.*` class (no

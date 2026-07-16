@@ -57,13 +57,25 @@
 //! optimization never kicks in (reference types with structural key/element
 //! equality always fall back to identity here).
 //!
-//! Not implemented (PLAN.md Phase 6 gap): `system.List`'s `T[] initial`
-//! constructor works, but `entries()`/`forEach` on `Map` do not (they need
-//! a synthetic `MapEntry<K,V>` class and closures-as-native-callbacks,
-//! neither of which exist yet), and neither collection supports the
-//! for-each loop (`for (const auto x : list)`) — vm.md's desugaring for
-//! that relies on `entries()` for maps and hasn't been wired into
-//! nl-codegen for either collection.
+//! Not implemented (PLAN.md Phase 6 gap): the `T[] initial` list
+//! constructor's/`contains`'s/map key equality's interaction with
+//! `ValueEquatable` (always falls back to primitive/string value equality
+//! or reference identity, see above); `List` has no `forEach` of its own
+//! (stdlib.md doesn't define one, only `Map.forEach` — see `dispatch_map`).
+//!
+//! ## Arrays (`T[]`)
+//!
+//! `length()` is the dedicated `ARRAY_LENGTH` opcode (performance-critical
+//! per vm.md) and never reaches this module. The other six array methods
+//! (`slice`/`map`/`filter`/`forEach`/`sort`/`find`) are `INVOKE_INSTANCE`
+//! against a `Value::Array` receiver, intercepted in
+//! `interpreter::exec_step` before the usual `Value::Object` receiver path
+//! (arrays have no class of their own to dispatch by) and handled by
+//! `dispatch_array`. The four callback-taking methods (plus `Map.forEach`)
+//! all go through `invoke_closure`, which resolves and calls a closure
+//! value's synthetic `invoke` method by name alone — the same mechanism
+//! `system.thread.Thread`'s task already used (`invoke_task`), generalized
+//! to take arguments.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -1551,13 +1563,16 @@ pub fn construct_semaphore(program: &Arc<Program>, receiver: &Value, mut args: V
     Ok(())
 }
 
-/// Resolves and calls a zero-argument closure's synthetic `invoke` method
-/// (see `nl_codegen::closure`) — the shape every `Thread` task has
-/// (`() => void`), so unlike `INVOKE_CLOSURE`'s bytecode path there is no
-/// method-ref descriptor to match against: a name-only lookup
-/// (`Module::find_method`) is unambiguous.
-fn invoke_task(program: &Arc<Program>, task: Value) -> Result<Option<Value>, VmError> {
-    let Value::Object(obj) = &task else {
+/// Resolves and calls a closure value's synthetic `invoke` method (see
+/// `nl_codegen::closure`) with `args` — unlike `INVOKE_CLOSURE`'s bytecode
+/// path there is no method-ref descriptor to match against, but a name-only
+/// lookup (`Module::find_method`) is unambiguous: a closure's synthetic
+/// class has exactly one method. Shared by `Thread`'s zero-arg task
+/// (`invoke_task`) and the array/`Map` methods that accept native callbacks
+/// (`map`/`filter`/`forEach`/`sort`/`find`, `Map.forEach` — see
+/// `dispatch_array`).
+fn invoke_closure(program: &Arc<Program>, closure: &Value, args: Vec<Value>) -> Result<Value, VmError> {
+    let Value::Object(obj) = closure else {
         return Err(VmError::Malformed("expected closure receiver"));
     };
     let class_name = lock(obj).class_name.clone();
@@ -1567,7 +1582,13 @@ fn invoke_task(program: &Arc<Program>, task: Value) -> Result<Option<Value>, VmE
     let method = module
         .find_method("invoke")
         .ok_or_else(|| VmError::MethodNotFound(format!("{class_name}.invoke")))?;
-    crate::interpreter::call_instance(program, module, method, task, vec![])
+    let result = crate::interpreter::call_instance(program, module, method, closure.clone(), args)?;
+    Ok(result.unwrap_or(Value::Null))
+}
+
+/// `Thread`'s task is always a zero-arg `() => void` closure.
+fn invoke_task(program: &Arc<Program>, task: Value) -> Result<Option<Value>, VmError> {
+    invoke_closure(program, &task, vec![]).map(Some)
 }
 
 fn dispatch_thread(
@@ -1731,11 +1752,17 @@ pub fn construct_generic(receiver: &Value, fqcn: &str, mut args: Vec<Value>) -> 
 /// `Opcode::InvokeInstance` against a native generic class — dispatched by
 /// the *receiver's* runtime class, same as `resolve_virtual` would for a
 /// bytecode-backed class.
-pub fn dispatch_instance(fqcn: &str, name: &str, receiver: &Value, args: Vec<Value>) -> Result<Option<Value>, VmError> {
+pub fn dispatch_instance(
+    program: &Arc<Program>,
+    fqcn: &str,
+    name: &str,
+    receiver: &Value,
+    args: Vec<Value>,
+) -> Result<Option<Value>, VmError> {
     if fqcn.starts_with("system.List<") {
         dispatch_list(name, receiver, args)
     } else {
-        dispatch_map(name, receiver, args)
+        dispatch_map(program, name, receiver, args)
     }
 }
 
@@ -1821,7 +1848,7 @@ fn map_storage(receiver: &Value) -> Result<(ArrayRc, ArrayRc), VmError> {
     }
 }
 
-fn dispatch_map(name: &str, receiver: &Value, mut args: Vec<Value>) -> Result<Option<Value>, VmError> {
+fn dispatch_map(program: &Arc<Program>, name: &str, receiver: &Value, mut args: Vec<Value>) -> Result<Option<Value>, VmError> {
     let (keys, values) = map_storage(receiver)?;
     match name {
         "size" => Ok(Some(Value::Int(lock(&keys).len() as i64))),
@@ -1886,6 +1913,118 @@ fn dispatch_map(name: &str, receiver: &Value, mut args: Vec<Value>) -> Result<Op
                 .collect();
             Ok(Some(Value::Array(Arc::new(Mutex::new(entries)))))
         }
+        // stdlib.md § system.Map — "Invokes `f` for each key-value pair",
+        // same iteration order as `keys()`/`entries()`. Snapshots both
+        // arrays first so a callback that mutates the map mid-iteration
+        // (e.g. `remove`) can't shift indices out from under this loop.
+        "forEach" => {
+            let f = args.pop().ok_or(VmError::Malformed("missing callback argument"))?;
+            let ks = lock(&keys).clone();
+            let vs = lock(&values).clone();
+            for (k, v) in ks.into_iter().zip(vs) {
+                invoke_closure(program, &f, vec![k, v])?;
+            }
+            Ok(None)
+        }
         _ => Err(VmError::MethodNotFound(format!("system.Map.{name}"))),
     }
+}
+
+/// `Opcode::InvokeInstance` on a `Value::Array` receiver — specs.md §
+/// Arrays, Built-in methods / vm.md § Standard library binding: "the other
+/// six methods are invoked via `INVOKE_INSTANCE` on the array reference and
+/// dispatched to native implementations by the VM. Methods that accept
+/// callbacks ... receive a closure object as an argument; the native
+/// implementation calls `INVOKE_CLOSURE` internally for each element."
+/// (`length` is `ARRAY_LENGTH`, a dedicated opcode, and never reaches here.)
+///
+/// Each callback-taking method snapshots the backing `Vec` up front
+/// (`lock(arr).clone()`) rather than holding the lock while calling back
+/// into NL code — the callback may itself touch the same array (e.g.
+/// `arr.forEach((v) => arr.pushBack(v))`), which would deadlock on a
+/// re-entrant lock attempt otherwise.
+pub fn dispatch_array(program: &Arc<Program>, name: &str, receiver: &Value, mut args: Vec<Value>) -> Result<Option<Value>, VmError> {
+    let Value::Array(arr) = receiver else {
+        return Err(VmError::Malformed("expected array receiver"));
+    };
+    match name {
+        "slice" => {
+            let end = expect_int(&mut args)?;
+            let start = expect_int(&mut args)?;
+            let items = lock(arr).clone();
+            let len = items.len() as i64;
+            let start = start.clamp(0, len) as usize;
+            let end = end.clamp(0, len) as usize;
+            let sliced = if start < end { items[start..end].to_vec() } else { Vec::new() };
+            Ok(Some(Value::Array(Arc::new(Mutex::new(sliced)))))
+        }
+        "map" => {
+            let f = args.pop().ok_or(VmError::Malformed("missing callback argument"))?;
+            let items = lock(arr).clone();
+            let mut out = Vec::with_capacity(items.len());
+            for item in items {
+                out.push(invoke_closure(program, &f, vec![item])?);
+            }
+            Ok(Some(Value::Array(Arc::new(Mutex::new(out)))))
+        }
+        "filter" => {
+            let f = args.pop().ok_or(VmError::Malformed("missing callback argument"))?;
+            let items = lock(arr).clone();
+            let mut out = Vec::new();
+            for item in items {
+                if invoke_closure(program, &f, vec![item.clone()])?.as_bool().unwrap_or(false) {
+                    out.push(item);
+                }
+            }
+            Ok(Some(Value::Array(Arc::new(Mutex::new(out)))))
+        }
+        "forEach" => {
+            let f = args.pop().ok_or(VmError::Malformed("missing callback argument"))?;
+            let items = lock(arr).clone();
+            for item in items {
+                invoke_closure(program, &f, vec![item])?;
+            }
+            Ok(None)
+        }
+        "sort" => {
+            let f = args.pop().ok_or(VmError::Malformed("missing callback argument"))?;
+            let mut items = lock(arr).clone();
+            insertion_sort_by_closure(program, &mut items, &f)?;
+            *lock(arr) = items;
+            Ok(None)
+        }
+        "find" => {
+            let f = args.pop().ok_or(VmError::Malformed("missing callback argument"))?;
+            let items = lock(arr).clone();
+            for item in items {
+                if invoke_closure(program, &f, vec![item.clone()])?.as_bool().unwrap_or(false) {
+                    return Ok(Some(item));
+                }
+            }
+            Ok(Some(Value::Null))
+        }
+        _ => Err(VmError::MethodNotFound(format!("array.{name}"))),
+    }
+}
+
+/// `array.sort((T a, T b) => int compare)` — specs.md: "negative if a < b,
+/// zero if equal, positive if a > b". Plain insertion sort (O(n²)) rather
+/// than `slice::sort_by`, which can't propagate a `Result` from a fallible
+/// comparator (`invoke_closure` may throw an NL exception, e.g. a bug in the
+/// callback itself) — same small-test-size tradeoff already made for
+/// `system.Map`'s O(n) key lookup.
+fn insertion_sort_by_closure(program: &Arc<Program>, items: &mut [Value], f: &Value) -> Result<(), VmError> {
+    for i in 1..items.len() {
+        let mut j = i;
+        while j > 0 {
+            let cmp = invoke_closure(program, f, vec![items[j - 1].clone(), items[j].clone()])?;
+            if cmp.as_int().unwrap_or(0) > 0 {
+                items.swap(j - 1, j);
+                j -= 1;
+            } else {
+                break;
+            }
+        }
+    }
+    Ok(())
 }
