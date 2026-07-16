@@ -1469,6 +1469,44 @@ impl<'a> Emitter<'a> {
                 self.op(Opcode::I2F, 0);
                 Ok(ExprTy::Float)
             }
+            // `byte` has no dedicated arithmetic opcode and `CMP_*` only
+            // accepts matching-tag pairs — widen to `int` (vm.md § Integer
+            // arithmetic: "byte values are widened to int before
+            // arithmetic"), then reuse the int/float rules above.
+            (ExprTy::Byte, ExprTy::Byte) => {
+                // stack: [..., lhs_byte, rhs_byte] -> widen both to int.
+                self.op(Opcode::B2I, 0);
+                self.op(Opcode::Swap, 0);
+                self.op(Opcode::B2I, 0);
+                self.op(Opcode::Swap, 0);
+                Ok(ExprTy::Int)
+            }
+            (ExprTy::Byte, ExprTy::Int) => {
+                // stack: [..., lhs_byte, rhs_int] -> widen lhs.
+                self.op(Opcode::Swap, 0);
+                self.op(Opcode::B2I, 0);
+                self.op(Opcode::Swap, 0);
+                Ok(ExprTy::Int)
+            }
+            (ExprTy::Int, ExprTy::Byte) => {
+                // stack: [..., lhs_int, rhs_byte] -> widen rhs.
+                self.op(Opcode::B2I, 0);
+                Ok(ExprTy::Int)
+            }
+            (ExprTy::Byte, ExprTy::Float) => {
+                // stack: [..., lhs_byte, rhs_float] -> widen lhs to float.
+                self.op(Opcode::Swap, 0);
+                self.op(Opcode::B2I, 0);
+                self.op(Opcode::I2F, 0);
+                self.op(Opcode::Swap, 0);
+                Ok(ExprTy::Float)
+            }
+            (ExprTy::Float, ExprTy::Byte) => {
+                // stack: [..., lhs_float, rhs_byte] -> widen rhs to float.
+                self.op(Opcode::B2I, 0);
+                self.op(Opcode::I2F, 0);
+                Ok(ExprTy::Float)
+            }
             (a, b) => Err(CodegenError::Unsupported(format!(
                 "arithmetic/comparison between {a:?} and {b:?}"
             ))),

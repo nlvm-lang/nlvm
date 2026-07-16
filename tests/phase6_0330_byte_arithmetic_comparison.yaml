@@ -1,0 +1,40 @@
+---
+title: "Phase 6 — byte comparisons and arithmetic (byte widens to int, vm.md § Integer arithmetic)"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "eq ne lt gt le ge sum mixedInt mixedFloat"
+---
+
+#NLFILE phase6/bytearith/Main.nl
+namespace phase6.bytearith;
+class Main {
+	public static int main(string[] args) {
+		byte[] raw = system.text.Encoding.encodeUtf8("AB"); // raw[0] = 65 ('A'), raw[1] = 66 ('B')
+
+		system.Out.print(raw[0] == raw[0] ? "eq" : "eqbad");
+		system.Out.print(" ");
+		system.Out.print(raw[0] != raw[1] ? "ne" : "nebad");
+		system.Out.print(" ");
+		system.Out.print(raw[0] < raw[1] ? "lt" : "ltbad");
+		system.Out.print(" ");
+		system.Out.print(raw[1] > raw[0] ? "gt" : "gtbad");
+		system.Out.print(" ");
+		system.Out.print(raw[0] <= raw[0] ? "le" : "lebad");
+		system.Out.print(" ");
+		system.Out.print(raw[1] >= raw[0] ? "ge" : "gebad");
+		system.Out.print(" ");
+
+		int sum = raw[0] + raw[1]; // byte+byte widens to int (131), no BADD opcode
+		system.Out.print(sum == 131 ? "sum" : "sumbad");
+		system.Out.print(" ");
+
+		int mixedInt = raw[0] + 10; // byte+int -> int
+		system.Out.print(mixedInt == 75 ? "mixedInt" : "mixedIntbad");
+		system.Out.print(" ");
+
+		float mixedFloat = raw[0] + 1.5; // byte+float -> float
+		system.Out.print(mixedFloat == 66.5 ? "mixedFloat" : "mixedFloatbad");
+
+		return 0;
+	}
+}

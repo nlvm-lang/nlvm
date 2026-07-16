@@ -1037,6 +1037,13 @@ impl<'a> MethodChecker<'a> {
     fn check_numeric_or_eq(&self, op: BinOp, lty: &Type, rty: &Type) -> Result<Type, SemaError> {
         match op {
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => types::widen_numeric(lty, rty)
+                // vm.md § Integer arithmetic: there is no byte-typed
+                // arithmetic opcode — `byte` operands are always widened to
+                // `int` before IADD/ISUB/etc, even when both sides are
+                // `byte` (widen_numeric's identical-type passthrough would
+                // otherwise keep the result as `byte`, which the VM never
+                // actually produces).
+                .map(|widened| if matches!(widened, Type::Byte) { Type::Int } else { widened })
                 .ok_or_else(|| SemaError::BadBinaryOperator(op_symbol(op), types::display(lty), types::display(rty))),
             BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => types::widen_numeric(lty, rty)
                 .map(|_| Type::Bool)
