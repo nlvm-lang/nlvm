@@ -1386,7 +1386,7 @@ impl<'a> Emitter<'a> {
 
         // String concatenation: '+' where either side is a string.
         if op == BinOp::Add {
-            let (peek_l, peek_r) = (peek_type(lhs), peek_type(rhs));
+            let (peek_l, peek_r) = (self.peek_type(lhs), self.peek_type(rhs));
             if peek_l == Some(ExprTy::StringT) || peek_r == Some(ExprTy::StringT) {
                 let ty_l = self.compile_expr(lhs)?;
                 if ty_l != ExprTy::StringT {
@@ -1544,23 +1544,31 @@ impl<'a> Emitter<'a> {
         self.patch_branch(end_pc, end_operand);
         Ok(ExprTy::Bool)
     }
-}
 
-/// Best-effort static type of an expression without emitting code — used
-/// only to decide whether `+` means string concatenation before committing
-/// to bytecode order.
-fn peek_type(expr: &Expr) -> Option<ExprTy> {
-    match expr {
-        Expr::StringLit(_) => Some(ExprTy::StringT),
-        Expr::IntLit(_) => Some(ExprTy::Int),
-        Expr::FloatLit(_) => Some(ExprTy::Float),
-        Expr::BoolLit(_) => Some(ExprTy::Bool),
-        Expr::NullLit => Some(ExprTy::Null),
-        Expr::Binary(BinOp::Add, l, r) => match (peek_type(l), peek_type(r)) {
-            (Some(ExprTy::StringT), _) | (_, Some(ExprTy::StringT)) => Some(ExprTy::StringT),
+    /// Best-effort static type of an expression without emitting code — used
+    /// only to decide whether `+` means string concatenation before
+    /// committing to bytecode order. Takes `&self` (unlike a plain free
+    /// function) so an `Expr::Ident` leaf can be resolved to its declared
+    /// type — needed for a left-associative concatenation chain like
+    /// `s + toString(x) + ","`, where the nested `Binary(Add, s, toString(x))`
+    /// has no literal leaf and would otherwise peek as `None`.
+    fn peek_type(&self, expr: &Expr) -> Option<ExprTy> {
+        match expr {
+            Expr::StringLit(_) => Some(ExprTy::StringT),
+            Expr::IntLit(_) => Some(ExprTy::Int),
+            Expr::FloatLit(_) => Some(ExprTy::Float),
+            Expr::BoolLit(_) => Some(ExprTy::Bool),
+            Expr::NullLit => Some(ExprTy::Null),
+            Expr::Ident(name) => match self.resolve_ident(name).ok()? {
+                IdentRef::Local(slot) => Some(slot.ty),
+                IdentRef::CapturedField(ty) => Some(ty),
+            },
+            Expr::Binary(BinOp::Add, l, r) => match (self.peek_type(l), self.peek_type(r)) {
+                (Some(ExprTy::StringT), _) | (_, Some(ExprTy::StringT)) => Some(ExprTy::StringT),
+                _ => None,
+            },
             _ => None,
-        },
-        _ => None,
+        }
     }
 }
 

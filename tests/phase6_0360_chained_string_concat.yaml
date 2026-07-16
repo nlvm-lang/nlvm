@@ -1,0 +1,19 @@
+---
+title: "Phase 6 — left-associative chain of 3+ string concatenations with a non-literal string leaf"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "count=1,count=2,count=3,\n"
+---
+
+#NLFILE phase6/concat_chain/Main.nl
+namespace phase6.concat_chain;
+class Main {
+	public static int main(string[] args) {
+		string s = "";
+		for (int i = 1; i <= 3; i = i + 1) {
+			s = s + "count=" + system.Int.toString(i) + ",";
+		}
+		system.Out.println(s);
+		return 0;
+	}
+}
