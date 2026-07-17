@@ -58,6 +58,10 @@ fn regex_match() -> Type {
     Type::Named("system.text.RegexMatch".to_string())
 }
 
+fn grep_match() -> Type {
+    Type::Named("system.io.GrepMatch".to_string())
+}
+
 fn date_time() -> Type {
     Type::Named("system.time.DateTime".to_string())
 }
@@ -143,6 +147,15 @@ pub fn lookup(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>, Type)> 
         ("system.io.Path", "basename", 1) => Some((vec![Type::StringT], Type::StringT)),
         ("system.io.Path", "extension", 1) => Some((vec![Type::StringT], nullable(Type::StringT))),
         ("system.io.Path", "normalize", 1) => Some((vec![Type::StringT], Type::StringT)),
+        // stdlib.md § system.io.Grep — the two `search` overloads differ in
+        // arity (file path vs dirPath+recursive), so unlike
+        // `system.ps.Process.run` above they need no union-type trick.
+        ("system.io.Grep", "search", 2) => {
+            Some((vec![Type::StringT, Type::StringT], Type::Array(Box::new(grep_match()))))
+        }
+        ("system.io.Grep", "search", 3) => {
+            Some((vec![Type::StringT, Type::StringT, Type::Bool], Type::Array(Box::new(grep_match()))))
+        }
         ("system.SecureRandom", "nextBytes", 1) => Some((vec![byte_array], Type::Void)),
         ("system.SecureRandom", "nextInt", 0) => Some((vec![], Type::Int)),
         ("system.SecureRandom", "nextInt", 1) => Some((vec![Type::Int], Type::Int)),
@@ -239,6 +252,11 @@ pub fn result_field_ty(fqcn: &str, name: &str) -> Option<Type> {
         // non-generic native result shape as `HttpResponse`.
         ("system.text.RegexMatch", "fullMatch") => Some(Type::StringT),
         ("system.text.RegexMatch", "groups") => Some(Type::Array(Box::new(Type::StringT))),
+        // stdlib.md § system.io.Grep — `search`'s result type, same
+        // non-generic native result shape as `HttpResponse`.
+        ("system.io.GrepMatch", "path") => Some(Type::StringT),
+        ("system.io.GrepMatch", "lineNumber") => Some(Type::Int),
+        ("system.io.GrepMatch", "line") => Some(Type::StringT),
         _ => None,
     }
 }
@@ -329,6 +347,7 @@ pub fn throws(fqcn: &str, name: &str) -> &'static [&'static str] {
         ("system.io.File", "writeAllText") => &["IOException"],
         ("system.io.File", "glob") => &["IOException"],
         ("system.io.Directory", "list" | "create" | "remove") => &["IOException"],
+        ("system.io.Grep", "search") => &["IOException"],
         ("system.io.FileHandle", "read" | "readLine" | "write" | "flush") => &["IOException"],
         ("system.net.TcpListener", "construct" | "accept") => &["IOException"],
         ("system.net.TcpStream", "connect" | "read" | "write") => &["IOException"],

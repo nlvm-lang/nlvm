@@ -15,8 +15,9 @@
 //! `system.List<T>`/`system.Map<K,V>` (see the section below), and
 //! `system.io.*` file I/O including `File.open`'s `FileMode` overload and
 //! `File.glob` (backed by `crate::mini_regex`, since patterns are matched
-//! as regex — see that module's doc comment), and `system.text.Regex`/
-//! `system.text.Encoding` (also backed by `crate::mini_regex`, plus
+//! as regex — see that module's doc comment), `system.io.Grep` (same
+//! `mini_regex` backing, applied per-line instead of per-path), and
+//! `system.text.Regex`/`system.text.Encoding` (also backed by `crate::mini_regex`, plus
 //! `crate::text` for base64 and `RegexMatch` construction), and
 //! `system.time.DateTime`/`system.time.TimeZone` (calendar math and IANA
 //! zone lookups in `crate::mini_tz`), and `system.Env` (thin wrapper over
@@ -98,6 +99,7 @@ pub fn is_native_class(fqcn: &str) -> bool {
             | "system.io.File"
             | "system.io.Directory"
             | "system.io.Path"
+            | "system.io.Grep"
             | "system.SecureRandom"
             | "system.Uuid"
             | "system.Env"
@@ -347,6 +349,28 @@ pub fn dispatch(program: &Arc<Program>, fqcn: &str, name: &str, mut args: Vec<Va
             }
         }
         ("system.io.Path", "normalize") => Ok(Some(Value::Str(Arc::new(normalize_path(&str_at(&args, 0)?))))),
+        // stdlib.md § system.io.Grep — line-oriented regex search, backed by
+        // `crate::mini_regex` like `system.text.Regex`/`File.glob` above.
+        // The two `search` overloads are told apart by `args.len()` (2 =
+        // single file, 3 = dirPath + recursive flag), same trick as
+        // `File.open`'s `FileMode` overload. Uses `Regex::find` (partial
+        // /anywhere match — stdlib.md's own wording for `Regex.match` is
+        // "like grep"), not `is_match` (reserved for `File.glob`'s
+        // whole-path semantics).
+        ("system.io.Grep", "search") => {
+            let pattern = str_at(&args, 0)?;
+            let path = str_at(&args, 1)?;
+            let regex = compile_regex(&pattern)?;
+            let mut matches = Vec::new();
+            if args.len() > 2 {
+                let recursive = bool_at(&args, 2)?;
+                grep_path(std::path::Path::new(&path), &regex, recursive, &mut matches)
+                    .map_err(|e| throw_io_error(&path, e))?;
+            } else {
+                grep_file(std::path::Path::new(&path), &regex, &mut matches).map_err(|e| throw_io_error(&path, e))?;
+            }
+            Ok(Some(Value::Array(Arc::new(Mutex::new(matches)))))
+        }
         // stdlib.md § system.SecureRandom — CSPRNG backed by `/dev/urandom`,
         // same source `system.Uuid.random` uses. Not seedable.
         ("system.SecureRandom", "nextBytes") => {
@@ -784,6 +808,62 @@ fn collect_glob_matches(
     Ok(())
 }
 
+/// `system.io.Grep.search` on a single file — appends one `GrepMatch` per
+/// line that `regex` matches anywhere in (partial match, see the dispatch
+/// arm's doc comment).
+fn grep_file(path: &std::path::Path, regex: &crate::mini_regex::Regex, out: &mut Vec<Value>) -> std::io::Result<()> {
+    let content = std::fs::read_to_string(path)?;
+    let path_str = path.to_string_lossy().into_owned();
+    for (i, line) in content.lines().enumerate() {
+        if regex.find(line).is_some() {
+            out.push(build_grep_match(&path_str, (i + 1) as i64, line));
+        }
+    }
+    Ok(())
+}
+
+/// `system.io.Grep.search(pattern, dirPath, recursive)` — stdlib.md: "If
+/// `recursive` is `true`, searches all files under `dirPath`; otherwise only
+/// the file or directory at `dirPath`" (non-recursive over a directory means
+/// its immediate file children only, not their subdirectories). Directory
+/// entries are visited in sorted order for the same stable-output reason as
+/// `collect_glob_matches`/`Directory.list` above.
+fn grep_path(
+    path: &std::path::Path,
+    regex: &crate::mini_regex::Regex,
+    recursive: bool,
+    out: &mut Vec<Value>,
+) -> std::io::Result<()> {
+    if !path.is_dir() {
+        return grep_file(path, regex, out);
+    }
+    let mut entries: Vec<_> = std::fs::read_dir(path)?.collect::<Result<_, _>>()?;
+    entries.sort_by_key(|e| e.file_name());
+    for entry in entries {
+        let child = entry.path();
+        if child.is_dir() {
+            if recursive {
+                grep_path(&child, regex, recursive, out)?;
+            }
+        } else {
+            grep_file(&child, regex, out)?;
+        }
+    }
+    Ok(())
+}
+
+/// Builds a `system.io.GrepMatch` object (stdlib.md § Result types: `path:
+/// string`, `lineNumber: int`, `line: string`) — same shape as
+/// `crate::text::build_regex_match`, but simple enough (no capture groups)
+/// not to warrant its own module.
+fn build_grep_match(path: &str, line_number: i64, line: &str) -> Value {
+    let mut fields = HashMap::new();
+    fields.insert("path".to_string(), Value::Str(Arc::new(path.to_string())));
+    fields.insert("lineNumber".to_string(), Value::Int(line_number));
+    fields.insert("line".to_string(), Value::Str(Arc::new(line.to_string())));
+    Value::Object(Arc::new(Mutex::new(Object { class_name: "system.io.GrepMatch".to_string(), fields })))
+}
+
 /// Maps a host I/O error to the spec's exception types — stdlib.md:
 /// `FileNotFoundException` when the path does not exist, `IOException` for
 /// every other failure.
@@ -803,6 +883,10 @@ fn str_at(args: &[Value], i: usize) -> Result<String, VmError> {
 
 fn int_at(args: &[Value], i: usize) -> Result<i64, VmError> {
     args.get(i).and_then(|v| v.as_int()).ok_or(VmError::Malformed("expected int argument to native call"))
+}
+
+fn bool_at(args: &[Value], i: usize) -> Result<bool, VmError> {
+    args.get(i).and_then(|v| v.as_bool()).ok_or(VmError::Malformed("expected bool argument to native call"))
 }
 
 /// Char-index (not byte-index) of the first occurrence of `needle` in

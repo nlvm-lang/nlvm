@@ -21,6 +21,7 @@ pub fn is_stdlib_class(fqcn: &str) -> bool {
             | "system.io.File"
             | "system.io.Directory"
             | "system.io.Path"
+            | "system.io.Grep"
             | "system.SecureRandom"
             | "system.Uuid"
             | "system.Env"
@@ -65,6 +66,10 @@ pub(crate) fn process_result() -> Type {
 
 fn regex_match() -> Type {
     Type::Named("system.text.RegexMatch".to_string())
+}
+
+fn grep_match() -> Type {
+    Type::Named("system.io.GrepMatch".to_string())
 }
 
 fn date_time() -> Type {
@@ -237,6 +242,15 @@ pub fn signature(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>, Type
         ("system.io.Path", "basename", 1) => Some((vec![Type::StringT], Type::StringT)),
         ("system.io.Path", "extension", 1) => Some((vec![Type::StringT], nullable(Type::StringT))),
         ("system.io.Path", "normalize", 1) => Some((vec![Type::StringT], Type::StringT)),
+        // stdlib.md § system.io.Grep — mirrors `nl_sema::stdlib::lookup`'s
+        // matching entries; no union-type special case needed since the two
+        // `search` overloads differ in arity.
+        ("system.io.Grep", "search", 2) => {
+            Some((vec![Type::StringT, Type::StringT], Type::Array(Box::new(grep_match()))))
+        }
+        ("system.io.Grep", "search", 3) => {
+            Some((vec![Type::StringT, Type::StringT, Type::Bool], Type::Array(Box::new(grep_match()))))
+        }
         ("system.SecureRandom", "nextBytes", 1) => Some((vec![byte_array], Type::Void)),
         ("system.SecureRandom", "nextInt", 0) => Some((vec![], Type::Int)),
         ("system.SecureRandom", "nextInt", 1) => Some((vec![Type::Int], Type::Int)),
@@ -309,6 +323,9 @@ pub fn result_field_ty(fqcn: &str, name: &str) -> Option<Type> {
         ("system.ps.ProcessResult", "stderr") => Some(Type::StringT),
         ("system.text.RegexMatch", "fullMatch") => Some(Type::StringT),
         ("system.text.RegexMatch", "groups") => Some(Type::Array(Box::new(Type::StringT))),
+        ("system.io.GrepMatch", "path") => Some(Type::StringT),
+        ("system.io.GrepMatch", "lineNumber") => Some(Type::Int),
+        ("system.io.GrepMatch", "line") => Some(Type::StringT),
         _ => None,
     }
 }

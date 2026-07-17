@@ -1,0 +1,44 @@
+---
+title: "Phase 6 — system.io.Grep.search: single file and directory (non-recursive/recursive)"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "1 target/tmp_phase6grep/a.txt 2 TODO fix | 1 | 2 target/tmp_phase6grep/a.txt:2 target/tmp_phase6grep/b/c.txt:1"
+---
+
+#NLFILE phase6/grep/Main.nl
+namespace phase6.grep;
+class Main {
+	public static int main(string[] args) {
+		try {
+			system.io.Directory.create("target/tmp_phase6grep/b");
+			system.io.File.writeAllText("target/tmp_phase6grep/a.txt", "hello\nTODO fix\nworld");
+			system.io.File.writeAllText("target/tmp_phase6grep/b/c.txt", "TODO another\nnothing here");
+
+			system.io.GrepMatch[] single = system.io.Grep.search("TODO", "target/tmp_phase6grep/a.txt");
+			system.Out.print(system.Int.toString(single.length()));
+			system.Out.print(" ");
+			system.Out.print(single[0].path);
+			system.Out.print(" ");
+			system.Out.print(system.Int.toString(single[0].lineNumber));
+			system.Out.print(" ");
+			system.Out.print(single[0].line);
+			system.Out.print(" | ");
+
+			system.io.GrepMatch[] nonRec = system.io.Grep.search("TODO", "target/tmp_phase6grep", false);
+			system.Out.print(system.Int.toString(nonRec.length()));
+			system.Out.print(" | ");
+
+			system.io.GrepMatch[] rec = system.io.Grep.search("TODO", "target/tmp_phase6grep", true);
+			system.Out.print(system.Int.toString(rec.length()));
+			for (auto m : rec) {
+				system.Out.print(" ");
+				system.Out.print(m.path);
+				system.Out.print(":");
+				system.Out.print(system.Int.toString(m.lineNumber));
+			}
+			return 0;
+		} catch (system.io.IOException e) {
+			return 1;
+		}
+	}
+}
