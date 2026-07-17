@@ -1,0 +1,56 @@
+---
+title: "Foo.method() — static method call on a user (non-system.*) class, same and cross namespace, plain and aliased import"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "20 100 30"
+---
+
+#NLFILE phase7/staticcall/Utils.nl
+namespace phase7.staticcall;
+class Utils {
+	public construct() {}
+
+	public static int max(int a, int b) {
+		if (a > b) {
+			return a;
+		}
+		return b;
+	}
+
+	public static int clamp(int value, int lo, int hi) {
+		if (value < lo) {
+			return lo;
+		}
+		if (value > hi) {
+			return hi;
+		}
+		return value;
+	}
+}
+
+#NLFILE phase7/staticcall/other/Helper.nl
+namespace phase7.staticcall.other;
+class Helper {
+	public construct() {}
+
+	public static int addTen(int x) {
+		return x + 10;
+	}
+}
+
+#NLFILE phase7/staticcall/Main.nl
+namespace phase7.staticcall;
+use phase7.staticcall.other.Helper as HelperAlias;
+class Main {
+	public static int main(string[] args) {
+		int maximum = Utils.max(10, 20);
+		int clamped = Utils.clamp(150, 0, 100);
+		int added = HelperAlias.addTen(20);
+		system.Out.print(system.Int.toString(maximum));
+		system.Out.print(" ");
+		system.Out.print(system.Int.toString(clamped));
+		system.Out.print(" ");
+		system.Out.print(system.Int.toString(added));
+		return 0;
+	}
+}

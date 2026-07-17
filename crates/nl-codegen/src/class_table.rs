@@ -28,6 +28,7 @@ pub struct MethodInfo {
     pub params: Vec<Type>,
     /// Resolved return type.
     pub return_ty: Type,
+    pub is_static: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -134,6 +135,7 @@ pub fn build_class_table(files: &[SourceFile]) -> HashMap<String, ClassInfo> {
                             name: m.name.clone(),
                             params,
                             return_ty: resolve_type(&m.return_type, &imports),
+                            is_static: m.is_static,
                         }),
                     }
                 }
@@ -149,6 +151,7 @@ pub fn build_class_table(files: &[SourceFile]) -> HashMap<String, ClassInfo> {
                         name: m.name.clone(),
                         params: m.params.iter().map(|p| resolve_type(&p.ty, &imports)).collect(),
                         return_ty: resolve_type(&m.return_type, &imports),
+                        is_static: false,
                     })
                     .collect();
                 ClassInfo { extends: None, fields: Vec::new(), ctors: Vec::new(), methods }

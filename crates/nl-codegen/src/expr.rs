@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use nl_bytecode::{ConstantPool, Opcode};
 use nl_syntax::ast::{BinOp, Expr, LValue, Type, UnOp};
 
-use crate::class_table::{find_ctor, find_field, find_method, resolve_type, ClassInfo};
+use crate::class_table::{find_ctor, find_field, find_method, resolve_type, ClassInfo, MethodInfo};
 use crate::error::CodegenError;
 use crate::type_desc::{method_descriptor, type_descriptor};
 
@@ -860,6 +860,34 @@ impl<'a> Emitter<'a> {
         Ok(ExprTy::Object(fqcn))
     }
 
+    /// `Foo.method(...)` where `fqcn` is a user (non-`system.*`) class
+    /// resolved from a dotted receiver path — see `compile_method_call`'s
+    /// matching comment. Unlike the unqualified `add(5, 3)` form
+    /// (`compile_call`, which only ever targets the *current* class's own
+    /// `static_sigs`), this reaches a static method declared on *any*
+    /// class in the program, so the method ref is built fresh here instead
+    /// of looked up from a precomputed table.
+    fn compile_static_user_call(
+        &mut self,
+        fqcn: &str,
+        name: &str,
+        args: &[Expr],
+        method: MethodInfo,
+    ) -> Result<ExprTy, CodegenError> {
+        let param_tys: Vec<ExprTy> = method.params.iter().map(expr_ty_of).collect();
+        self.compile_call_args(args, &param_tys, name)?;
+
+        let descriptor = method_descriptor(&method.params, &method.return_ty);
+        let name_index = self.cp.add_utf8(name.to_string());
+        let descriptor_index = self.cp.add_type_desc(&descriptor);
+        let class_index = self.cp.add_class(fqcn);
+        let method_ref = self.cp.add_method_ref(class_index, name_index, descriptor_index);
+        let return_ty = expr_ty_of(&method.return_ty);
+        let result_delta = if return_ty == ExprTy::Void { 0 } else { 1 };
+        self.op_u16(Opcode::InvokeStatic, method_ref, result_delta - args.len() as i32);
+        Ok(return_ty)
+    }
+
     fn compile_super_method_call(&mut self, name: &str, args: &[Expr]) -> Result<ExprTy, CodegenError> {
         let super_fqcn = self.superclass_fqcn()?;
         self.op_u16(Opcode::Load, 0, 1);
@@ -1022,6 +1050,19 @@ impl<'a> Emitter<'a> {
             let leading = path.split('.').next().expect("dotted_path is never empty");
             if self.lookup_local(leading).is_err() && crate::stdlib::is_stdlib_class(&path) {
                 return self.compile_stdlib_call(&path, name, args);
+            }
+            // `Utils.max(a, b)` — a dotted path resolving to a *user* class
+            // (as opposed to the `system.*` case above), not a value: same
+            // recognize-before-falling-into-`compile_expr` shape, but
+            // resolved via `resolve_class_name`/`self.classes` instead of
+            // the stdlib table (specs.md's `Utils.swap(ref x, ref y)` etc.).
+            if self.lookup_local(leading).is_err() && self.captured_fields.get(leading).is_none() {
+                let fqcn = self.resolve_class_name(&path);
+                if let Some(method) = find_method(self.classes, &fqcn, name, args.len()) {
+                    if method.is_static {
+                        return self.compile_static_user_call(&fqcn, name, args, method.clone());
+                    }
+                }
             }
         }
         let target_ty = self.compile_expr(target)?;
