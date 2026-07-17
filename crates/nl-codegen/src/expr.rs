@@ -443,6 +443,7 @@ impl<'a> Emitter<'a> {
             Expr::MethodCall(target, name, args) => self.compile_method_call(target, name, args),
             Expr::Index(target, index) => self.compile_index(target, index),
             Expr::InstanceOf(target, type_name) => self.compile_instanceof(target, type_name),
+            Expr::Cast(ty, inner) => self.compile_cast(ty, inner),
             Expr::PostIncr(name) => self.compile_incr(name, 1),
             Expr::PostDecr(name) => self.compile_incr(name, -1),
             Expr::Unary(op, inner) => self.compile_unary(*op, inner),
@@ -1279,6 +1280,43 @@ impl<'a> Emitter<'a> {
         let class_index = self.cp.add_class(&fqcn);
         self.op_u16(Opcode::InstanceOf, class_index, 0);
         Ok(ExprTy::Bool)
+    }
+
+    /// `(T) expr` — specs.md § Type conversions and casting. Validity is
+    /// nl-sema's job (E007); by the time this runs the cast is known-valid,
+    /// so this only has to pick which (if any) conversion opcode makes the
+    /// value's runtime representation match `T`.
+    fn compile_cast(&mut self, ty: &Type, inner: &Expr) -> Result<ExprTy, CodegenError> {
+        let actual = self.compile_expr(inner)?;
+        let target = expr_ty_of(&resolve_type(ty, self.imports));
+        match (&actual, &target) {
+            (ExprTy::Int, ExprTy::Float) => self.op(Opcode::I2F, 0),
+            (ExprTy::Float, ExprTy::Int) => self.op(Opcode::F2I, 0),
+            (ExprTy::Int, ExprTy::Byte) => self.op(Opcode::I2B, 0),
+            (ExprTy::Byte, ExprTy::Int) => self.op(Opcode::B2I, 0),
+            // No direct byte<->float opcode — vm.md's numeric conversions
+            // only define I2F/F2I/I2B/B2I — so route through `int`.
+            (ExprTy::Byte, ExprTy::Float) => {
+                self.op(Opcode::B2I, 0);
+                self.op(Opcode::I2F, 0);
+            }
+            (ExprTy::Float, ExprTy::Byte) => {
+                self.op(Opcode::F2I, 0);
+                self.op(Opcode::I2B, 0);
+            }
+            (actual, ExprTy::StringT) if *actual != ExprTy::StringT => self.op(Opcode::ToString, 0),
+            // Class up/downcast: `CHECKCAST` throws `InvalidCastException`
+            // at runtime on a failed downcast (specs.md § Type conversions
+            // and casting); a harmless no-op check for an upcast, which
+            // nl-sema already knows always succeeds.
+            (ExprTy::Object(_), ExprTy::Object(target_fqcn)) => {
+                let class_index = self.cp.add_class(target_fqcn);
+                self.op_u16(Opcode::CheckCast, class_index, 0);
+            }
+            // Identical type, or no runtime representation change needed.
+            _ => {}
+        }
+        Ok(target)
     }
 
     /// Coerces a single already-compiled value on top of the stack from

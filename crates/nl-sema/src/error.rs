@@ -8,6 +8,8 @@ pub enum SemaError {
     NotAssignable(String, String),
     #[error("E005 — Cannot use 'auto' without an initializer")]
     AutoWithoutInitializer,
+    #[error("E007 — Cannot cast '{0}' to '{1}'")]
+    BadCast(String, String),
     #[error("E008 — Cannot concatenate 'string' with type '{0}' (type does not implement Stringable)")]
     BadConcatenation(String),
     #[error("E009 — Operator '{0}' is not defined for types '{1}' and '{2}'")]
@@ -49,6 +51,7 @@ impl SemaError {
             SemaError::NullToNonNullable(_) => "E003",
             SemaError::NotAssignable(_, _) => "E004",
             SemaError::AutoWithoutInitializer => "E005",
+            SemaError::BadCast(_, _) => "E007",
             SemaError::BadConcatenation(_) => "E008",
             SemaError::BadBinaryOperator(_, _, _) => "E009",
             SemaError::BadUnaryOperator(_, _) => "E009",

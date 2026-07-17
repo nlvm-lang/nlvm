@@ -338,6 +338,10 @@ fn collect_expr(expr: &Expr, imports: &HashMap<String, String>, templates: &Hash
             }
         }
         Expr::FieldAccess(target, _) | Expr::InstanceOf(target, _) => collect_expr(target, imports, templates, out),
+        Expr::Cast(ty, inner) => {
+            collect_type(ty, imports, templates, out);
+            collect_expr(inner, imports, templates, out);
+        }
         Expr::MethodCall(target, _, args) => {
             collect_expr(target, imports, templates, out);
             for a in args {
@@ -526,6 +530,9 @@ fn rewrite_expr(expr: &Expr, imports: &HashMap<String, String>, templates: &Hash
         ),
         Expr::Index(target, index) => Expr::Index(Box::new(rewrite_expr(target, imports, templates)), Box::new(rewrite_expr(index, imports, templates))),
         Expr::InstanceOf(target, type_name) => Expr::InstanceOf(Box::new(rewrite_expr(target, imports, templates)), type_name.clone()),
+        Expr::Cast(ty, inner) => {
+            Expr::Cast(Box::new(rewrite_type(ty, imports, templates)), Box::new(rewrite_expr(inner, imports, templates)))
+        }
         Expr::Unary(op, inner) => Expr::Unary(*op, Box::new(rewrite_expr(inner, imports, templates))),
         Expr::Binary(op, lhs, rhs) => Expr::Binary(*op, Box::new(rewrite_expr(lhs, imports, templates)), Box::new(rewrite_expr(rhs, imports, templates))),
         Expr::Match(subject, arms) => Expr::Match(
@@ -665,6 +672,7 @@ fn subst_expr(expr: &Expr, subst: &HashMap<String, Type>) -> Expr {
         // phase (`type_name` is a bare `String`, not a `Type`) — left as-is
         // (rare inside template bodies; not exercised by tests).
         Expr::InstanceOf(target, type_name) => Expr::InstanceOf(Box::new(subst_expr(target, subst)), type_name.clone()),
+        Expr::Cast(ty, inner) => Expr::Cast(Box::new(subst_type(ty, subst)), Box::new(subst_expr(inner, subst))),
         Expr::Unary(op, inner) => Expr::Unary(*op, Box::new(subst_expr(inner, subst))),
         Expr::Binary(op, lhs, rhs) => Expr::Binary(*op, Box::new(subst_expr(lhs, subst)), Box::new(subst_expr(rhs, subst))),
         Expr::Match(subject, arms) => Expr::Match(

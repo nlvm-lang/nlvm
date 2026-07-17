@@ -248,6 +248,12 @@ pub enum Expr {
     Index(Box<Expr>, Box<Expr>),
     /// `expr instanceof TypeName`.
     InstanceOf(Box<Expr>, String),
+    /// `(T) expr` — specs.md § Type conversions and casting. Validity
+    /// (numeric widening/narrowing, `string`, class up/downcast) is
+    /// nl-sema's job (E007); `Type` carries the full target (array/union
+    /// members included), unlike `InstanceOf`'s bare name, since a cast
+    /// target can be any type, not just a class/interface.
+    Cast(Box<Type>, Box<Expr>),
     PostIncr(String),
     PostDecr(String),
     Unary(UnOp, Box<Expr>),

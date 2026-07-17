@@ -552,6 +552,64 @@ impl<'a> MethodChecker<'a> {
             || self.classes.get(from).is_some_and(|info| info.implements.iter().any(|i| i == to))
     }
 
+    /// `(T) expr` cast validation — compiler.md § Cast validation / E007.
+    /// Numeric widening/narrowing between `int`/`float`/`byte` is always
+    /// valid either way (the direction only matters for whether a cast is
+    /// *required*, which is a parser/ergonomics concern, not a validity
+    /// one); casting to `string` is restricted to primitives, same as `+`
+    /// concatenation (E008) — this codebase doesn't implement `Stringable`
+    /// dispatch (see `nl_vm::value::Value::to_display_string`), so a
+    /// reference-type `(string)` cast can never actually succeed at
+    /// runtime. Class casts (either direction — upcast is always valid,
+    /// downcast is checked at runtime by `CHECKCAST`/`InvalidCastException`)
+    /// are accepted between any two classes/interfaces related by `extends`
+    /// or `implements`; unrelated classes are rejected at compile time.
+    fn check_cast(&self, from: &Type, to: &Type) -> Result<(), SemaError> {
+        // `Type::Void` = "not really modeled by this checker" wildcard, same
+        // as `check_assignable` (an unresolved call, a closure literal, ...).
+        if matches!(from, Type::Void) || matches!(to, Type::Void) {
+            return Ok(());
+        }
+        // The bare `null` literal (not a `T|null` union) can be cast to any
+        // reference type — vm.md's `CHECKCAST` explicitly lets `null`
+        // through. Casting a genuinely nullable union to its non-null
+        // member, just below, is the case compiler.md actually disallows.
+        if matches!(from, Type::NullT) {
+            return Ok(());
+        }
+        if types::is_nullable(from) && !types::is_nullable(to) {
+            return Err(SemaError::BadCast(types::display(from), types::display(to)));
+        }
+        if types::is_numeric(from) && types::is_numeric(to) {
+            return Ok(());
+        }
+        if matches!(to, Type::StringT) {
+            return if is_concat_operand(from) {
+                Ok(())
+            } else {
+                Err(SemaError::BadCast(types::display(from), types::display(to)))
+            };
+        }
+        if let (Type::Named(f), Type::Named(t)) = (from, to) {
+            if f == t
+                || class_table::is_subclass_or_same(self.classes, f, t)
+                || class_table::is_subclass_or_same(self.classes, t, f)
+                || self.classes.get(f).is_some_and(|info| info.implements.iter().any(|i| i == t))
+                || self.classes.get(t).is_some_and(|info| info.implements.iter().any(|i| i == f))
+            {
+                return Ok(());
+            }
+            return Err(SemaError::BadCast(types::display(from), types::display(to)));
+        }
+        if let (Type::Array(fe), Type::Array(te)) = (from, to) {
+            return self.check_cast(fe, te);
+        }
+        if from == to {
+            return Ok(());
+        }
+        Err(SemaError::BadCast(types::display(from), types::display(to)))
+    }
+
     fn check_expr(&mut self, expr: &Expr, assigned: &mut HashSet<u32>) -> Result<Type, SemaError> {
         match expr {
             Expr::IntLit(_) => Ok(Type::Int),
@@ -806,6 +864,12 @@ impl<'a> MethodChecker<'a> {
             Expr::InstanceOf(target, _type_name) => {
                 self.check_expr(target, assigned)?;
                 Ok(Type::Bool)
+            }
+            Expr::Cast(target_ty, inner) => {
+                let value_ty = self.check_expr(inner, assigned)?;
+                let target_ty = self.resolve_ty(target_ty);
+                self.check_cast(&value_ty, &target_ty)?;
+                Ok(target_ty)
             }
             Expr::PostIncr(name) | Expr::PostDecr(name) => {
                 let Some((id, ty)) = self.resolve(name) else {

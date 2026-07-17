@@ -1053,7 +1053,69 @@ impl Parser {
             let expr = self.parse_unary()?;
             return Ok(Expr::Unary(UnOp::Not, Box::new(expr)));
         }
+        // `(T) expr` — specs.md § Operator precedence puts cast at the same
+        // level as the unary operators above. Tried before falling through
+        // to `parse_postfix` (which itself tries a closure before plain
+        // `(expr)` grouping) since `(` starts all three forms.
+        if self.is_punct(Punct::LParen) {
+            if let Some(cast) = self.try_parse_cast()? {
+                return Ok(cast);
+            }
+        }
         self.parse_postfix()
+    }
+
+    /// Attempts `(T) expr` at the current position, restoring `self.pos`
+    /// and returning `None` on any failure — same backtracking strategy as
+    /// `try_parse_closure`, and for the same reason: there is no bounded
+    /// lookahead that distinguishes `(T) expr` from a parenthesized
+    /// expression that merely happens to start with a type-shaped
+    /// identifier (`(a) - b`, where `a` could be a variable), or from a
+    /// closure (`(int a) => ...`, which `parse_postfix`/`parse_primary`
+    /// handle if this returns `None`).
+    fn try_parse_cast(&mut self) -> Result<Option<Expr>, SyntaxError> {
+        let save = self.pos;
+        match self.parse_cast() {
+            Ok(Some(cast)) => Ok(Some(cast)),
+            Ok(None) | Err(_) => {
+                self.pos = save;
+                Ok(None)
+            }
+        }
+    }
+
+    fn parse_cast(&mut self) -> Result<Option<Expr>, SyntaxError> {
+        self.eat_punct(Punct::LParen)?;
+        let ty = self.parse_type()?;
+        self.eat_punct(Punct::RParen)?;
+        if !self.can_start_cast_operand(&ty) {
+            return Ok(None);
+        }
+        let operand = self.parse_unary()?;
+        Ok(Some(Expr::Cast(Box::new(ty), Box::new(operand))))
+    }
+
+    /// Whether the token right after a tentative `(T)` can only start a new
+    /// unary/primary expression — ruling out treating `(name)` as a cast
+    /// when what actually follows is a binary operator continuing `name` as
+    /// a parenthesized *value* (`(a) - b` must parse as subtraction, not as
+    /// `(a)` cast onto unary `-b`). This is the same disambiguation C
+    /// resolves with a typedef table this parser doesn't have; primitive
+    /// numeric/`bool`/`string` target types are exempt from excluding a
+    /// leading `-` because nothing in this grammar produces a bare
+    /// parenthesized value of exactly that shape, so e.g. `(byte) -1` is
+    /// unambiguous.
+    fn can_start_cast_operand(&self, ty: &Type) -> bool {
+        let allow_leading_minus = matches!(ty, Type::Int | Type::Float | Type::Byte | Type::Bool | Type::StringT);
+        match &self.peek().kind {
+            TokenKind::Ident(_) | TokenKind::IntLiteral(_) | TokenKind::FloatLiteral(_) | TokenKind::StringLiteral(_) => true,
+            TokenKind::Keyword(Keyword::True | Keyword::False | Keyword::Null | Keyword::This | Keyword::Super | Keyword::New | Keyword::Match) => {
+                true
+            }
+            TokenKind::Punct(Punct::LParen | Punct::Not) => true,
+            TokenKind::Punct(Punct::Minus) => allow_leading_minus,
+            _ => false,
+        }
     }
 
     /// Primary / postfix precedence level: `.` member access (field or

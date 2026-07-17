@@ -109,6 +109,7 @@ fn collect_expr(expr: &Expr, names: &mut HashSet<String>) {
             }
         }
         Expr::FieldAccess(target, _) | Expr::InstanceOf(target, _) => collect_expr(target, names),
+        Expr::Cast(_, inner) => collect_expr(inner, names),
         Expr::MethodCall(target, _, args) => {
             collect_expr(target, names);
             for a in args {

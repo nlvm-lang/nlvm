@@ -445,7 +445,20 @@ fn exec_step(
                 stack.push(Value::Bool(result));
             }
             Opcode::CheckCast => {
-                return Err(VmError::Unsupported(format!("{op:?} lands in a later phase")));
+                let class_index = read_u16!();
+                let target_fqcn = resolve_class_name(module, class_index)?;
+                let v = stack.pop().ok_or(VmError::Malformed("stack underflow"))?;
+                if let Value::Object(obj) = &v {
+                    let runtime_class = lock(&obj).class_name.clone();
+                    if !is_instance_of(program, runtime_class, target_fqcn) {
+                        return Err(throw_native("InvalidCastException", format!("Cannot cast to {target_fqcn}")));
+                    }
+                }
+                // `null` passes any check (vm.md § CHECKCAST); a non-object,
+                // non-null value reaching here would be an nl-codegen bug
+                // (CHECKCAST is only ever emitted for object-to-object
+                // casts) — pushed back unchanged rather than rejected.
+                stack.push(v);
             }
 
             Opcode::NewArray => {

@@ -1,0 +1,97 @@
+---
+title: "Phase 6 — explicit cast operator `(T) expr` (numeric, string, class up/downcast)"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "i2f f2i i2b b2i negByte str upcast downcast invalidcast disambig"
+---
+
+#NLFILE phase6/cast/Animal.nl
+namespace phase6.cast;
+class Animal {
+	public string name;
+	public construct(string n) { this.name = n; }
+}
+
+#NLFILE phase6/cast/Dog.nl
+namespace phase6.cast;
+use phase6.cast.Animal;
+class Dog extends Animal {
+	public construct(string n) { super(n); }
+	public string bark() { return this.name + " says woof"; }
+}
+
+#NLFILE phase6/cast/Main.nl
+namespace phase6.cast;
+use phase6.cast.Animal;
+use phase6.cast.Dog;
+class Main {
+	public static int main(string[] args) {
+		int i = 42;
+		float f = (float) i;
+		system.Out.print(f == 42.0 ? "i2f" : "i2fbad");
+		system.Out.print(" ");
+
+		float pi = 3.9;
+		int truncated = (int) pi; // truncation toward zero, not rounding
+		system.Out.print(truncated == 3 ? "f2i" : "f2ibad");
+		system.Out.print(" ");
+
+		int wide = 300;
+		byte b = (byte) wide; // low-order bits kept: 300 & 0xFF == 44
+		system.Out.print(((int) b) == 44 ? "i2b" : "i2bbad");
+		system.Out.print(" ");
+
+		byte b2 = (byte) 10;
+		int back = (int) b2;
+		system.Out.print(back == 10 ? "b2i" : "b2ibad");
+		system.Out.print(" ");
+
+		// Primitive numeric cast targets are exempt from the `(name) - x`
+		// disambiguation rule below, so a leading unary minus right after
+		// `(byte)`/`(int)`/... is unambiguously part of the cast operand.
+		int negI = -5;
+		byte negB = (byte) negI; // two's complement low byte of -5 is 251
+		system.Out.print(((int) negB) == 251 ? "negByte" : "negBytebad");
+		system.Out.print(" ");
+
+		string s = (string) i;
+		system.Out.print(s == "42" ? "str" : "strbad");
+		system.Out.print(" ");
+
+		Animal a = new Dog("Rex");
+		Dog d = (Dog) a; // upcast-then-downcast: static type Animal, runtime type Dog
+		system.Out.print(d.bark() == "Rex says woof" ? "upcast" : "upcastbad");
+		system.Out.print(" ");
+
+		Animal justAnimal = new Animal("Generic");
+		bool threw = false;
+		try {
+			Dog bad = (Dog) justAnimal; // compiles (Dog could be an Animal), fails at runtime
+			system.Out.print("downcast should not reach here");
+		} catch (InvalidCastException e) {
+			threw = false;
+			system.Out.print("downcast");
+		}
+		system.Out.print(" ");
+
+		try {
+			Dog bad2 = (Dog) justAnimal;
+		} catch (InvalidCastException e) {
+			threw = true;
+		}
+		system.Out.print(threw ? "invalidcast" : "invalidcastbad");
+		system.Out.print(" ");
+
+		// `(x) - y` must stay subtraction: `x` is a plain int variable here,
+		// not a type, and even if it were parsed as a tentative cast target
+		// the disambiguation rule (parser.rs's `can_start_cast_operand`)
+		// rejects treating a `-` right after a non-primitive cast target as
+		// the start of the cast operand.
+		int x = 3;
+		int y = 2;
+		int r = (x) - y;
+		system.Out.print(r == 1 ? "disambig" : "disambigbad");
+
+		return 0;
+	}
+}
