@@ -1,4 +1,26 @@
+use std::path::Path;
+
 use anyhow::{bail, Context, Result};
+
+/// Recursively collects `.nlm` files under `dir`, sorted for a deterministic
+/// load order regardless of the OS's directory-listing order.
+fn collect_nlm_modules(dir: &Path, out: &mut Vec<String>) -> Result<()> {
+    let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+        .with_context(|| format!("reading directory {}", dir.display()))?
+        .map(|entry| entry.map(|e| e.path()))
+        .collect::<std::io::Result<_>>()
+        .with_context(|| format!("reading directory {}", dir.display()))?;
+    entries.sort();
+
+    for path in entries {
+        if path.is_dir() {
+            collect_nlm_modules(&path, out)?;
+        } else if path.extension().is_some_and(|ext| ext == "nlm") {
+            out.push(path.display().to_string());
+        }
+    }
+    Ok(())
+}
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -26,6 +48,9 @@ fn main() -> Result<()> {
                 past_sep = true;
             }
             other if !past_sep && other.ends_with(".nlm") => module_paths.push(other.to_string()),
+            other if !past_sep && Path::new(other).is_dir() => {
+                collect_nlm_modules(Path::new(other), &mut module_paths)?
+            }
             other => program_args.push(other.to_string()),
         }
         i += 1;
