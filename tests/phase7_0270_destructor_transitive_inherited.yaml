@@ -1,0 +1,78 @@
+---
+title: "GC contract — destruction cascades through object fields, and a subclass without <destruct> runs its inherited one"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: |
+  start
+  made outer
+  outer gone
+  inner gone
+  made sub
+  base gone
+  end
+expected_stderr: ""
+---
+
+#NLFILE phase7/dtorchain/Inner.nl
+namespace phase7.dtorchain;
+class Inner {
+	public construct() {}
+
+	public destruct() {
+		system.Out.println("inner gone");
+	}
+}
+
+#NLFILE phase7/dtorchain/Outer.nl
+namespace phase7.dtorchain;
+class Outer {
+	private Inner inner;
+
+	public construct() {
+		this.inner = new Inner();
+	}
+
+	public destruct() {
+		system.Out.println("outer gone");
+	}
+}
+
+#NLFILE phase7/dtorchain/Base.nl
+namespace phase7.dtorchain;
+class Base {
+	public construct() {}
+
+	public destruct() {
+		system.Out.println("base gone");
+	}
+}
+
+#NLFILE phase7/dtorchain/Sub.nl
+namespace phase7.dtorchain;
+class Sub extends Base {
+	public construct() {
+		super();
+	}
+}
+
+#NLFILE phase7/dtorchain/Main.nl
+namespace phase7.dtorchain;
+class Main {
+	public static void makeOuter() {
+		Outer o = new Outer();
+		system.Out.println("made outer");
+	}
+
+	public static void makeSub() {
+		Sub s = new Sub();
+		system.Out.println("made sub");
+	}
+
+	public static int main(string[] args) {
+		system.Out.println("start");
+		Main.makeOuter();
+		Main.makeSub();
+		system.Out.println("end");
+		return 0;
+	}
+}

@@ -304,25 +304,31 @@ pub fn run_program(modules: &[Module], program_args: &[String]) -> RunOutcome {
     )));
 
     let result = call_static(&program, main_module, main, vec![args_array]);
-    let stdout = lock(&program.stdout).clone();
-    let mut stderr = lock(&program.stderr).clone();
-    match result {
-        Ok(Some(Value::Int(code))) => RunOutcome { exit_code: code as i32, stdout, stderr },
-        Ok(_) => RunOutcome { exit_code: 0, stdout, stderr },
+    // The `result` value is fully consumed (and thus dropped) *before*
+    // stdout/stderr are captured: an unhandled exception object may itself
+    // have a `<destruct>` (see `Object`'s `Drop` impl) whose output must
+    // land in the captured streams like any other destructor's.
+    let (exit_code, error_line) = match result {
+        Ok(Some(Value::Int(code))) => (code as i32, None),
+        Ok(_) => (0, None),
         Err(VmError::Thrown(exc)) => {
-            append_line(&mut stderr, &format!("Unhandled exception: {}", describe_exception(&exc)));
-            RunOutcome { exit_code: 1, stdout, stderr }
+            let line = format!("Unhandled exception: {}", describe_exception(&exc));
+            drop(exc);
+            (1, Some(line))
         }
         // `system.ps.Process.exit(code)` — see `VmError::Exit`'s doc
         // comment. Not an error at all from `run_program`'s point of view,
         // just an early, uncatchable short-circuit of `main`'s own return
         // value.
-        Err(VmError::Exit(code)) => RunOutcome { exit_code: code, stdout, stderr },
-        Err(e) => {
-            append_line(&mut stderr, &format!("Unhandled exception: {e}"));
-            RunOutcome { exit_code: 1, stdout, stderr }
-        }
+        Err(VmError::Exit(code)) => (code, None),
+        Err(e) => (1, Some(format!("Unhandled exception: {e}"))),
+    };
+    let stdout = lock(&program.stdout).clone();
+    let mut stderr = lock(&program.stderr).clone();
+    if let Some(line) = error_line {
+        append_line(&mut stderr, &line);
     }
+    RunOutcome { exit_code, stdout, stderr }
 }
 
 fn append_line(buf: &mut String, line: &str) {

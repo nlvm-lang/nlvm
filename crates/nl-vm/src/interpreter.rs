@@ -434,6 +434,11 @@ fn exec_step(
                 stack.push(Value::Object(Arc::new(Mutex::new(Object {
                     class_name: fqcn,
                     fields,
+                    // The GC-contract destructor hook — see `Object`'s `Drop`
+                    // impl. Only user-class instances (the only objects with
+                    // a bytecode `<destruct>` to call) get a live hook.
+                    program: Arc::downgrade(program),
+                    destroyed: false,
                 }))));
             }
             Opcode::InstanceOf => {
@@ -509,7 +514,12 @@ fn exec_step(
                 if idx < 0 || idx as usize >= arr_mut.len() {
                     return Err(throw_native("IndexOutOfBoundsException", format!("index {idx}, length {}", arr_mut.len())));
                 }
-                arr_mut[idx as usize] = value;
+                // Same lock-ordering care as SET_FIELD: release the array's
+                // lock before the replaced element (and thus a possible
+                // destructor) drops.
+                let replaced = std::mem::replace(&mut arr_mut[idx as usize], value);
+                drop(arr_mut);
+                drop(replaced);
             }
             Opcode::ArrayLength => {
                 let v = stack.pop().ok_or(VmError::Malformed("stack underflow"))?;
@@ -563,7 +573,13 @@ fn exec_step(
                         }
                     }
                 }
-                lock(&obj).fields.insert(field_name, value);
+                // Bind the replaced value so it outlives the statement: the
+                // object's lock (a temporary guard) is released at the end of
+                // this statement, *then* the old value drops — its destructor
+                // (see `Object::drop`) may call back into `obj` and must not
+                // find it still locked.
+                let replaced = lock(&obj).fields.insert(field_name, value);
+                drop(replaced);
             }
             Opcode::GetStatic | Opcode::SetStatic => {
                 return Err(VmError::Unsupported(format!("{op:?} lands in a later phase")));
@@ -881,10 +897,7 @@ fn is_instance_of(program: &Arc<Program>, mut current: String, target_fqcn: &str
 fn throw_native(class_name: &str, message: impl Into<String>) -> VmError {
     let mut fields = HashMap::new();
     fields.insert("message".to_string(), Value::Str(Arc::new(message.into())));
-    VmError::Thrown(Value::Object(Arc::new(Mutex::new(Object {
-        class_name: class_name.to_string(),
-        fields,
-    }))))
+    VmError::Thrown(Value::Object(Arc::new(Mutex::new(Object::native(class_name, fields)))))
 }
 
 /// Searches `method`'s exception table for an entry whose protected range
@@ -918,7 +931,7 @@ fn find_handler(program: &Arc<Program>, module: &Module, method: &MethodDescript
 /// (an inherited-but-not-overridden method) — used by both `INVOKE_INSTANCE`
 /// (`start_fqcn` = the receiver's runtime class) and `INVOKE_SPECIAL`
 /// (`start_fqcn` = the exact class named in the method ref).
-fn resolve_virtual<'m>(
+pub(crate) fn resolve_virtual<'m>(
     program: &'m Arc<Program>,
     start_fqcn: &str,
     name: &str,

@@ -1,0 +1,36 @@
+---
+title: "GC contract — an exception thrown by a destructor is silently discarded; the program continues normally"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: |
+  made bomb
+  bomb dtor
+  survived
+expected_stderr: ""
+---
+
+#NLFILE phase7/dtorthrow/Bomb.nl
+namespace phase7.dtorthrow;
+class Bomb {
+	public construct() {}
+
+	public destruct() {
+		system.Out.println("bomb dtor");
+		throw new RuntimeException("boom");
+	}
+}
+
+#NLFILE phase7/dtorthrow/Main.nl
+namespace phase7.dtorthrow;
+class Main {
+	public static void detonate() {
+		Bomb b = new Bomb();
+		system.Out.println("made bomb");
+	}
+
+	public static int main(string[] args) {
+		Main.detonate();
+		system.Out.println("survived");
+		return 0;
+	}
+}

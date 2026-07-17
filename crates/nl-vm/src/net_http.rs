@@ -157,7 +157,7 @@ fn parse_response(raw: &[u8]) -> Result<Value, VmError> {
     fields.insert("body".to_string(), Value::Str(Arc::new(String::from_utf8_lossy(&body).into_owned())));
     let header_values: Vec<Value> = headers.into_iter().map(|h| Value::Str(Arc::new(h))).collect();
     fields.insert("headers".to_string(), Value::Array(Arc::new(Mutex::new(header_values))));
-    Ok(Value::Object(Arc::new(Mutex::new(Object { class_name: "system.net.HttpResponse".to_string(), fields }))))
+    Ok(Value::Object(Arc::new(Mutex::new(Object::native("system.net.HttpResponse", fields)))))
 }
 
 /// Unwraps `Transfer-Encoding: chunked` (RFC 7230 § 4.1): `<size in

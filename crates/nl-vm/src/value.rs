@@ -1,14 +1,81 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
+
+use crate::program::Program;
 
 /// A heap-allocated class instance — see nlvm-specs/docs/vm.md § Object
 /// layout. Fields are keyed by name rather than a declaration-order offset:
 /// simpler than replicating the exact header/offset layout, and equivalent
 /// as far as anything observable (no code inspects raw memory layout).
+///
+/// The GC contract (vm.md § Garbage collection contract) is fulfilled by
+/// reference counting: `Arc`'s refcount *is* the garbage collector — memory
+/// is reclaimed exactly when the last reference drops, which also makes
+/// destructor calls "prompt" (end of scope) as vm.md recommends. The known
+/// refcounting limitation applies: objects in a reference cycle are never
+/// reclaimed, so their destructors never run (conformant only for acyclic
+/// object graphs; a cycle collector would be a later addition).
 #[derive(Debug)]
 pub struct Object {
     pub class_name: String,
     pub fields: HashMap<String, Value>,
+    /// Back-reference to the running program, used by `Drop` to resolve
+    /// `<destruct>`. `Weak` both to stay out of the refcount (a `Thread`'s
+    /// closure captures `Arc<Program>` *and* objects, which would otherwise
+    /// cycle) and because native/stdlib objects have no bytecode class to
+    /// look a destructor up in — they use `Weak::new()` (never upgrades).
+    pub(crate) program: Weak<Program>,
+    /// "A destructor is called at most once per object" (vm.md): set on the
+    /// resurrection copy `Drop` builds to run `<destruct>` on, so that copy
+    /// — even if the destructor leaks `this` back into a live structure and
+    /// it dies again later — never re-triggers the destructor.
+    pub(crate) destroyed: bool,
+}
+
+impl Object {
+    /// A native/stdlib instance (`system.*` handles, result records,
+    /// VM-raised exceptions): no backing bytecode module, hence no
+    /// destructor lookup on drop.
+    pub fn native(class_name: impl Into<String>, fields: HashMap<String, Value>) -> Object {
+        Object {
+            class_name: class_name.into(),
+            fields,
+            program: Weak::new(),
+            destroyed: false,
+        }
+    }
+}
+
+impl Drop for Object {
+    /// GC hook — vm.md § Garbage collection contract: "If a class defines a
+    /// `destruct` method, the VM must call it before reclaiming the
+    /// object's memory." Runs when the last `Arc` to this object drops.
+    /// `<destruct>` is resolved like any virtual method (walking `extends`,
+    /// so an inherited destructor runs for subclasses too; only the most
+    /// derived one runs — the spec defines no C++-style chaining). Since
+    /// `Drop` only has `&mut self` (the `Arc` is already gone), the fields
+    /// are moved into a fresh, pre-`destroyed` object to serve as `this`.
+    /// A thrown exception is silently discarded per the same contract.
+    fn drop(&mut self) {
+        if self.destroyed {
+            return;
+        }
+        let Some(program) = self.program.upgrade() else {
+            return;
+        };
+        let Some((module, method)) =
+            crate::interpreter::resolve_virtual(&program, &self.class_name, "<destruct>", "() -> void")
+        else {
+            return;
+        };
+        let this = Value::Object(Arc::new(Mutex::new(Object {
+            class_name: std::mem::take(&mut self.class_name),
+            fields: std::mem::take(&mut self.fields),
+            program: std::mem::replace(&mut self.program, Weak::new()),
+            destroyed: true,
+        })));
+        let _ = crate::interpreter::call_instance(&program, module, method, this, Vec::new());
+    }
 }
 
 /// Tagged runtime value — see nlvm-specs/docs/vm.md § Value representation.

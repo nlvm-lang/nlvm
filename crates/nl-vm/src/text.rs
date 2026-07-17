@@ -27,7 +27,7 @@ pub fn build_regex_match(m: &mini_regex::Match, chars: &[char]) -> Value {
     let mut fields = HashMap::new();
     fields.insert("fullMatch".to_string(), Value::Str(Arc::new(full_match)));
     fields.insert("groups".to_string(), Value::Array(Arc::new(Mutex::new(groups))));
-    Value::Object(Arc::new(Mutex::new(Object { class_name: "system.text.RegexMatch".to_string(), fields })))
+    Value::Object(Arc::new(Mutex::new(Object::native("system.text.RegexMatch", fields))))
 }
 
 const BASE64_ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

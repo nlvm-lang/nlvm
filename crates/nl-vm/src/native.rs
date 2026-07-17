@@ -263,10 +263,7 @@ pub fn dispatch(program: &Arc<Program>, fqcn: &str, name: &str, mut args: Vec<Va
             let id = program.register_file(file);
             let mut fields = HashMap::new();
             fields.insert("__fd__".to_string(), Value::Int(id));
-            Ok(Some(Value::Object(Arc::new(Mutex::new(Object {
-                class_name: "system.io.FileHandle".to_string(),
-                fields,
-            })))))
+            Ok(Some(Value::Object(Arc::new(Mutex::new(Object::native("system.io.FileHandle", fields))))))
         }
         ("system.io.File", "readAllText") => {
             let path = str_at(&args, 0)?;
@@ -446,10 +443,7 @@ pub fn dispatch(program: &Arc<Program>, fqcn: &str, name: &str, mut args: Vec<Va
             let id = program.register_tcp_stream(stream);
             let mut fields = HashMap::new();
             fields.insert("__fd__".to_string(), Value::Int(id));
-            Ok(Some(Value::Object(Arc::new(Mutex::new(Object {
-                class_name: "system.net.TcpStream".to_string(),
-                fields,
-            })))))
+            Ok(Some(Value::Object(Arc::new(Mutex::new(Object::native("system.net.TcpStream", fields))))))
         }
         ("system.net.Http", "get") => {
             let url = str_at(&args, 0)?;
@@ -516,10 +510,7 @@ pub fn dispatch(program: &Arc<Program>, fqcn: &str, name: &str, mut args: Vec<Va
                 "stderr".to_string(),
                 Value::Str(Arc::new(String::from_utf8_lossy(&output.stderr).into_owned())),
             );
-            Ok(Some(Value::Object(Arc::new(Mutex::new(Object {
-                class_name: "system.ps.ProcessResult".to_string(),
-                fields,
-            })))))
+            Ok(Some(Value::Object(Arc::new(Mutex::new(Object::native("system.ps.ProcessResult", fields))))))
         }
         ("system.ps.Process", "pid") => Ok(Some(Value::Int(std::process::id() as i64))),
         // Never actually returns to the caller — see `VmError::Exit`'s doc
@@ -700,7 +691,7 @@ fn read_process_info(pid: u32, usernames: &HashMap<u32, String>) -> Option<Value
         Value::Array(Arc::new(Mutex::new(parts.into_iter().map(|a| Value::Str(Arc::new(a))).collect()))),
     );
     fields.insert("user".to_string(), user.map_or(Value::Null, |u| Value::Str(Arc::new(u))));
-    Some(Value::Object(Arc::new(Mutex::new(Object { class_name: "system.ps.ProcessInfo".to_string(), fields }))))
+    Some(Value::Object(Arc::new(Mutex::new(Object::native("system.ps.ProcessInfo", fields)))))
 }
 
 /// Reads `n` cryptographically secure random bytes from the OS entropy
@@ -861,7 +852,7 @@ fn build_grep_match(path: &str, line_number: i64, line: &str) -> Value {
     fields.insert("path".to_string(), Value::Str(Arc::new(path.to_string())));
     fields.insert("lineNumber".to_string(), Value::Int(line_number));
     fields.insert("line".to_string(), Value::Str(Arc::new(line.to_string())));
-    Value::Object(Arc::new(Mutex::new(Object { class_name: "system.io.GrepMatch".to_string(), fields })))
+    Value::Object(Arc::new(Mutex::new(Object::native("system.io.GrepMatch", fields))))
 }
 
 /// Maps a host I/O error to the spec's exception types — stdlib.md:
@@ -958,10 +949,7 @@ fn array_from_bytes(bytes: Vec<u8>) -> Value {
 pub(crate) fn throw_native(class_name: &str, message: impl Into<String>) -> VmError {
     let mut fields = HashMap::new();
     fields.insert("message".to_string(), Value::Str(Arc::new(message.into())));
-    VmError::Thrown(Value::Object(Arc::new(Mutex::new(crate::value::Object {
-        class_name: class_name.to_string(),
-        fields,
-    }))))
+    VmError::Thrown(Value::Object(Arc::new(Mutex::new(Object::native(class_name, fields)))))
 }
 
 /// `system.io.FileHandle` and `system.Random` — like the native generic
@@ -1154,10 +1142,7 @@ pub fn is_random_class(fqcn: &str) -> bool {
 pub fn new_random_object() -> Value {
     let mut fields = HashMap::new();
     fields.insert("__state__".to_string(), Value::Int(0));
-    Value::Object(Arc::new(Mutex::new(Object {
-        class_name: "system.Random".to_string(),
-        fields,
-    })))
+    Value::Object(Arc::new(Mutex::new(Object::native("system.Random", fields))))
 }
 
 pub fn construct_random(receiver: &Value, mut args: Vec<Value>) -> Result<(), VmError> {
@@ -1234,13 +1219,13 @@ fn new_datetime_object(epoch: i64, zone: String) -> Value {
     let mut fields = HashMap::new();
     fields.insert("__epoch__".to_string(), Value::Int(epoch));
     fields.insert("__zone__".to_string(), Value::Str(Arc::new(zone)));
-    Value::Object(Arc::new(Mutex::new(Object { class_name: "system.time.DateTime".to_string(), fields })))
+    Value::Object(Arc::new(Mutex::new(Object::native("system.time.DateTime", fields))))
 }
 
 fn new_timezone_object(id: String) -> Value {
     let mut fields = HashMap::new();
     fields.insert("__id__".to_string(), Value::Str(Arc::new(id)));
-    Value::Object(Arc::new(Mutex::new(Object { class_name: "system.time.TimeZone".to_string(), fields })))
+    Value::Object(Arc::new(Mutex::new(Object::native("system.time.TimeZone", fields))))
 }
 
 /// Extracts `__id__` from a `TimeZone` argument (`DateTime.now(zone)`).
@@ -1357,7 +1342,7 @@ pub fn is_net_udp_class(fqcn: &str) -> bool {
 pub fn new_tcp_listener_object() -> Value {
     let mut fields = HashMap::new();
     fields.insert("__fd__".to_string(), Value::Int(-1));
-    Value::Object(Arc::new(Mutex::new(Object { class_name: "system.net.TcpListener".to_string(), fields })))
+    Value::Object(Arc::new(Mutex::new(Object::native("system.net.TcpListener", fields))))
 }
 
 pub fn construct_tcp_listener(program: &Arc<Program>, receiver: &Value, args: Vec<Value>) -> Result<(), VmError> {
@@ -1399,10 +1384,7 @@ fn dispatch_tcp_listener(
             let stream_id = program.register_tcp_stream(stream);
             let mut fields = HashMap::new();
             fields.insert("__fd__".to_string(), Value::Int(stream_id));
-            Ok(Some(Value::Object(Arc::new(Mutex::new(Object {
-                class_name: "system.net.TcpStream".to_string(),
-                fields,
-            })))))
+            Ok(Some(Value::Object(Arc::new(Mutex::new(Object::native("system.net.TcpStream", fields))))))
         }
         _ => Err(VmError::MethodNotFound(format!("system.net.TcpListener.{name}"))),
     }
@@ -1472,7 +1454,7 @@ fn dispatch_tcp_stream(program: &Arc<Program>, name: &str, receiver: &Value, arg
 pub fn new_udp_socket_object() -> Value {
     let mut fields = HashMap::new();
     fields.insert("__fd__".to_string(), Value::Int(-1));
-    Value::Object(Arc::new(Mutex::new(Object { class_name: "system.net.UdpSocket".to_string(), fields })))
+    Value::Object(Arc::new(Mutex::new(Object::native("system.net.UdpSocket", fields))))
 }
 
 /// `construct()` takes no arguments and declares no `throws` (stdlib.md),
@@ -1589,28 +1571,19 @@ pub fn new_thread_object() -> Value {
     let mut fields = HashMap::new();
     fields.insert("__tid__".to_string(), Value::Int(-1));
     fields.insert("__task__".to_string(), Value::Null);
-    Value::Object(Arc::new(Mutex::new(Object {
-        class_name: "system.thread.Thread".to_string(),
-        fields,
-    })))
+    Value::Object(Arc::new(Mutex::new(Object::native("system.thread.Thread", fields))))
 }
 
 pub fn new_mutex_object() -> Value {
     let mut fields = HashMap::new();
     fields.insert("__mid__".to_string(), Value::Int(-1));
-    Value::Object(Arc::new(Mutex::new(Object {
-        class_name: "system.thread.Mutex".to_string(),
-        fields,
-    })))
+    Value::Object(Arc::new(Mutex::new(Object::native("system.thread.Mutex", fields))))
 }
 
 pub fn new_semaphore_object() -> Value {
     let mut fields = HashMap::new();
     fields.insert("__sid__".to_string(), Value::Int(-1));
-    Value::Object(Arc::new(Mutex::new(Object {
-        class_name: "system.thread.Semaphore".to_string(),
-        fields,
-    })))
+    Value::Object(Arc::new(Mutex::new(Object::native("system.thread.Semaphore", fields))))
 }
 
 /// `Thread(() => void task)` — just stashes the closure; the thread isn't
@@ -1817,7 +1790,7 @@ pub fn new_generic_object(fqcn: &str) -> Value {
         fields.insert("__keys__".to_string(), Value::Array(Arc::new(Mutex::new(Vec::new()))));
         fields.insert("__values__".to_string(), Value::Array(Arc::new(Mutex::new(Vec::new()))));
     }
-    Value::Object(Arc::new(Mutex::new(Object { class_name: fqcn.to_string(), fields })))
+    Value::Object(Arc::new(Mutex::new(Object::native(fqcn, fields))))
 }
 
 /// `Opcode::InvokeSpecial` on a native generic class's `<construct>`. Only
@@ -1992,7 +1965,7 @@ fn dispatch_map(program: &Arc<Program>, name: &str, receiver: &Value, mut args: 
                     let mut fields = HashMap::new();
                     fields.insert("key".to_string(), k.clone());
                     fields.insert("value".to_string(), v.clone());
-                    Value::Object(Arc::new(Mutex::new(Object { class_name: entry_class.clone(), fields })))
+                    Value::Object(Arc::new(Mutex::new(Object::native(entry_class.clone(), fields))))
                 })
                 .collect();
             Ok(Some(Value::Array(Arc::new(Mutex::new(entries)))))

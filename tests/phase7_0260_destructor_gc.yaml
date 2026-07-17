@@ -1,0 +1,49 @@
+---
+title: "GC contract — <destruct> runs promptly when the last reference drops: scope exit, reassignment, end of main"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: |
+  before
+  in scope
+  destroyed a
+  destroyed x
+  mid
+  after
+  destroyed m
+  destroyed y
+expected_stderr: ""
+---
+
+#NLFILE phase7/dtor/Resource.nl
+namespace phase7.dtor;
+class Resource {
+	private string name;
+
+	public construct(string name) {
+		this.name = name;
+	}
+
+	public destruct() {
+		system.Out.println("destroyed " + this.name);
+	}
+}
+
+#NLFILE phase7/dtor/Main.nl
+namespace phase7.dtor;
+class Main {
+	public static void helper() {
+		Resource r = new Resource("a");
+		system.Out.println("in scope");
+	}
+
+	public static int main(string[] args) {
+		Resource m = new Resource("m");
+		system.Out.println("before");
+		Main.helper();
+		Resource x = new Resource("x");
+		x = new Resource("y");
+		system.Out.println("mid");
+		system.Out.println("after");
+		return 0;
+	}
+}
