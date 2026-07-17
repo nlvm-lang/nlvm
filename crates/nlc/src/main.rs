@@ -1,6 +1,26 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
+
+/// Recursively collects `.nl` files under `dir`, sorted for a deterministic
+/// compilation order regardless of the OS's directory-listing order.
+fn collect_nl_sources(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)
+        .with_context(|| format!("reading directory {}", dir.display()))?
+        .map(|entry| entry.map(|e| e.path()))
+        .collect::<std::io::Result<_>>()
+        .with_context(|| format!("reading directory {}", dir.display()))?;
+    entries.sort();
+
+    for path in entries {
+        if path.is_dir() {
+            collect_nl_sources(&path, out)?;
+        } else if path.extension().is_some_and(|ext| ext == "nl") {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -18,7 +38,14 @@ fn main() -> Result<()> {
             "--entry" => {
                 i += 1; // accepted, not yet used to pick the entry module
             }
-            other => sources.push(PathBuf::from(other)),
+            other => {
+                let path = PathBuf::from(other);
+                if path.is_dir() {
+                    collect_nl_sources(&path, &mut sources)?;
+                } else {
+                    sources.push(path);
+                }
+            }
         }
         i += 1;
     }
