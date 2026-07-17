@@ -68,6 +68,13 @@ Une fois tout vert.
 - Le contrat GC impose des appels de destructeurs : un simple comptage de références ou mark-and-sweep naïf suffira au début, mais il faut choisir tôt.
 - Les tests `m7_0030` (use-after-close) montrent que les specs incluent des exigences de sûreté runtime, pas seulement compile-time.
 
+## Écarts spec/implémentation connus (à traiter)
+
+Repérés en écrivant des démos externes (`nlvm-demos`), donc côté usage réel plutôt que tests internes. Les deux sont des trous d'implémentation, pas des ambiguïtés de spec — la spec est claire dans les deux cas.
+
+- **Alias d'import (`use x.Y as Z;`)** : documenté dans `nlvm-specs/docs/specs.md` § Imports ("Using aliases") et § compiler.md § Import name resolution (code E043), mais `Keyword::As` n'est jamais consommé dans `parse_source_file` — la boucle `use` s'arrête au `;` juste après le chemin pointé (`nl-syntax/src/parser.rs:105-114`). Déjà noté en passant à l'entrée E043 de Phase 7 (« Pas de support des alias `as` dans ce parseur, donc seule cette partie du spec est vérifiable »). À traiter : consommer un `as <ident>` optionnel après le chemin, porter l'alias à côté du FQCN importé dans `SourceFile.uses`, et l'utiliser pour la résolution de nom (au lieu du dernier segment du chemin) partout où `uses` est consulté (`nl-sema`, `nl-codegen`).
+- **Appel de méthode statique sur une classe utilisateur (`Foo.method()`, `Foo` non-`system.*`)** : documenté et utilisé explicitement dans specs.md (`Utils.swap(ref x, ref y)`, `Utils.max(a, b)`, `Utils.clamp(...)`, lignes ~944-992) — et vu la règle une-classe-par-fichier, `Utils` et l'appelant sont forcément dans des fichiers différents dans un vrai programme. `compile_method_call` (`nl-codegen/src/expr.rs:1009`) a un chemin dédié pour les récepteurs `system.*` (test `dotted_path` + `is_stdlib_class`, ligne ~1021) mais aucun équivalent pour une classe utilisateur : l'identifiant retombe dans `compile_expr(target)` → `resolve_ident` (`expr.rs:334-355`), qui ne connaît que locales et champs capturés, donc échoue en `unsupported construct: undefined variable '<Nom>'` — y compris quand la classe est dans le même namespace/fichier voisin, pas seulement cross-namespace. Pas mentionné ailleurs dans ce PLAN ni PLAN_phase6.md, donc probablement raté en Phase 6/7 plutôt que reporté sciemment. À traiter : dans `compile_method_call`, avant de tomber dans `compile_expr(target)`, détecter le cas où `target` est un identifiant/chemin qui résout à un nom de classe connu de `self.classes` (pas juste stdlib) et émettre un `INVOKE_STATIC` vers cette classe plutôt que de tenter de charger une variable locale.
+
 ## Suivi d'avancement
 
 - [x] Phase 0 — Bootstrap
