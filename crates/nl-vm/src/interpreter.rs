@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use nl_bytecode::{ConstantPoolEntry, MethodDescriptor, Module, Opcode};
+use nl_bytecode::{class_flags, field_flags, method_flags, ConstantPoolEntry, MethodDescriptor, Module, Opcode};
 
 use crate::error::VmError;
 use crate::program::Program;
@@ -61,13 +61,17 @@ fn run_frame(
     let mut stack: Vec<Value> = Vec::with_capacity(method.max_stack as usize);
     let code = &method.code;
     let mut pc: usize = 0;
+    // vm.md § SET_FIELD: readonly enforcement is exempted only inside the
+    // declaring class's own constructor — computed once per frame since it
+    // never changes across instructions.
+    let is_constructor = method.flags & method_flags::CONSTRUCTOR != 0;
 
     loop {
         if pc >= code.len() {
             return Ok(None);
         }
         let opcode_pc = pc;
-        match exec_step(program, module, &mut locals, &mut stack, code, &mut pc) {
+        match exec_step(program, module, is_constructor, &mut locals, &mut stack, code, &mut pc) {
             Ok(Step::Continue) => {}
             Ok(Step::Return(v)) => return Ok(v),
             Err(VmError::Thrown(exc)) => match find_handler(program, module, method, opcode_pc, &exc) {
@@ -91,6 +95,7 @@ fn run_frame(
 fn exec_step(
     program: &Arc<Program>,
     module: &Module,
+    is_constructor: bool,
     locals: &mut [Value],
     stack: &mut Vec<Value>,
     code: &[u8],
@@ -538,6 +543,26 @@ fn exec_step(
                 let Value::Object(obj) = receiver else {
                     return Err(VmError::Malformed("SET_FIELD on non-object"));
                 };
+                // vm.md § SET_FIELD: "the VM must reject writes to readonly
+                // fields outside constructors at runtime (as a safety net;
+                // the compiler should have caught this)". A field is
+                // readonly if its own descriptor says so, or if the class
+                // that declares it is itself `readonly` (all fields
+                // immutable — specs.md § Readonly). The only exempt write is
+                // `this.field = ...` inside the *declaring* class's own
+                // `<construct>` (compiler.md's E013/E014 rule, mirrored here
+                // as a coarser runtime check).
+                let runtime_class = lock(&obj).class_name.clone();
+                if let Some((owner_module, field)) = resolve_field_owner(program, &runtime_class, &field_name) {
+                    let readonly = field.flags & field_flags::READONLY != 0 || owner_module.class_flags & class_flags::READONLY != 0;
+                    if readonly {
+                        let is_this = matches!(&locals[0], Value::Object(this_obj) if Arc::ptr_eq(this_obj, &obj));
+                        let in_owner_constructor = is_constructor && owner_module.this_class_name() == module.this_class_name();
+                        if !(is_this && in_owner_constructor) {
+                            return Err(VmError::Malformed("SET_FIELD: write to readonly field outside constructor"));
+                        }
+                    }
+                }
                 lock(&obj).fields.insert(field_name, value);
             }
             Opcode::GetStatic | Opcode::SetStatic => {
@@ -904,6 +929,29 @@ fn resolve_virtual<'m>(
         let module = program.get(&current)?;
         if let Some(target) = module.find_method_by_descriptor(name, descriptor) {
             return Some((module, target));
+        }
+        if module.super_class == 0 {
+            return None;
+        }
+        current = module.constant_pool.class_name_at(module.super_class)?.to_string();
+    }
+}
+
+/// Resolves the field named `name`, walking the `extends` chain from
+/// `start_fqcn` (the receiver's runtime class) up to whichever ancestor
+/// actually declares it — mirrors `resolve_virtual` for methods. Returns
+/// `None` for a field the VM can't account for (e.g. a native/stdlib
+/// object), which leaves `SET_FIELD` unrestricted rather than guessing.
+fn resolve_field_owner<'m>(
+    program: &'m Arc<Program>,
+    start_fqcn: &str,
+    name: &str,
+) -> Option<(&'m Module, &'m nl_bytecode::FieldDescriptor)> {
+    let mut current = start_fqcn.to_string();
+    loop {
+        let module = program.get(&current)?;
+        if let Some(field) = module.find_field(name) {
+            return Some((module, field));
         }
         if module.super_class == 0 {
             return None;

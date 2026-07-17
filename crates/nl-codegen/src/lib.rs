@@ -154,7 +154,7 @@ fn compile_file(file: &SourceFile, all_files: &[SourceFile], classes: &HashMap<S
                 version: nl_bytecode::module::VERSION,
                 constant_pool: cp,
                 this_class,
-                class_flags: 0,
+                class_flags: if class.is_readonly { class_flags::READONLY } else { 0 },
                 super_class,
                 interfaces,
                 fields,
