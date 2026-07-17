@@ -1,0 +1,29 @@
+---
+title: "Compile E033 — concrete subclass leaves an abstract method unimplemented"
+file_separator: "#NLFILE"
+expected_compile_error: "E033"
+---
+
+#NLFILE phase7/e033/Shape.nl
+namespace phase7.e033;
+abstract class Shape {
+	public abstract float area();
+}
+
+#NLFILE phase7/e033/Square.nl
+namespace phase7.e033;
+class Square extends Shape {
+	private float side;
+
+	public construct(float side) {
+		this.side = side;
+	}
+}
+
+#NLFILE phase7/e033/Main.nl
+namespace phase7.e033;
+class Main {
+	public static int main(string[] args) {
+		return 0;
+	}
+}

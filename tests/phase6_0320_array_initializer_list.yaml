@@ -30,7 +30,7 @@ class Main {
 		return 0;
 	}
 
-	static void printInts(int[] values) {
+	private static void printInts(int[] values) {
 		int i = 0;
 		while (i < values.length()) {
 			system.Out.print(system.Int.toString(values[i]));

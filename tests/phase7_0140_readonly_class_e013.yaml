@@ -1,0 +1,25 @@
+---
+title: "Compile E013 — property of a readonly class modified outside construct"
+file_separator: "#NLFILE"
+expected_compile_error: "E013"
+---
+
+#NLFILE phase7/e013/Money.nl
+namespace phase7.e013;
+class readonly Money {
+	public int cents;
+
+	public construct(int cents) {
+		this.cents = cents;
+	}
+}
+
+#NLFILE phase7/e013/Main.nl
+namespace phase7.e013;
+class Main {
+	public static int main(string[] args) {
+		auto m = new Money(100);
+		m.cents = 200;
+		return 0;
+	}
+}

@@ -14,17 +14,17 @@ namespace phase6.dotted_types;
 // or parameter position, which goes through the separate parse_type_atom
 // path (parse_type -> parse_type_atom).
 class Counter {
-	system.thread.Mutex mutex;
-	system.List<int> history;
-	int value;
+	public system.thread.Mutex mutex;
+	public system.List<int> history;
+	private int value;
 
-	construct() {
+	public construct() {
 		this.mutex = new system.thread.Mutex();
 		this.history = new system.List<int>();
 		this.value = 0;
 	}
 
-	void increment(system.thread.Mutex externalLock) {
+	public void increment(system.thread.Mutex externalLock) {
 		externalLock.lock();
 		this.value = this.value + 1;
 		this.history.pushBack(this.value);

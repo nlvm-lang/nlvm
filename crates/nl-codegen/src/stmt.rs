@@ -30,7 +30,7 @@ impl<'a> Emitter<'a> {
             Stmt::Expr(expr) => {
                 self.compile_expr_stmt(expr)?;
             }
-            Stmt::VarDecl { ty, name, init: Some(init) } => {
+            Stmt::VarDecl { ty, name, init: Some(init), is_const: _ } => {
                 let init_ty = self.compile_expr(init)?;
                 let declared_ty = match ty {
                     Some(t) => expr_ty_of(&resolve_type(t, self.imports)),
@@ -40,7 +40,7 @@ impl<'a> Emitter<'a> {
                 let index = self.declare_local(name.clone(), declared_ty);
                 self.emit_store(index);
             }
-            Stmt::VarDecl { ty, name, init: None } => {
+            Stmt::VarDecl { ty, name, init: None, is_const: _ } => {
                 // `auto` without an initializer is rejected by nl-sema
                 // (E005); reaching this point implies `ty` is present. The
                 // slot is reserved but left unwritten — nl-sema's definite

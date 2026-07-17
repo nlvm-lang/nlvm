@@ -21,6 +21,15 @@ pub fn is_numeric(ty: &Type) -> bool {
     matches!(ty, Type::Int | Type::Float | Type::Byte)
 }
 
+/// Whether `display`'s rendering of a type names one of the primitives —
+/// used to pick "which side of a failed binary operator is the (non-
+/// primitive) template argument" (`checker::relabel_template_operator_error`,
+/// E006) without needing the original `Type` value, only its error-message
+/// string.
+pub fn is_primitive_display(s: &str) -> bool {
+    matches!(s, "int" | "float" | "bool" | "byte" | "string" | "void" | "null")
+}
+
 /// Numeric widening lattice: `byte` -> `int` -> `float` (specs.md § Type
 /// conversions and casting, implicit conversions table).
 fn numeric_rank(ty: &Type) -> Option<u8> {

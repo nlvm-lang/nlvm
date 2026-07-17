@@ -1,0 +1,15 @@
+---
+title: "Compile E012 — const local variable reassigned"
+file_separator: "#NLFILE"
+expected_compile_error: "E012"
+---
+
+#NLFILE phase7/e012/Main.nl
+namespace phase7.e012;
+class Main {
+	public static int main(string[] args) {
+		const int x = 42;
+		x = 7;
+		return x;
+	}
+}

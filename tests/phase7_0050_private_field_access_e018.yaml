@@ -1,0 +1,24 @@
+---
+title: "Compile E018 — private member not accessible from outside its class"
+file_separator: "#NLFILE"
+expected_compile_error: "E018"
+---
+
+#NLFILE phase7/e018/Box.nl
+namespace phase7.e018;
+class Box {
+	private int value;
+
+	public construct() {
+		this.value = 0;
+	}
+}
+
+#NLFILE phase7/e018/Main.nl
+namespace phase7.e018;
+class Main {
+	public static int main(string[] args) {
+		auto b = new Box();
+		return b.value;
+	}
+}

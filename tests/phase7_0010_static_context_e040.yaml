@@ -1,0 +1,19 @@
+---
+title: "Compile E040 — 'this' used in a static context"
+file_separator: "#NLFILE"
+expected_compile_error: "E040"
+---
+
+#NLFILE phase7/e040/Main.nl
+namespace phase7.e040;
+class Main {
+	public int value;
+
+	public static int helper() {
+		return this.value;
+	}
+
+	public static int main(string[] args) {
+		return helper();
+	}
+}

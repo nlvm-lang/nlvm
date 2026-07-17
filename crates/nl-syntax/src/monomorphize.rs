@@ -48,6 +48,29 @@ struct TemplateInfo {
     decl: ClassDecl,
 }
 
+/// Every distinct `(template class, concrete type arguments)` combination
+/// actually used anywhere in `files`, keyed by mangled FQCN — step 1 of
+/// `expand`, exposed standalone so `nl-sema` can check bounded type
+/// parameters (compiler.md § Template instantiation, E037) against the
+/// *original* (pre-expansion) `Type::Generic`/`new T<...>(...)` sites, which
+/// no longer exist once `expand` has rewritten them away.
+pub fn collect_instantiations(files: &[SourceFile]) -> HashMap<String, (String, Vec<Type>)> {
+    let mut templates: HashMap<String, TemplateInfo> = HashMap::new();
+    for file in files {
+        if let SourceItem::Class(class) = &file.item {
+            if !class.type_params.is_empty() {
+                templates.insert(fqcn_of(file), TemplateInfo { namespace: file.namespace.clone(), decl: class.clone() });
+            }
+        }
+    }
+    let mut instantiations: HashMap<String, (String, Vec<Type>)> = HashMap::new();
+    for file in files {
+        let imports = import_map(file, files);
+        collect_file(file, &imports, &templates, &mut instantiations);
+    }
+    instantiations
+}
+
 pub fn expand(files: Vec<SourceFile>) -> Vec<SourceFile> {
     let mut templates: HashMap<String, TemplateInfo> = HashMap::new();
     for file in &files {
@@ -78,7 +101,8 @@ pub fn expand(files: Vec<SourceFile>) -> Vec<SourceFile> {
 
     for (mangled_fqcn, (template_fqcn, args)) in &instantiations {
         let template = &templates[template_fqcn];
-        let subst: HashMap<String, Type> = template.decl.type_params.iter().cloned().zip(args.iter().cloned()).collect();
+        let subst: HashMap<String, Type> =
+            template.decl.type_params.iter().map(|tp| tp.name.clone()).zip(args.iter().cloned()).collect();
         let mut decl = subst_class(&template.decl, &subst);
         decl.type_params = Vec::new();
         decl.name = mangled_fqcn.strip_prefix(&format!("{}.", template.namespace.join("."))).unwrap_or(mangled_fqcn).to_string();
@@ -423,12 +447,15 @@ fn rewrite_class(class: &ClassDecl, imports: &HashMap<String, String>, templates
             .map(|f| FieldDecl { ty: rw_ty(&f.ty), init: f.init.as_ref().map(|e| rewrite_expr(e, imports, templates)), ..f.clone() })
             .collect(),
         methods: class.methods.iter().map(|m| rewrite_method(m, imports, templates)).collect(),
+        is_readonly: class.is_readonly,
+        is_abstract: class.is_abstract,
+        is_final: class.is_final,
     }
 }
 
 fn rewrite_method(m: &MethodDecl, imports: &HashMap<String, String>, templates: &HashMap<String, TemplateInfo>) -> MethodDecl {
     MethodDecl {
-        params: m.params.iter().map(|p| crate::ast::Param { name: p.name.clone(), ty: rewrite_type(&p.ty, imports, templates) }).collect(),
+        params: m.params.iter().map(|p| crate::ast::Param { name: p.name.clone(), ty: rewrite_type(&p.ty, imports, templates), is_const: p.is_const }).collect(),
         return_type: rewrite_type(&m.return_type, imports, templates),
         body: rewrite_block(&m.body, imports, templates),
         ..m.clone()
@@ -461,10 +488,11 @@ fn rewrite_stmt(stmt: &Stmt, imports: &HashMap<String, String>, templates: &Hash
     match stmt {
         Stmt::Return(e) => Stmt::Return(e.as_ref().map(|e| rewrite_expr(e, imports, templates))),
         Stmt::Expr(e) => Stmt::Expr(rewrite_expr(e, imports, templates)),
-        Stmt::VarDecl { ty, name, init } => Stmt::VarDecl {
+        Stmt::VarDecl { ty, name, init, is_const } => Stmt::VarDecl {
             ty: ty.as_ref().map(|t| rewrite_type(t, imports, templates)),
             name: name.clone(),
             init: init.as_ref().map(|e| rewrite_expr(e, imports, templates)),
+            is_const: *is_const,
         },
         Stmt::If { cond, then_branch, else_branch } => Stmt::If {
             cond: rewrite_expr(cond, imports, templates),
@@ -550,7 +578,7 @@ fn rewrite_expr(expr: &Expr, imports: &HashMap<String, String>, templates: &Hash
             Box::new(rewrite_expr(else_e, imports, templates)),
         ),
         Expr::Closure { params, return_type, throws, body } => Expr::Closure {
-            params: params.iter().map(|p| crate::ast::Param { name: p.name.clone(), ty: rewrite_type(&p.ty, imports, templates) }).collect(),
+            params: params.iter().map(|p| crate::ast::Param { name: p.name.clone(), ty: rewrite_type(&p.ty, imports, templates), is_const: p.is_const }).collect(),
             return_type: return_type.as_ref().map(|t| rewrite_type(t, imports, templates)),
             throws: throws.clone(),
             body: match body {
@@ -586,12 +614,15 @@ fn subst_class(class: &ClassDecl, subst: &HashMap<String, Type>) -> ClassDecl {
             .map(|f| FieldDecl { ty: subst_type(&f.ty, subst), init: f.init.as_ref().map(|e| subst_expr(e, subst)), ..f.clone() })
             .collect(),
         methods: class.methods.iter().map(|m| subst_method(m, subst)).collect(),
+        is_readonly: class.is_readonly,
+        is_abstract: class.is_abstract,
+        is_final: class.is_final,
     }
 }
 
 fn subst_method(m: &MethodDecl, subst: &HashMap<String, Type>) -> MethodDecl {
     MethodDecl {
-        params: m.params.iter().map(|p| crate::ast::Param { name: p.name.clone(), ty: subst_type(&p.ty, subst) }).collect(),
+        params: m.params.iter().map(|p| crate::ast::Param { name: p.name.clone(), ty: subst_type(&p.ty, subst), is_const: p.is_const }).collect(),
         return_type: subst_type(&m.return_type, subst),
         body: subst_block(&m.body, subst),
         ..m.clone()
@@ -616,9 +647,12 @@ fn subst_stmt(stmt: &Stmt, subst: &HashMap<String, Type>) -> Stmt {
     match stmt {
         Stmt::Return(e) => Stmt::Return(e.as_ref().map(|e| subst_expr(e, subst))),
         Stmt::Expr(e) => Stmt::Expr(subst_expr(e, subst)),
-        Stmt::VarDecl { ty, name, init } => {
-            Stmt::VarDecl { ty: ty.as_ref().map(|t| subst_type(t, subst)), name: name.clone(), init: init.as_ref().map(|e| subst_expr(e, subst)) }
-        }
+        Stmt::VarDecl { ty, name, init, is_const } => Stmt::VarDecl {
+            ty: ty.as_ref().map(|t| subst_type(t, subst)),
+            name: name.clone(),
+            init: init.as_ref().map(|e| subst_expr(e, subst)),
+            is_const: *is_const,
+        },
         Stmt::If { cond, then_branch, else_branch } => Stmt::If {
             cond: subst_expr(cond, subst),
             then_branch: subst_block(then_branch, subst),
@@ -685,7 +719,7 @@ fn subst_expr(expr: &Expr, subst: &HashMap<String, Type>) -> Expr {
             Expr::Ternary(Box::new(subst_expr(cond, subst)), Box::new(subst_expr(then_e, subst)), Box::new(subst_expr(else_e, subst)))
         }
         Expr::Closure { params, return_type, throws, body } => Expr::Closure {
-            params: params.iter().map(|p| crate::ast::Param { name: p.name.clone(), ty: subst_type(&p.ty, subst) }).collect(),
+            params: params.iter().map(|p| crate::ast::Param { name: p.name.clone(), ty: subst_type(&p.ty, subst), is_const: p.is_const }).collect(),
             return_type: return_type.as_ref().map(|t| subst_type(t, subst)),
             throws: throws.clone(),
             body: match body {

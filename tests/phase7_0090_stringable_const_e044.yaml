@@ -1,0 +1,23 @@
+---
+title: "Compile E044 — Stringable.toString() must be declared const"
+file_separator: "#NLFILE"
+expected_compile_error: "E044"
+---
+
+#NLFILE phase7/e044/Main.nl
+namespace phase7.e044;
+class Point implements Stringable {
+	private int x;
+
+	public construct(int x) {
+		this.x = x;
+	}
+
+	public string toString() {
+		return "Point";
+	}
+
+	public static int main(string[] args) {
+		return 0;
+	}
+}

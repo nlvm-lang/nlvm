@@ -28,23 +28,46 @@ pub enum Visibility {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClassDecl {
     pub name: String,
-    /// `template <type T, type U, ...>` parameter names, empty for an
-    /// ordinary (non-template) class — specs.md § Template class. Bounds
-    /// (`extends Bound`) are parsed and discarded (not enforced — see
-    /// PLAN.md's generics gap); `Self`/`type` contextual sugar inside a
-    /// template body is not supported, bodies must spell out the type
-    /// parameter's own name instead.
-    pub type_params: Vec<String>,
+    /// `template <type T, type U, ...>` parameters, empty for an ordinary
+    /// (non-template) class — specs.md § Template class. `Self`/`type`
+    /// contextual sugar inside a template body is not supported, bodies must
+    /// spell out the type parameter's own name instead.
+    pub type_params: Vec<TypeParam>,
     pub extends: Option<String>,
     pub implements: Vec<String>,
     pub fields: Vec<FieldDecl>,
     pub methods: Vec<MethodDecl>,
+    /// `class readonly Name` — specs.md § Readonly. After construction, no
+    /// property of any instance can be modified outside `construct`
+    /// (compiler.md § Readonly classes and properties, E013).
+    pub is_readonly: bool,
+    /// `abstract class Name` — specs.md § Abstract classes and methods.
+    /// Cannot be instantiated (E032); a class that declares or inherits an
+    /// unimplemented abstract method must be `abstract` (E033).
+    pub is_abstract: bool,
+    /// `final class Name` — specs.md § Final classes and methods. Cannot be
+    /// `extends`-ed (E035). Mutually exclusive with `is_abstract` (E049).
+    pub is_final: bool,
+}
+
+/// One `type T [extends Bound]` template parameter — specs.md § Bounded type
+/// parameters. `bound` is checked at instantiation time (compiler.md §
+/// Template instantiation, E037) against the concrete type argument.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypeParam {
+    pub name: String,
+    pub bound: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FieldDecl {
     pub name: String,
     pub visibility: Visibility,
+    /// Whether `public`/`private`/`protected` was written explicitly in the
+    /// source, as opposed to defaulting to `Visibility::Public` on omission
+    /// — compiler.md § Visibility enforcement requires every member to carry
+    /// an explicit modifier (E019).
+    pub visibility_explicit: bool,
     pub is_static: bool,
     pub readonly: bool,
     pub ty: Type,
@@ -63,6 +86,10 @@ pub struct MethodSig {
     pub name: String,
     pub return_type: Type,
     pub params: Vec<Param>,
+    /// `const` after the parameter list — compiler.md § Const methods: a
+    /// class implementing this interface method must declare it `const` too
+    /// (E044).
+    pub is_const: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,10 +104,19 @@ pub struct MethodDecl {
     pub name: String,
     pub kind: MethodKind,
     pub visibility: Visibility,
+    /// See `FieldDecl::visibility_explicit` — E019.
+    pub visibility_explicit: bool,
     pub is_static: bool,
-    /// Parsed but not yet enforced (const-correctness lands with immutability
-    /// checks in a later phase).
     pub is_const: bool,
+    /// specs.md § Abstract classes and methods — no body (`;` instead of
+    /// `{ ... }`); `body` is always empty when this is `true`. Must be
+    /// implemented (overridden with a real body) by every concrete
+    /// subclass (compiler.md § Abstract classes and methods, E033).
+    pub is_abstract: bool,
+    /// `final` method modifier — specs.md § Final classes and methods.
+    /// Cannot be overridden by a subclass (compiler.md, E036). Mutually
+    /// exclusive with `is_abstract` (E049).
+    pub is_final: bool,
     pub return_type: Type,
     pub params: Vec<Param>,
     /// `throws T1, T2, ...` — parsed and carried into bytecode metadata, but
@@ -94,6 +130,10 @@ pub struct MethodDecl {
 pub struct Param {
     pub name: String,
     pub ty: Type,
+    /// compiler.md § Const parameters — E012: cannot be reassigned/mutated in
+    /// the method body, and (for object types) only `const` methods may be
+    /// called on it.
+    pub is_const: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -138,6 +178,10 @@ pub enum Stmt {
         ty: Option<Type>,
         name: String,
         init: Option<Expr>,
+        /// compiler.md § Const local variables — E012: same rule as
+        /// `Param::is_const`, cannot be reassigned/mutated after its initial
+        /// assignment.
+        is_const: bool,
     },
     If {
         cond: Expr,

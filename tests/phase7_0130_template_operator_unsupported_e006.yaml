@@ -1,0 +1,37 @@
+---
+title: "Compile E006 — template type argument does not support a required operator"
+file_separator: "#NLFILE"
+expected_compile_error: "E006"
+---
+
+#NLFILE phase7/e006/Widget.nl
+namespace phase7.e006;
+class Widget {
+	public construct() {}
+}
+
+#NLFILE phase7/e006/Pair.nl
+namespace phase7.e006;
+template <type T>
+class Pair {
+	private T left;
+	private T right;
+
+	public construct(T left, T right) {
+		this.left = left;
+		this.right = right;
+	}
+
+	public bool bigger() {
+		return this.left > this.right;
+	}
+}
+
+#NLFILE phase7/e006/Main.nl
+namespace phase7.e006;
+class Main {
+	public static int main(string[] args) {
+		auto p = new Pair<Widget>(new Widget(), new Widget());
+		return 0;
+	}
+}

@@ -1,0 +1,21 @@
+---
+title: "Compile E034 — abstract method declared with a body"
+file_separator: "#NLFILE"
+expected_compile_error: "E034"
+---
+
+#NLFILE phase7/e034/Shape.nl
+namespace phase7.e034;
+abstract class Shape {
+	public abstract float area() {
+		return 0.0;
+	}
+}
+
+#NLFILE phase7/e034/Main.nl
+namespace phase7.e034;
+class Main {
+	public static int main(string[] args) {
+		return 0;
+	}
+}

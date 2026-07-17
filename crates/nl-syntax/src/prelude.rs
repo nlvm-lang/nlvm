@@ -13,8 +13,8 @@
 //! enforced either — see PLAN.md Phase 5.
 
 use crate::ast::{
-    Block, ClassDecl, Expr, FieldDecl, LValue, MethodDecl, MethodKind, Param, SourceFile, SourceItem, Stmt, Type,
-    Visibility,
+    Block, ClassDecl, Expr, FieldDecl, InterfaceDecl, LValue, MethodDecl, MethodKind, MethodSig, Param, SourceFile,
+    SourceItem, Stmt, Type, Visibility,
 };
 
 /// `(name, parent)` pairs describing the built-in hierarchy — specs.md §
@@ -50,18 +50,33 @@ pub const NAMESPACED_ALIASES: &[(&str, &str)] = &[
 
 /// Every built-in exception class, as a namespace-less `SourceFile`.
 pub fn files() -> Vec<SourceFile> {
-    HIERARCHY
+    let mut files: Vec<SourceFile> = HIERARCHY
         .iter()
         .map(|(name, parent)| SourceFile {
             namespace: Vec::new(),
             uses: Vec::new(),
             item: SourceItem::Class(exception_class(name, *parent)),
         })
-        .collect()
+        .collect();
+    files.push(SourceFile { namespace: Vec::new(), uses: Vec::new(), item: SourceItem::Interface(stringable()) });
+    files
+}
+
+/// specs.md § Stringable interface — `public string toString() const;`. A
+/// class implementing this interface must declare `toString` itself `const`
+/// (compiler.md § Const methods, E044). Dynamic `toString()` dispatch for
+/// string concatenation/`(string)` casts on a Stringable-implementing class
+/// is not wired up (see `checker.rs`'s E008 comment / PLAN.md) — this only
+/// makes the interface itself declarable and its const-correctness checked.
+fn stringable() -> InterfaceDecl {
+    InterfaceDecl {
+        name: "Stringable".to_string(),
+        methods: vec![MethodSig { name: "toString".to_string(), return_type: Type::StringT, params: Vec::new(), is_const: true }],
+    }
 }
 
 fn exception_class(name: &str, parent: Option<&str>) -> ClassDecl {
-    let param = Param { name: "what".to_string(), ty: Type::StringT };
+    let param = Param { name: "what".to_string(), ty: Type::StringT, is_const: false };
     let ctor_body: Block = match parent {
         // The root `Exception` class owns the `message` field and sets it
         // directly from its constructor argument.
@@ -76,8 +91,11 @@ fn exception_class(name: &str, parent: Option<&str>) -> ClassDecl {
         name: "<construct>".to_string(),
         kind: MethodKind::Constructor,
         visibility: Visibility::Public,
+        visibility_explicit: true,
         is_static: false,
         is_const: false,
+        is_abstract: false,
+        is_final: false,
         return_type: Type::Void,
         params: vec![param],
         throws: Vec::new(),
@@ -87,6 +105,7 @@ fn exception_class(name: &str, parent: Option<&str>) -> ClassDecl {
         vec![FieldDecl {
             name: "message".to_string(),
             visibility: Visibility::Public,
+            visibility_explicit: true,
             is_static: false,
             readonly: false,
             ty: Type::StringT,
@@ -102,5 +121,13 @@ fn exception_class(name: &str, parent: Option<&str>) -> ClassDecl {
         implements: Vec::new(),
         fields,
         methods: vec![ctor],
+        // specs.md § Exception class hierarchy declares every one of these
+        // `class readonly ExceptionName { ... }` — safe to mark since the
+        // only place any of them ever assigns a field is their own
+        // `<construct>` (`this.message = ...` on the root, `super(...)`
+        // everywhere else), which compiler.md's readonly rule always allows.
+        is_readonly: true,
+        is_abstract: false,
+        is_final: false,
     }
 }

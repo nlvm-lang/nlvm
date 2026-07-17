@@ -1,0 +1,11 @@
+---
+title: "Compile E049 — conflicting abstract and final modifiers"
+file_separator: "#NLFILE"
+expected_compile_error: "E049"
+---
+
+#NLFILE phase7/e049/Main.nl
+namespace phase7.e049;
+abstract final class Weird {
+	public construct() {}
+}

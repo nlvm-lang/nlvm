@@ -114,35 +114,55 @@ impl Parser {
             uses.push(segments.join("."));
         }
 
+        // specs.md § Readonly, "Modifier order": `[abstract | final] class
+        // [readonly] Name` — `abstract`/`final` precede `class` itself (and
+        // any `template <...>` prefix). Both are accepted here (rather than
+        // an `else if`) so writing both together is a semantic E049, not a
+        // raw parse error.
+        let mut is_abstract = false;
+        let mut is_final = false;
+        loop {
+            if self.is_keyword(Keyword::Abstract) {
+                self.bump();
+                is_abstract = true;
+            } else if self.is_keyword(Keyword::Final) {
+                self.bump();
+                is_final = true;
+            } else {
+                break;
+            }
+        }
+
         let item = if self.is_keyword(Keyword::Template) {
             let type_params = self.parse_template_prefix()?;
-            SourceItem::Class(self.parse_class_decl(type_params)?)
+            SourceItem::Class(self.parse_class_decl(type_params, is_abstract, is_final)?)
         } else if self.is_keyword(Keyword::Interface) {
             SourceItem::Interface(self.parse_interface_decl()?)
         } else {
-            SourceItem::Class(self.parse_class_decl(Vec::new())?)
+            SourceItem::Class(self.parse_class_decl(Vec::new(), is_abstract, is_final)?)
         };
         Ok(SourceFile { namespace, uses, item })
     }
 
     /// `template <type T [extends Bound], ...>` before a `class` — specs.md
-    /// § Template class / § Bounded type parameters. Returns just the
-    /// parameter names; a bound is parsed and discarded (not enforced —
-    /// see PLAN.md's generics gap). Only template *classes* are supported
-    /// this phase, not template methods (a `template <...>` prefix inside a
-    /// class body, before a single method, is not recognized).
-    fn parse_template_prefix(&mut self) -> Result<Vec<String>, SyntaxError> {
+    /// § Template class / § Bounded type parameters. Only template *classes*
+    /// are supported this phase, not template methods (a `template <...>`
+    /// prefix inside a class body, before a single method, is not
+    /// recognized).
+    fn parse_template_prefix(&mut self) -> Result<Vec<TypeParam>, SyntaxError> {
         self.eat_keyword(Keyword::Template)?;
         self.eat_punct(Punct::Lt)?;
         let mut params = Vec::new();
         loop {
             self.eat_keyword(Keyword::TypeKw)?;
             let name = self.eat_ident()?;
-            if self.is_keyword(Keyword::Extends) {
+            let bound = if self.is_keyword(Keyword::Extends) {
                 self.bump();
-                self.eat_ident()?;
-            }
-            params.push(name);
+                Some(self.eat_ident()?)
+            } else {
+                None
+            };
+            params.push(TypeParam { name, bound });
             if self.is_punct(Punct::Comma) {
                 self.bump();
             } else {
@@ -183,19 +203,30 @@ impl Parser {
             self.eat_punct(Punct::LParen)?;
             let params = self.parse_params()?;
             self.eat_punct(Punct::RParen)?;
-            if self.is_keyword(Keyword::Const) {
+            let is_const = if self.is_keyword(Keyword::Const) {
                 self.bump();
-            }
+                true
+            } else {
+                false
+            };
             self.parse_throws_clause()?;
             self.eat_punct(Punct::Semi)?;
-            methods.push(MethodSig { name, return_type, params });
+            methods.push(MethodSig { name, return_type, params, is_const });
         }
         self.eat_punct(Punct::RBrace)?;
         Ok(InterfaceDecl { name, methods })
     }
 
-    fn parse_class_decl(&mut self, type_params: Vec<String>) -> Result<ClassDecl, SyntaxError> {
+    fn parse_class_decl(&mut self, type_params: Vec<TypeParam>, is_abstract: bool, is_final: bool) -> Result<ClassDecl, SyntaxError> {
         self.eat_keyword(Keyword::Class)?;
+        // specs.md § Readonly, "Modifier order": `[abstract | final] class
+        // [readonly] Name` — `readonly` follows `class`, before the name.
+        let is_readonly = if self.is_keyword(Keyword::Readonly) {
+            self.bump();
+            true
+        } else {
+            false
+        };
         let name = self.eat_ident()?;
 
         let extends = if self.is_keyword(Keyword::Extends) {
@@ -225,7 +256,7 @@ impl Parser {
             self.parse_member(&mut fields, &mut methods)?;
         }
         self.eat_punct(Punct::RBrace)?;
-        Ok(ClassDecl { name, type_params, extends, implements, fields, methods })
+        Ok(ClassDecl { name, type_params, extends, implements, fields, methods, is_readonly, is_abstract, is_final })
     }
 
     /// `throws Type1, Type2, ...` — optional, after a method/constructor's
@@ -270,24 +301,36 @@ impl Parser {
         methods: &mut Vec<MethodDecl>,
     ) -> Result<(), SyntaxError> {
         let mut visibility = Visibility::Public;
+        let mut visibility_explicit = false;
         let mut is_static = false;
         let mut readonly = false;
+        let mut is_abstract = false;
+        let mut is_final = false;
         loop {
             if self.is_keyword(Keyword::Public) {
                 self.bump();
                 visibility = Visibility::Public;
+                visibility_explicit = true;
             } else if self.is_keyword(Keyword::Private) {
                 self.bump();
                 visibility = Visibility::Private;
+                visibility_explicit = true;
             } else if self.is_keyword(Keyword::Protected) {
                 self.bump();
                 visibility = Visibility::Protected;
+                visibility_explicit = true;
             } else if self.is_keyword(Keyword::Static) {
                 self.bump();
                 is_static = true;
             } else if self.is_keyword(Keyword::Readonly) {
                 self.bump();
                 readonly = true;
+            } else if self.is_keyword(Keyword::Abstract) {
+                self.bump();
+                is_abstract = true;
+            } else if self.is_keyword(Keyword::Final) {
+                self.bump();
+                is_final = true;
             } else {
                 break;
             }
@@ -304,8 +347,11 @@ impl Parser {
                 name: "<construct>".to_string(),
                 kind: MethodKind::Constructor,
                 visibility,
+                visibility_explicit,
                 is_static: false,
                 is_const: false,
+                is_abstract: false,
+                is_final: false,
                 return_type: Type::Void,
                 params,
                 throws,
@@ -322,8 +368,11 @@ impl Parser {
                 name: "<destruct>".to_string(),
                 kind: MethodKind::Destructor,
                 visibility,
+                visibility_explicit,
                 is_static: false,
                 is_const: false,
+                is_abstract: false,
+                is_final: false,
                 return_type: Type::Void,
                 params: Vec::new(),
                 throws: Vec::new(),
@@ -345,13 +394,25 @@ impl Parser {
                 false
             };
             let throws = self.parse_throws_clause()?;
-            let body = self.parse_block()?;
+            // specs.md § Abstract classes and methods — an abstract method
+            // has no body, just `;`. Providing a body anyway is accepted
+            // here (rather than a raw parse error) so nl-sema can reject it
+            // as a proper compile error (compiler.md, E034).
+            let body = if is_abstract && self.is_punct(Punct::Semi) {
+                self.bump();
+                Vec::new()
+            } else {
+                self.parse_block()?
+            };
             methods.push(MethodDecl {
                 name,
                 kind: MethodKind::Normal,
                 visibility,
+                visibility_explicit,
                 is_static,
                 is_const,
+                is_abstract,
+                is_final,
                 return_type: ty,
                 params,
                 throws,
@@ -365,7 +426,7 @@ impl Parser {
                 None
             };
             self.eat_punct(Punct::Semi)?;
-            fields.push(FieldDecl { name, visibility, is_static, readonly, ty, init });
+            fields.push(FieldDecl { name, visibility, visibility_explicit, is_static, readonly, ty, init });
         }
         Ok(())
     }
@@ -373,9 +434,15 @@ impl Parser {
     fn parse_params(&mut self) -> Result<Vec<Param>, SyntaxError> {
         let mut params = Vec::new();
         while !self.is_punct(Punct::RParen) {
+            let is_const = if self.is_keyword(Keyword::Const) {
+                self.bump();
+                true
+            } else {
+                false
+            };
             let ty = self.parse_type()?;
             let name = self.eat_ident()?;
-            params.push(Param { name, ty });
+            params.push(Param { name, ty, is_const });
             if self.is_punct(Punct::Comma) {
                 self.bump();
             } else {
@@ -590,8 +657,15 @@ impl Parser {
         if self.is_punct(Punct::LBrace) {
             return Ok(Stmt::Block(self.parse_block()?));
         }
+        // `const T name = expr;` — compiler.md § Const local variables
+        // (E012). A leading `const` in statement position is unambiguous:
+        // it never starts any other statement form.
+        if self.is_keyword(Keyword::Const) {
+            self.bump();
+            return self.parse_var_decl(true);
+        }
         if self.looks_like_var_decl() {
-            return self.parse_var_decl();
+            return self.parse_var_decl(false);
         }
         let expr = self.parse_expr()?;
         self.eat_punct(Punct::Semi)?;
@@ -673,7 +747,7 @@ impl Parser {
         }
     }
 
-    fn parse_var_decl(&mut self) -> Result<Stmt, SyntaxError> {
+    fn parse_var_decl(&mut self, is_const: bool) -> Result<Stmt, SyntaxError> {
         let ty = if self.is_keyword(Keyword::Auto) {
             self.bump();
             None
@@ -688,7 +762,7 @@ impl Parser {
             None
         };
         self.eat_punct(Punct::Semi)?;
-        Ok(Stmt::VarDecl { ty, name, init })
+        Ok(Stmt::VarDecl { ty, name, init, is_const })
     }
 
     fn parse_if_stmt(&mut self) -> Result<Stmt, SyntaxError> {
@@ -837,6 +911,7 @@ impl Parser {
                     ty: ty.clone(),
                     name,
                     init: Some(expr),
+                    is_const: false,
                 });
                 if self.is_punct(Punct::Comma) {
                     self.bump();
@@ -1281,15 +1356,17 @@ impl Parser {
         let mut params = Vec::new();
         while !self.is_punct(Punct::RParen) {
             // `const` on a closure parameter (specs.md's `(const string
-            // text) => ...`) is parsed and discarded — const-correctness
-            // enforcement is out of scope, same as everywhere else in this
-            // implementation (see PLAN.md).
-            if self.is_keyword(Keyword::Const) {
+            // text) => ...`) — compiler.md § Const parameters, E012, same
+            // enforcement as an ordinary method parameter.
+            let is_const = if self.is_keyword(Keyword::Const) {
                 self.bump();
-            }
+                true
+            } else {
+                false
+            };
             let ty = self.parse_type()?;
             let name = self.eat_ident()?;
-            params.push(Param { name, ty });
+            params.push(Param { name, ty, is_const });
             if self.is_punct(Punct::Comma) {
                 self.bump();
             } else {

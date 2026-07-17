@@ -1,0 +1,40 @@
+---
+title: "Phase 7 — abstract classes/methods and final classes/methods, end to end"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "12.56"
+---
+
+#NLFILE phase7/abstractfinal/Shape.nl
+namespace phase7.abstractfinal;
+abstract class Shape {
+	public abstract float area();
+
+	public final string label() {
+		return "shape";
+	}
+}
+
+#NLFILE phase7/abstractfinal/Circle.nl
+namespace phase7.abstractfinal;
+final class Circle extends Shape {
+	private float radius;
+
+	public construct(float radius) {
+		this.radius = radius;
+	}
+
+	public float area() {
+		return 3.14 * this.radius * this.radius;
+	}
+}
+
+#NLFILE phase7/abstractfinal/Main.nl
+namespace phase7.abstractfinal;
+class Main {
+	public static int main(string[] args) {
+		Shape s = new Circle(2.0);
+		system.Out.print(system.Float.toString(s.area()));
+		return 0;
+	}
+}

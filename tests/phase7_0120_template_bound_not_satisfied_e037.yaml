@@ -1,0 +1,37 @@
+---
+title: "Compile E037 — concrete type argument does not satisfy template bound"
+file_separator: "#NLFILE"
+expected_compile_error: "E037"
+---
+
+#NLFILE phase7/e037/Comparable.nl
+namespace phase7.e037;
+interface Comparable {
+	public int compareTo(Comparable other) const;
+}
+
+#NLFILE phase7/e037/PlainBox.nl
+namespace phase7.e037;
+class PlainBox {
+	public construct() {}
+}
+
+#NLFILE phase7/e037/Holder.nl
+namespace phase7.e037;
+template <type T extends Comparable>
+class Holder {
+	private T item;
+
+	public construct(T item) {
+		this.item = item;
+	}
+}
+
+#NLFILE phase7/e037/Main.nl
+namespace phase7.e037;
+class Main {
+	public static int main(string[] args) {
+		auto h = new Holder<PlainBox>(new PlainBox());
+		return 0;
+	}
+}

@@ -1,0 +1,32 @@
+---
+title: "Compile E002 — non-nullable property not initialized in every constructor path"
+file_separator: "#NLFILE"
+expected_compile_error: "E002"
+---
+
+#NLFILE phase7/e002/Engine.nl
+namespace phase7.e002;
+class Engine {
+	public construct() {}
+}
+
+#NLFILE phase7/e002/Car.nl
+namespace phase7.e002;
+class Car {
+	private Engine engine;
+
+	public construct(bool installEngine) {
+		if (installEngine) {
+			this.engine = new Engine();
+		}
+	}
+}
+
+#NLFILE phase7/e002/Main.nl
+namespace phase7.e002;
+class Main {
+	public static int main(string[] args) {
+		auto c = new Car(true);
+		return 0;
+	}
+}

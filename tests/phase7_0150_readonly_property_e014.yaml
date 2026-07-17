@@ -1,0 +1,27 @@
+---
+title: "Compile E014 — readonly property modified outside construct"
+file_separator: "#NLFILE"
+expected_compile_error: "E014"
+---
+
+#NLFILE phase7/e014/Point.nl
+namespace phase7.e014;
+class Point {
+	public readonly int x;
+	public int y;
+
+	public construct(int x, int y) {
+		this.x = x;
+		this.y = y;
+	}
+}
+
+#NLFILE phase7/e014/Main.nl
+namespace phase7.e014;
+class Main {
+	public static int main(string[] args) {
+		auto p = new Point(1, 2);
+		p.x = 5;
+		return 0;
+	}
+}

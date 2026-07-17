@@ -1,0 +1,33 @@
+---
+title: "Compile E036 — cannot override a final method"
+file_separator: "#NLFILE"
+expected_compile_error: "E036"
+---
+
+#NLFILE phase7/e036/Base.nl
+namespace phase7.e036;
+class Base {
+	public construct() {}
+
+	public final string label() {
+		return "base";
+	}
+}
+
+#NLFILE phase7/e036/Derived.nl
+namespace phase7.e036;
+class Derived extends Base {
+	public construct() {}
+
+	public string label() {
+		return "derived";
+	}
+}
+
+#NLFILE phase7/e036/Main.nl
+namespace phase7.e036;
+class Main {
+	public static int main(string[] args) {
+		return 0;
+	}
+}

@@ -1,0 +1,21 @@
+---
+title: "Compile E039 — for-each loop variable implicitly const over a const parameter"
+file_separator: "#NLFILE"
+expected_compile_error: "E039"
+---
+
+#NLFILE phase7/e039/Main.nl
+namespace phase7.e039;
+class Main {
+	private static void bump(const int[] values) {
+		for (auto v : values) {
+			v = v + 1;
+		}
+	}
+
+	public static int main(string[] args) {
+		int[] nums = new int[]{1, 2, 3};
+		bump(nums);
+		return 0;
+	}
+}

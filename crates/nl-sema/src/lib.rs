@@ -5,7 +5,7 @@ mod native_generics;
 mod stdlib;
 mod types;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use nl_syntax::ast::{SourceFile, SourceItem, Type, Visibility};
 
@@ -33,9 +33,49 @@ pub fn check_compile(files: &[SourceFile]) -> Result<(), SemaError> {
     all_files.extend(expanded);
 
     check_duplicate_classes(&all_files)?;
+    for file in &all_files {
+        check_duplicate_imports(file, &all_files)?;
+    }
     let classes = class_table::build_class_table(&all_files);
+    // Must run against the *original*, pre-expansion `files` — by this point
+    // `nl_syntax::monomorphize::expand` has already rewritten every
+    // `Type::Generic`/`new T<...>(...)` site away, but `classes` (built from
+    // the expanded program) still has everything needed to resolve whether a
+    // concrete type argument satisfies its bound.
+    check_template_bounds(files, &classes)?;
     for file in &all_files {
         checker::check_source_file(file, &all_files, &classes)?;
+    }
+    Ok(())
+}
+
+/// compiler.md § Template instantiation, "Bounded type parameters" — E037.
+fn check_template_bounds(files: &[SourceFile], classes: &class_table::ClassTable) -> Result<(), SemaError> {
+    let instantiations = nl_syntax::monomorphize::collect_instantiations(files);
+    for (template_fqcn, args) in instantiations.values() {
+        let Some(template_file) = files.iter().find(|f| class_table::fqcn_of(f) == *template_fqcn) else {
+            continue;
+        };
+        let SourceItem::Class(template_class) = &template_file.item else {
+            continue;
+        };
+        let imports = class_table::import_map(template_file, files);
+        for (type_param, arg) in template_class.type_params.iter().zip(args.iter()) {
+            let Some(bound_name) = &type_param.bound else {
+                continue;
+            };
+            let bound_fqcn = imports.get(bound_name).cloned().unwrap_or_else(|| bound_name.clone());
+            let Type::Named(arg_fqcn) = arg else {
+                // A primitive/array concrete argument can't satisfy a
+                // class/interface bound at all, but no test exercises that
+                // combination — left lenient rather than guessing an error
+                // shape for it.
+                continue;
+            };
+            if !class_table::satisfies_bound(classes, arg_fqcn, &bound_fqcn) {
+                return Err(SemaError::TemplateBoundNotSatisfied(arg_fqcn.clone(), bound_fqcn, template_fqcn.clone()));
+            }
+        }
     }
     Ok(())
 }
@@ -46,6 +86,56 @@ fn check_duplicate_classes(files: &[SourceFile]) -> Result<(), SemaError> {
         let fqcn = class_table::fqcn_of(file);
         if !seen.insert(fqcn.clone()) {
             return Err(SemaError::DuplicateClass(fqcn));
+        }
+    }
+    Ok(())
+}
+
+/// compiler.md § Import name resolution — E043. A `use` clause conflicts if
+/// its simple (last-segment) name is already bound, under that same file, to
+/// a *different* entity: the class being defined in the file, another type in
+/// the same namespace (already visible without `use` — see
+/// `class_table::import_map`), or another `use` clause processed earlier in
+/// this file. Re-importing the exact same FQCN that's already implicitly
+/// visible (e.g. `m5_0010`'s `use test.class.ClassTest;` from within
+/// `test.class.Main`) is redundant but not a conflict — only a mismatched
+/// FQCN under an already-bound name is. (This implementation has no `as`
+/// aliasing — see `nl_syntax::parser`'s `use` grammar — so only these
+/// unaliased collisions are detectable.)
+fn check_duplicate_imports(file: &SourceFile, all_files: &[SourceFile]) -> Result<(), SemaError> {
+    let own_fqcn = class_table::fqcn_of(file);
+    let own_simple = match &file.item {
+        SourceItem::Class(c) => c.name.as_str(),
+        SourceItem::Interface(i) => i.name.as_str(),
+    };
+    let mut same_namespace: HashMap<&str, String> = HashMap::new();
+    for other in all_files {
+        if other.namespace == file.namespace {
+            let simple = match &other.item {
+                SourceItem::Class(c) => c.name.as_str(),
+                SourceItem::Interface(i) => i.name.as_str(),
+            };
+            if simple != own_simple {
+                same_namespace.insert(simple, class_table::fqcn_of(other));
+            }
+        }
+    }
+    let mut imported: HashMap<&str, &str> = HashMap::new();
+    for u in &file.uses {
+        let simple = u.rsplit('.').next().expect("use path is never empty");
+        if simple == own_simple && u != &own_fqcn {
+            return Err(SemaError::DuplicateImportSymbol(simple.to_string()));
+        }
+        if let Some(existing_fqcn) = same_namespace.get(simple) {
+            if existing_fqcn != u {
+                return Err(SemaError::DuplicateImportSymbol(simple.to_string()));
+            }
+        }
+        match imported.get(simple) {
+            Some(existing) if *existing != u => return Err(SemaError::DuplicateImportSymbol(simple.to_string())),
+            _ => {
+                imported.insert(simple, u);
+            }
         }
     }
     Ok(())

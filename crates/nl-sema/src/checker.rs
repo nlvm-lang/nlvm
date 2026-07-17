@@ -32,9 +32,13 @@ pub fn check_source_file(file: &SourceFile, all_files: &[SourceFile], classes: &
 
     check_duplicate_methods(class)?;
     check_constructor_delegation(class)?;
+    check_visibility_modifiers(class)?;
 
     let imports = class_table::import_map(file, all_files);
     let this_fqcn = class_table::fqcn_of(file);
+    check_property_initialization(class, &imports)?;
+    check_const_interface_impl(class, classes, &this_fqcn)?;
+    check_abstract_final(class, classes, &imports, &this_fqcn)?;
 
     let mut sigs: HashMap<String, MethodSig> = HashMap::new();
     for m in &class.methods {
@@ -47,7 +51,7 @@ pub fn check_source_file(file: &SourceFile, all_files: &[SourceFile], classes: &
     }
 
     for method in &class.methods {
-        check_method(method, &sigs, classes, &imports, &this_fqcn)?;
+        check_method(method, &sigs, classes, &imports, &this_fqcn).map_err(|e| relabel_template_operator_error(e, &this_fqcn))?;
         // compiler.md § Exception inheritance rules — E016/E017. Only
         // meaningful for instance methods (static methods hide, not
         // override) that actually override an ancestor's method.
@@ -56,6 +60,30 @@ pub fn check_source_file(file: &SourceFile, all_files: &[SourceFile], classes: &
         }
     }
     Ok(())
+}
+
+/// compiler.md § Template instantiation — E006. This codebase has no
+/// operator-overloading mechanism at all (see PLAN.md's generics gap), so
+/// `nl_syntax::monomorphize` substituting a template's type parameter for an
+/// unsupporting concrete type already fails "for free" as an ordinary E009
+/// once the monomorphized class is type-checked like any other — the only
+/// thing missing is the diagnostic's identity. A monomorphized class's FQCN
+/// is always mangled `"TemplateName<Arg1, ...>"` (never produced any other
+/// way), so that alone is enough to detect "this failure happened inside a
+/// template instantiation" and re-code E009 as E006 without needing to track
+/// provenance through the checker itself.
+fn relabel_template_operator_error(err: SemaError, this_fqcn: &str) -> SemaError {
+    let Some(template_name) = this_fqcn.split_once('<').map(|(name, _)| name.to_string()) else {
+        return err;
+    };
+    match err {
+        SemaError::BadBinaryOperator(op, t1, t2) => {
+            let ty = if types::is_primitive_display(&t1) { t2 } else { t1 };
+            SemaError::TemplateOperatorUnsupported(ty, op, template_name)
+        }
+        SemaError::BadUnaryOperator(op, t) => SemaError::TemplateOperatorUnsupported(t, op, template_name),
+        other => other,
+    }
 }
 
 fn resolve_throws(m: &MethodDecl, imports: &HashMap<String, String>) -> Vec<Type> {
@@ -134,6 +162,239 @@ fn check_duplicate_methods(class: &ClassDecl) -> Result<(), SemaError> {
     Ok(())
 }
 
+/// compiler.md § Visibility enforcement — E019: every field/method/
+/// constructor/destructor must carry an explicit `public`/`private`/
+/// `protected` modifier (the parser otherwise defaults it to `Public` — see
+/// `FieldDecl::visibility_explicit`/`MethodDecl::visibility_explicit`).
+fn check_visibility_modifiers(class: &ClassDecl) -> Result<(), SemaError> {
+    for f in &class.fields {
+        if !f.visibility_explicit {
+            return Err(SemaError::MissingVisibilityModifier(f.name.clone()));
+        }
+    }
+    for m in &class.methods {
+        if !m.visibility_explicit {
+            return Err(SemaError::MissingVisibilityModifier(m.name.clone()));
+        }
+    }
+    Ok(())
+}
+
+/// compiler.md § Class properties — E002. A non-nullable reference-typed
+/// property with no initializer must be assigned on every path of every
+/// `construct` overload. Scalars/`string`/nullable references all have a
+/// valid default and are exempt (see the table there).
+fn check_property_initialization(class: &ClassDecl, imports: &HashMap<String, String>) -> Result<(), SemaError> {
+    let ctors: Vec<&MethodDecl> = class.methods.iter().filter(|m| m.kind == MethodKind::Constructor).collect();
+    for field in &class.fields {
+        if field.init.is_some() {
+            continue;
+        }
+        let resolved = class_table::resolve_type(&field.ty, imports);
+        if !matches!(resolved, Type::Named(_)) {
+            continue;
+        }
+        if ctors.is_empty() {
+            return Err(SemaError::PropertyNotInitialized(field.name.clone(), types::display(&resolved)));
+        }
+        for ctor in &ctors {
+            check_ctor_property_init(&ctors, ctor, &field.name, &resolved)?;
+        }
+    }
+    Ok(())
+}
+
+/// Whether every path through `ctor` assigns `this.<field_name>` — a
+/// `this(...)` delegation (necessarily the first statement, E045) is
+/// credited with whatever its target constructor guarantees; the target is
+/// independently checked on its own turn in `check_property_initialization`'s
+/// loop, so no recursion is needed here (compiler.md § Constructor
+/// delegation, "Definite assignment").
+fn check_ctor_property_init(ctors: &[&MethodDecl], ctor: &MethodDecl, field_name: &str, field_ty: &Type) -> Result<(), SemaError> {
+    let (start_assigned, rest): (bool, &[Stmt]) = match ctor.body.first() {
+        Some(Stmt::ThisCall(args)) => {
+            let argc = args.len();
+            let credited = ctors.iter().any(|c| c.params.len() == argc);
+            (credited, &ctor.body[1..])
+        }
+        _ => (false, &ctor.body[..]),
+    };
+    let (assigned, terminated) = field_assigned_after(rest, field_name, field_ty, start_assigned)?;
+    if !terminated && !assigned {
+        return Err(SemaError::PropertyNotInitialized(field_name.to_string(), types::display(field_ty)));
+    }
+    Ok(())
+}
+
+/// Whether `stmts` definitely assigns `field_name` (as `this.<field_name>`)
+/// by the time control falls off the end, and whether every path through
+/// `stmts` terminates (via `return` or `throw`) before reaching that end.
+/// An explicit `return` is itself a real exit point of construction and
+/// requires the field already assigned *at that point* (checked eagerly,
+/// below) — unlike `throw`, which discards the half-constructed object
+/// entirely, so a path that only ever throws imposes no requirement.
+fn field_assigned_after(stmts: &[Stmt], field_name: &str, field_ty: &Type, assigned: bool) -> Result<(bool, bool), SemaError> {
+    let mut assigned = assigned;
+    let mut terminated = false;
+    for stmt in stmts {
+        if terminated {
+            break;
+        }
+        let (next_assigned, term) = field_assigned_stmt(stmt, field_name, field_ty, assigned)?;
+        assigned = next_assigned;
+        terminated = term;
+    }
+    Ok((assigned, terminated))
+}
+
+fn field_assigned_stmt(stmt: &Stmt, field_name: &str, field_ty: &Type, assigned: bool) -> Result<(bool, bool), SemaError> {
+    match stmt {
+        Stmt::Return(_) => {
+            if !assigned {
+                return Err(SemaError::PropertyNotInitialized(field_name.to_string(), types::display(field_ty)));
+            }
+            Ok((assigned, true))
+        }
+        Stmt::Throw(_) => Ok((assigned, true)),
+        Stmt::Expr(Expr::Assign(LValue::Field(target, name), _)) if matches!(**target, Expr::This) && name == field_name => {
+            Ok((true, false))
+        }
+        Stmt::If { then_branch, else_branch, .. } => {
+            let (then_assigned, then_term) = field_assigned_after(then_branch, field_name, field_ty, assigned)?;
+            let (else_assigned, else_term) = match else_branch {
+                Some(b) => field_assigned_after(b, field_name, field_ty, assigned)?,
+                None => (assigned, false),
+            };
+            Ok(match (then_term, else_term) {
+                (true, true) => (true, true),
+                (true, false) => (else_assigned, false),
+                (false, true) => (then_assigned, false),
+                (false, false) => (then_assigned && else_assigned, false),
+            })
+        }
+        // A loop body may execute zero times, so nothing it assigns is
+        // guaranteed — but its own internal `return`s must still be
+        // eagerly validated, hence the recursive call.
+        Stmt::While { body, .. } => {
+            field_assigned_after(body, field_name, field_ty, assigned)?;
+            Ok((assigned, false))
+        }
+        Stmt::For { init, body, .. } => {
+            let (after_init, _) = field_assigned_after(init, field_name, field_ty, assigned)?;
+            field_assigned_after(body, field_name, field_ty, after_init)?;
+            Ok((after_init, false))
+        }
+        Stmt::ForEach { body, .. } => {
+            field_assigned_after(body, field_name, field_ty, assigned)?;
+            Ok((assigned, false))
+        }
+        Stmt::Block(b) => field_assigned_after(b, field_name, field_ty, assigned),
+        // Conservative, matching this codebase's existing documented gap for
+        // `try` in the general E001 analysis (PLAN.md Phase 5): an exception
+        // may strike at any point in `body`, so nothing it assigns is
+        // guaranteed; only `finally` (which always runs) is.
+        Stmt::Try { body, catches, finally } => {
+            field_assigned_after(body, field_name, field_ty, assigned)?;
+            for c in catches {
+                field_assigned_after(&c.body, field_name, field_ty, assigned)?;
+            }
+            match finally {
+                Some(f) => field_assigned_after(f, field_name, field_ty, assigned),
+                None => Ok((assigned, false)),
+            }
+        }
+        _ => Ok((assigned, false)),
+    }
+}
+
+/// compiler.md § Const methods, "implements" clause — E044. A method that
+/// implements an interface method declared `const` must itself be `const`
+/// (matched by name + arity, same best-effort resolution as everywhere else
+/// in this checker — see `check_duplicate_methods`).
+fn check_const_interface_impl(class: &ClassDecl, classes: &ClassTable, this_fqcn: &str) -> Result<(), SemaError> {
+    let Some(info) = classes.get(this_fqcn) else {
+        return Ok(());
+    };
+    for iface_fqcn in &info.implements {
+        let Some(iface_info) = classes.get(iface_fqcn) else {
+            continue;
+        };
+        for iface_method in &iface_info.methods {
+            if !iface_method.is_const {
+                continue;
+            }
+            let Some(impl_method) = class
+                .methods
+                .iter()
+                .find(|m| m.kind == MethodKind::Normal && m.name == iface_method.name && m.params.len() == iface_method.params.len())
+            else {
+                continue;
+            };
+            if !impl_method.is_const {
+                return Err(SemaError::MethodMustBeConst(impl_method.name.clone(), iface_fqcn.clone()));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// specs.md § Abstract classes and methods / § Final classes and methods —
+/// E032 is checked at each `new` site (see `check_expr`'s `Expr::New` arm);
+/// this covers the rest: E034 (abstract method with a body), E035 (extends
+/// a final class), E036 (overrides a final method), E049 (conflicting
+/// `abstract`/`final` on the same class or method), and E033 (a concrete
+/// class that still has an unimplemented abstract method somewhere in its
+/// `extends` chain, including one it declares directly itself).
+fn check_abstract_final(class: &ClassDecl, classes: &ClassTable, imports: &HashMap<String, String>, this_fqcn: &str) -> Result<(), SemaError> {
+    if class.is_abstract && class.is_final {
+        return Err(SemaError::ConflictingModifiers(class.name.clone()));
+    }
+    for m in &class.methods {
+        if m.is_abstract && m.is_final {
+            return Err(SemaError::ConflictingModifiers(m.name.clone()));
+        }
+        if m.is_abstract && !m.body.is_empty() {
+            return Err(SemaError::AbstractMethodHasBody(m.name.clone()));
+        }
+    }
+
+    if let Some(parent_fqcn) = classes.get(this_fqcn).and_then(|c| c.extends.clone()) {
+        if classes.get(&parent_fqcn).is_some_and(|p| p.is_final) {
+            return Err(SemaError::ExtendFinalClass(parent_fqcn));
+        }
+        for m in &class.methods {
+            if m.kind != MethodKind::Normal {
+                continue;
+            }
+            let params: Vec<Type> = m.params.iter().map(|p| class_table::resolve_type(&p.ty, imports)).collect();
+            if class_table::find_method_exact(classes, &parent_fqcn, &m.name, &params).is_some_and(|parent| parent.is_final) {
+                return Err(SemaError::OverrideFinalMethod(m.name.clone()));
+            }
+        }
+    }
+
+    if !class.is_abstract {
+        let mut current = this_fqcn.to_string();
+        loop {
+            let Some(info) = classes.get(&current) else { break };
+            for m in &info.methods {
+                if m.is_abstract {
+                    if let Some(nearest) = class_table::find_method_exact(classes, this_fqcn, &m.name, &m.params) {
+                        if nearest.is_abstract {
+                            return Err(SemaError::ClassMustBeAbstract(class.name.clone(), m.name.clone()));
+                        }
+                    }
+                }
+            }
+            match &info.extends {
+                Some(parent) => current = parent.clone(),
+                None => break,
+            }
+        }
+    }
+    Ok(())
+}
+
 /// compiler.md § Constructor delegation — `this(...)` must be the first
 /// statement of a constructor (E045), and delegation chains must not be
 /// cyclic (E046). Constructor overload resolution here is arity-only,
@@ -193,6 +454,10 @@ fn check_method(
         sigs,
         classes,
         imports,
+        is_static: method.is_static,
+        is_const_method: method.is_const,
+        is_current_constructor: method.kind == MethodKind::Constructor,
+        this_fqcn: this_fqcn.to_string(),
         this_ty,
         super_ty,
         scopes: Vec::new(),
@@ -204,11 +469,16 @@ fn check_method(
             .filter_map(|t| if let Type::Named(fqcn) = t { Some(fqcn) } else { None })
             .collect(),
         catch_stack: Vec::new(),
+        const_vars: HashSet::new(),
+        readonly_loop_vars: HashSet::new(),
     };
     checker.push_scope();
     let mut assigned = HashSet::new();
     for param in &method.params {
         let id = checker.declare(&param.name, class_table::resolve_type(&param.ty, imports));
+        if param.is_const {
+            checker.const_vars.insert(id);
+        }
         assigned.insert(id);
     }
     checker.check_stmts(&method.body, assigned)?;
@@ -229,6 +499,31 @@ struct MethodChecker<'a> {
     sigs: &'a HashMap<String, MethodSig>,
     classes: &'a ClassTable,
     imports: &'a HashMap<String, String>,
+    /// compiler.md § Static context restrictions — E040. `true` while
+    /// checking a `static` method/constructor, where `this`/`super` have no
+    /// meaning.
+    is_static: bool,
+    /// FQCN of the class currently being checked — the "accessor" context
+    /// for compiler.md § Visibility enforcement (E018).
+    this_fqcn: String,
+    /// compiler.md § Const methods — E010/E011. `true` while checking a
+    /// method declared `const`: `this.property = ...` and calls to
+    /// non-`const` methods on `this` are both rejected.
+    is_const_method: bool,
+    /// compiler.md § Readonly classes and properties — E013/E014. `true`
+    /// while checking a constructor (`construct`/`<construct>`), where
+    /// `this.property = ...` is exempt from the readonly rule.
+    is_current_constructor: bool,
+    /// compiler.md § Const parameters/local variables — E012. Variable ids
+    /// that cannot be reassigned/mutated, nor have a non-`const` method
+    /// called on them (for object types). Uses the same never-reused id
+    /// space as `assigned`.
+    const_vars: HashSet<u32>,
+    /// compiler.md § For-each loop in const context — E039. Same rules as
+    /// `const_vars`, but a distinct set because the violation reports a
+    /// different error code (the loop variable is *implicitly* const, not
+    /// explicitly declared so).
+    readonly_loop_vars: HashSet<u32>,
     /// `Some(Type::Named(fqcn))` inside an instance method/constructor,
     /// `None` in a static context (where `this` isn't valid — not yet
     /// enforced as a hard error, E040 lands with static-context checks).
@@ -301,6 +596,59 @@ impl<'a> MethodChecker<'a> {
                 return Some(f.ty.clone());
             }
             current = info.extends.as_deref()?;
+        }
+    }
+
+    /// compiler.md § Visibility enforcement — E018. Looks up `name` as a
+    /// field of `fqcn` (walking `extends`, like `field_ty`) and checks it is
+    /// accessible from the class currently being checked. A field absent
+    /// from `self.classes` (native stdlib object, unresolved reference) is
+    /// left to whatever leniency already applies at the call site.
+    fn check_field_access(&self, fqcn: &str, name: &str) -> Result<(), SemaError> {
+        let Some((owner, field)) = class_table::find_field_owner(self.classes, fqcn, name) else {
+            return Ok(());
+        };
+        if !class_table::is_accessible(self.classes, field.visibility, &owner, &self.this_fqcn) {
+            return Err(SemaError::MemberNotAccessible(name.to_string(), self.this_fqcn.clone(), visibility_str(field.visibility)));
+        }
+        Ok(())
+    }
+
+    /// Same as `check_field_access`, for an instance method call resolved by
+    /// arity (matching the rest of this checker's best-effort overload
+    /// resolution).
+    fn check_method_access(&self, fqcn: &str, name: &str, argc: usize) -> Result<(), SemaError> {
+        let Some((owner, method)) = class_table::find_method_owner(self.classes, fqcn, name, argc) else {
+            return Ok(());
+        };
+        if !class_table::is_accessible(self.classes, method.visibility, &owner, &self.this_fqcn) {
+            return Err(SemaError::MemberNotAccessible(name.to_string(), self.this_fqcn.clone(), visibility_str(method.visibility)));
+        }
+        Ok(())
+    }
+
+    /// compiler.md § Readonly classes and properties — E013/E014. Assignment
+    /// is allowed only inside the *declaring* class's own `construct`, and
+    /// only via `this.property = ...` — a subclass constructor assigning an
+    /// inherited readonly field directly (rather than through `super(...)`)
+    /// is still rejected, matching specs.md § Readonly's note that
+    /// delegation is the only path for that case.
+    fn check_readonly(&self, target_expr: &Expr, fqcn: &str, name: &str) -> Result<(), SemaError> {
+        let Some((owner, field)) = class_table::find_field_owner(self.classes, fqcn, name) else {
+            return Ok(());
+        };
+        let class_is_readonly = self.classes.get(&owner).is_some_and(|info| info.is_readonly);
+        if !class_is_readonly && !field.readonly {
+            return Ok(());
+        }
+        let exempt = self.is_current_constructor && self.this_fqcn == owner && matches!(target_expr, Expr::This);
+        if exempt {
+            return Ok(());
+        }
+        if class_is_readonly {
+            Err(SemaError::ReadonlyClassModification(name.to_string(), owner))
+        } else {
+            Err(SemaError::ReadonlyPropertyModification(name.to_string()))
         }
     }
 
@@ -416,7 +764,7 @@ impl<'a> MethodChecker<'a> {
                 Ok((assigned, true))
             }
             Stmt::Try { body, catches, finally } => self.check_try(body, catches, finally, assigned),
-            Stmt::VarDecl { ty, name, init } => {
+            Stmt::VarDecl { ty, name, init, is_const } => {
                 let value_ty = match init {
                     Some(e) => Some(self.check_expr(e, &mut assigned)?),
                     None => None,
@@ -430,6 +778,9 @@ impl<'a> MethodChecker<'a> {
                     self.check_assignable(v, &declared_ty)?;
                 }
                 let id = self.declare(name, declared_ty);
+                if *is_const {
+                    self.const_vars.insert(id);
+                }
                 if value_ty.is_some() {
                     assigned.insert(id);
                 }
@@ -481,6 +832,18 @@ impl<'a> MethodChecker<'a> {
                 // The loop variable is (re)assigned by the loop itself
                 // before each iteration of the body.
                 let id = self.declare(var, declared_ty);
+                // compiler.md § For-each loop in const context — E039: the
+                // loop variable is implicitly non-modifiable when iterating
+                // `this.<field>` inside a `const` method, or a const/const
+                // `ref` parameter.
+                let is_readonly_collection = match iterable {
+                    Expr::FieldAccess(target, _) => self.is_const_method && matches!(**target, Expr::This),
+                    Expr::Ident(name) => self.resolve(name).is_some_and(|(id, _)| self.const_vars.contains(&id)),
+                    _ => false,
+                };
+                if is_readonly_collection {
+                    self.readonly_loop_vars.insert(id);
+                }
                 let mut body_assigned = assigned.clone();
                 body_assigned.insert(id);
                 self.check_stmts(body, body_assigned)?;
@@ -617,13 +980,23 @@ impl<'a> MethodChecker<'a> {
             Expr::BoolLit(_) => Ok(Type::Bool),
             Expr::StringLit(_) => Ok(Type::StringT),
             Expr::NullLit => Ok(Type::NullT),
-            // Unresolved (`this` outside an instance method): no dedicated
-            // E-code yet, deferred to nl-codegen (E040 lands with static
-            // context checks).
-            Expr::This => Ok(self.this_ty.clone().unwrap_or(Type::Void)),
-            // Unresolved (`super` in a class with no `extends`): deferred to
-            // nl-codegen, same leniency as `this` outside an instance method.
-            Expr::Super => Ok(self.super_ty.clone().unwrap_or(Type::Void)),
+            // compiler.md § Static context restrictions — E040: `this` has no
+            // meaning in a static method (there is no instance).
+            Expr::This => {
+                if self.is_static {
+                    return Err(SemaError::StaticContextMisuse("this".to_string()));
+                }
+                Ok(self.this_ty.clone().unwrap_or(Type::Void))
+            }
+            // Same restriction applies to `super`; a `super` used in a class
+            // with no `extends` (but not static) is a separate, still-lenient
+            // gap deferred to nl-codegen.
+            Expr::Super => {
+                if self.is_static {
+                    return Err(SemaError::StaticContextMisuse("super".to_string()));
+                }
+                Ok(self.super_ty.clone().unwrap_or(Type::Void))
+            }
             Expr::Ident(name) => {
                 // Unresolved names have no dedicated E-code in compiler.md;
                 // nl-codegen already rejects them, so just defer to it here.
@@ -662,7 +1035,21 @@ impl<'a> MethodChecker<'a> {
                     self.check_expr(a, assigned)?;
                 }
                 let fqcn = self.class_fqcn(class_name);
+                // compiler.md § Abstract classes and methods — E032.
+                if self.classes.get(&fqcn).is_some_and(|c| c.is_abstract) {
+                    return Err(SemaError::InstantiateAbstractClass(fqcn));
+                }
                 if let Some(ctor) = class_table::find_ctor(self.classes, &fqcn, args.len()) {
+                    // Constructors are never inherited (each class declares
+                    // its own), so the declaring class is always `fqcn`
+                    // itself — no `find_ctor`-with-owner needed here.
+                    if !class_table::is_accessible(self.classes, ctor.visibility, &fqcn, &self.this_fqcn) {
+                        return Err(SemaError::MemberNotAccessible(
+                            "<construct>".to_string(),
+                            self.this_fqcn.clone(),
+                            visibility_str(ctor.visibility),
+                        ));
+                    }
                     for t in ctor.throws.clone() {
                         if let Type::Named(exc_fqcn) = t {
                             self.require_handled(&exc_fqcn)?;
@@ -677,7 +1064,16 @@ impl<'a> MethodChecker<'a> {
                     // No dedicated E-code for a non-int array size yet;
                     // nl-codegen rejects it precisely.
                 }
-                Ok(Type::Array(Box::new(self.resolve_ty(elem_ty))))
+                let resolved = self.resolve_ty(elem_ty);
+                // compiler.md § Default values, "Array creation with fixed
+                // size" — E031: a non-nullable class/interface element type
+                // has no default value, so `new T[n]` is rejected. Scalars,
+                // `string`, and nullable references all have a valid default
+                // (see the table there) and are exempt.
+                if matches!(&resolved, Type::Named(_)) {
+                    return Err(SemaError::NonNullableArrayFixedSize(types::display(&resolved)));
+                }
+                Ok(Type::Array(Box::new(resolved)))
             }
             Expr::NewArrayInit(elem_ty, elements) => {
                 for e in elements {
@@ -731,6 +1127,7 @@ impl<'a> MethodChecker<'a> {
                 if let Some(ty) = crate::stdlib::result_field_ty(fqcn, name) {
                     return Ok(ty);
                 }
+                self.check_field_access(fqcn, name)?;
                 Ok(self.field_ty(fqcn, name).unwrap_or(Type::Void))
             }
             Expr::MethodCall(target, name, args) => {
@@ -842,6 +1239,37 @@ impl<'a> MethodChecker<'a> {
                         }
                     }
                     Type::Named(fqcn) => {
+                        self.check_method_access(fqcn, name, args.len())?;
+                        // compiler.md § Const methods — E011: a non-`const`
+                        // method cannot be called on `this` from inside a
+                        // `const` method.
+                        if self.is_const_method && matches!(**target, Expr::This) {
+                            if let Some((_, method)) = class_table::find_method_owner(self.classes, fqcn, name, args.len()) {
+                                if !method.is_const {
+                                    return Err(SemaError::ConstMethodNonConstCall(name.clone()));
+                                }
+                            }
+                        }
+                        // compiler.md § Const parameters/local variables —
+                        // E012: "for object types, only const methods may be
+                        // called on it".
+                        if let Expr::Ident(var_name) = &**target {
+                            if let Some((id, _)) = self.resolve(var_name) {
+                                let is_readonly_loop_var = self.readonly_loop_vars.contains(&id);
+                                let is_const_var = self.const_vars.contains(&id);
+                                if is_readonly_loop_var || is_const_var {
+                                    if let Some((_, method)) = class_table::find_method_owner(self.classes, fqcn, name, args.len()) {
+                                        if !method.is_const {
+                                            return Err(if is_readonly_loop_var {
+                                                SemaError::ConstLoopVariableModification(var_name.clone())
+                                            } else {
+                                                SemaError::ConstModification(var_name.clone())
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         for t in self.method_throws(fqcn, name, args.len()) {
                             if let Type::Named(exc_fqcn) = t {
                                 self.require_handled(&exc_fqcn)?;
@@ -877,6 +1305,12 @@ impl<'a> MethodChecker<'a> {
                 };
                 if !assigned.contains(&id) {
                     return Err(SemaError::NotDefinitelyAssigned(name.clone()));
+                }
+                if self.readonly_loop_vars.contains(&id) {
+                    return Err(SemaError::ConstLoopVariableModification(name.clone()));
+                }
+                if self.const_vars.contains(&id) {
+                    return Err(SemaError::ConstModification(name.clone()));
                 }
                 Ok(ty)
             }
@@ -917,6 +1351,9 @@ impl<'a> MethodChecker<'a> {
                 for p in params {
                     let ty = self.resolve_ty(&p.ty);
                     let id = self.declare(&p.name, ty);
+                    if p.is_const {
+                        self.const_vars.insert(id);
+                    }
                     inner_assigned.insert(id);
                 }
                 // A closure's `return` statements must be checked against
@@ -1039,11 +1476,28 @@ impl<'a> MethodChecker<'a> {
                 let Some((id, declared_ty)) = self.resolve(name) else {
                     return Ok(value_ty);
                 };
+                // compiler.md § Const parameters/local variables — E012. The
+                // *initial* assignment of a `const T x = expr;` local goes
+                // through `Stmt::VarDecl` directly, never through here — any
+                // `Expr::Assign` reaching this arm for a const-tracked id is
+                // therefore necessarily a reassignment.
+                if self.readonly_loop_vars.contains(&id) {
+                    return Err(SemaError::ConstLoopVariableModification(name.clone()));
+                }
+                if self.const_vars.contains(&id) {
+                    return Err(SemaError::ConstModification(name.clone()));
+                }
                 self.check_assignable(&value_ty, &declared_ty)?;
                 assigned.insert(id);
                 Ok(declared_ty)
             }
             LValue::Field(target_expr, name) => {
+                // compiler.md § Const methods — E010: `this.property = ...`
+                // is rejected unconditionally inside a `const` method, even
+                // before the target/field itself resolves to anything.
+                if self.is_const_method && matches!(**target_expr, Expr::This) {
+                    return Err(SemaError::ConstMethodPropertyModification(name.clone()));
+                }
                 let target_ty = self.check_expr(target_expr, assigned)?;
                 let value_ty = self.check_expr(value, assigned)?;
                 let Type::Named(fqcn) = &target_ty else {
@@ -1052,6 +1506,8 @@ impl<'a> MethodChecker<'a> {
                 let Some(field_ty) = self.field_ty(fqcn, name) else {
                     return Ok(value_ty);
                 };
+                self.check_field_access(fqcn, name)?;
+                self.check_readonly(target_expr, fqcn, name)?;
                 self.check_assignable(&value_ty, &field_ty)?;
                 Ok(field_ty)
             }
@@ -1164,6 +1620,14 @@ fn literal_eq(a: &Expr, b: &Expr) -> bool {
 
 fn is_concat_operand(ty: &Type) -> bool {
     matches!(ty, Type::Int | Type::Float | Type::Bool | Type::Byte | Type::StringT)
+}
+
+fn visibility_str(v: nl_syntax::ast::Visibility) -> String {
+    match v {
+        nl_syntax::ast::Visibility::Public => "public".to_string(),
+        nl_syntax::ast::Visibility::Protected => "protected".to_string(),
+        nl_syntax::ast::Visibility::Private => "private".to_string(),
+    }
 }
 
 fn op_symbol(op: BinOp) -> String {

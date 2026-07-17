@@ -1,0 +1,25 @@
+---
+title: "Compile E035 — cannot extend a final class"
+file_separator: "#NLFILE"
+expected_compile_error: "E035"
+---
+
+#NLFILE phase7/e035/Money.nl
+namespace phase7.e035;
+final class Money {
+	public construct() {}
+}
+
+#NLFILE phase7/e035/Dollar.nl
+namespace phase7.e035;
+class Dollar extends Money {
+	public construct() {}
+}
+
+#NLFILE phase7/e035/Main.nl
+namespace phase7.e035;
+class Main {
+	public static int main(string[] args) {
+		return 0;
+	}
+}

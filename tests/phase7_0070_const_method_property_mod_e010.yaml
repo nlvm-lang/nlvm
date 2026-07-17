@@ -1,0 +1,25 @@
+---
+title: "Compile E010 — property modified inside a const method"
+file_separator: "#NLFILE"
+expected_compile_error: "E010"
+---
+
+#NLFILE phase7/e010/Main.nl
+namespace phase7.e010;
+class Counter {
+	private int value;
+
+	public construct() {
+		this.value = 0;
+	}
+
+	public int broken() const {
+		this.value = this.value + 1;
+		return this.value;
+	}
+
+	public static int main(string[] args) {
+		auto c = new Counter();
+		return c.broken();
+	}
+}

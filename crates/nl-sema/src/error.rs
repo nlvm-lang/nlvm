@@ -41,6 +41,48 @@ pub enum SemaError {
     MultipleMainMethods,
     #[error("E029 — 'main' method has incorrect signature (expected: public static int main(string[]))")]
     BadMainSignature,
+    #[error("E040 — Cannot use '{0}' in a static context")]
+    StaticContextMisuse(String),
+    #[error("E043 — Import creates duplicate symbol '{0}'")]
+    DuplicateImportSymbol(String),
+    #[error("E031 — Cannot create array of non-nullable type '{0}' with fixed size (no default value)")]
+    NonNullableArrayFixedSize(String),
+    #[error("E018 — Member '{0}' is not accessible from '{1}' (visibility: {2})")]
+    MemberNotAccessible(String, String, String),
+    #[error("E019 — Missing visibility modifier on member '{0}'")]
+    MissingVisibilityModifier(String),
+    #[error("E002 — Property '{0}' of non-nullable type '{1}' is not initialized in constructor")]
+    PropertyNotInitialized(String, String),
+    #[error("E010 — Cannot modify property '{0}' in a const method")]
+    ConstMethodPropertyModification(String),
+    #[error("E011 — Cannot call non-const method '{0}' in a const method")]
+    ConstMethodNonConstCall(String),
+    #[error("E044 — Method '{0}' implementing interface '{1}' must be declared const")]
+    MethodMustBeConst(String, String),
+    #[error("E012 — Cannot modify const variable '{0}'")]
+    ConstModification(String),
+    #[error("E039 — Cannot modify loop variable '{0}' — implicitly const when iterating over read-only collection")]
+    ConstLoopVariableModification(String),
+    #[error("E037 — Type '{0}' does not satisfy bound '{1}' (required by template '{2}')")]
+    TemplateBoundNotSatisfied(String, String, String),
+    #[error("E006 — Type '{0}' does not support operator '{1}' (required by template '{2}')")]
+    TemplateOperatorUnsupported(String, String, String),
+    #[error("E013 — Cannot modify property '{0}' of readonly class '{1}'")]
+    ReadonlyClassModification(String, String),
+    #[error("E014 — Cannot modify readonly property '{0}'")]
+    ReadonlyPropertyModification(String),
+    #[error("E032 — Cannot instantiate abstract class '{0}'")]
+    InstantiateAbstractClass(String),
+    #[error("E033 — Class '{0}' must be declared abstract (has unimplemented abstract method '{1}')")]
+    ClassMustBeAbstract(String, String),
+    #[error("E034 — Abstract method '{0}' cannot have a body")]
+    AbstractMethodHasBody(String),
+    #[error("E035 — Cannot extend final class '{0}'")]
+    ExtendFinalClass(String),
+    #[error("E036 — Cannot override final method '{0}'")]
+    OverrideFinalMethod(String),
+    #[error("E049 — Conflicting modifiers 'abstract' and 'final' on '{0}'")]
+    ConflictingModifiers(String),
 }
 
 impl SemaError {
@@ -67,6 +109,27 @@ impl SemaError {
             SemaError::NoMainMethod => "E027",
             SemaError::MultipleMainMethods => "E028",
             SemaError::BadMainSignature => "E029",
+            SemaError::StaticContextMisuse(_) => "E040",
+            SemaError::DuplicateImportSymbol(_) => "E043",
+            SemaError::NonNullableArrayFixedSize(_) => "E031",
+            SemaError::MemberNotAccessible(_, _, _) => "E018",
+            SemaError::MissingVisibilityModifier(_) => "E019",
+            SemaError::PropertyNotInitialized(_, _) => "E002",
+            SemaError::ConstMethodPropertyModification(_) => "E010",
+            SemaError::ConstMethodNonConstCall(_) => "E011",
+            SemaError::MethodMustBeConst(_, _) => "E044",
+            SemaError::ConstModification(_) => "E012",
+            SemaError::ConstLoopVariableModification(_) => "E039",
+            SemaError::TemplateBoundNotSatisfied(_, _, _) => "E037",
+            SemaError::TemplateOperatorUnsupported(_, _, _) => "E006",
+            SemaError::ReadonlyClassModification(_, _) => "E013",
+            SemaError::ReadonlyPropertyModification(_) => "E014",
+            SemaError::InstantiateAbstractClass(_) => "E032",
+            SemaError::ClassMustBeAbstract(_, _) => "E033",
+            SemaError::AbstractMethodHasBody(_) => "E034",
+            SemaError::ExtendFinalClass(_) => "E035",
+            SemaError::OverrideFinalMethod(_) => "E036",
+            SemaError::ConflictingModifiers(_) => "E049",
         }
     }
 }

@@ -1,0 +1,20 @@
+---
+title: "Compile E031 — new T[n] with non-nullable reference element type"
+file_separator: "#NLFILE"
+expected_compile_error: "E031"
+---
+
+#NLFILE phase7/e031/Widget.nl
+namespace phase7.e031;
+class Widget {
+	public construct() {}
+}
+
+#NLFILE phase7/e031/Main.nl
+namespace phase7.e031;
+class Main {
+	public static int main(string[] args) {
+		Widget[] widgets = new Widget[3];
+		return 0;
+	}
+}

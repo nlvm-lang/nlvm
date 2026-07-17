@@ -1,0 +1,15 @@
+---
+title: "Compile E019 — class member missing an explicit visibility modifier"
+file_separator: "#NLFILE"
+expected_compile_error: "E019"
+---
+
+#NLFILE phase7/e019/Main.nl
+namespace phase7.e019;
+class Main {
+	int value;
+
+	public static int main(string[] args) {
+		return 0;
+	}
+}

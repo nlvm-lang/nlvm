@@ -4,12 +4,14 @@
 
 use std::collections::HashMap;
 
-use nl_syntax::ast::{MethodKind, SourceFile, SourceItem, Type};
+use nl_syntax::ast::{MethodKind, SourceFile, SourceItem, Type, Visibility};
 
 #[derive(Debug, Clone)]
 pub struct FieldInfo {
     pub name: String,
     pub ty: Type,
+    pub visibility: Visibility,
+    pub readonly: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -18,6 +20,12 @@ pub struct MethodInfo {
     pub params: Vec<Type>,
     pub return_ty: Type,
     pub is_static: bool,
+    pub is_const: bool,
+    pub visibility: Visibility,
+    /// specs.md § Abstract classes and methods — E032/E033/E034.
+    pub is_abstract: bool,
+    /// specs.md § Final classes and methods — E036.
+    pub is_final: bool,
     /// Resolved (FQCN) `throws` clause — compiler.md § Exception checking.
     pub throws: Vec<Type>,
 }
@@ -26,6 +34,7 @@ pub struct MethodInfo {
 pub struct CtorInfo {
     pub params: Vec<Type>,
     pub throws: Vec<Type>,
+    pub visibility: Visibility,
 }
 
 #[derive(Debug, Clone)]
@@ -38,6 +47,12 @@ pub struct ClassInfo {
     pub fields: Vec<FieldInfo>,
     pub methods: Vec<MethodInfo>,
     pub ctors: Vec<CtorInfo>,
+    /// compiler.md § Readonly classes and properties — E013.
+    pub is_readonly: bool,
+    /// specs.md § Abstract classes and methods — E032/E033.
+    pub is_abstract: bool,
+    /// specs.md § Final classes and methods — E035.
+    pub is_final: bool,
 }
 
 /// Whether `sub` is `sup` itself or (transitively) extends it — used for
@@ -143,6 +158,73 @@ pub fn find_method_exact<'c>(classes: &'c ClassTable, fqcn: &str, name: &str, pa
     }
 }
 
+/// Walks `fqcn`'s `extends` chain (arity-only matching, like `find_ctor`) and
+/// returns the field/method together with the FQCN of the class that
+/// actually *declares* it — needed by compiler.md § Visibility enforcement
+/// (E018) to check `private`/`protected` against the declaring class, not
+/// whichever subclass the reference happened to be typed as.
+pub fn find_field_owner(classes: &ClassTable, fqcn: &str, name: &str) -> Option<(String, FieldInfo)> {
+    let mut current = fqcn.to_string();
+    loop {
+        let info = classes.get(&current)?;
+        if let Some(f) = info.fields.iter().find(|f| f.name == name) {
+            return Some((current, f.clone()));
+        }
+        current = info.extends.clone()?;
+    }
+}
+
+pub fn find_method_owner(classes: &ClassTable, fqcn: &str, name: &str, argc: usize) -> Option<(String, MethodInfo)> {
+    let mut current = fqcn.to_string();
+    loop {
+        let info = classes.get(&current)?;
+        if let Some(m) = info.methods.iter().find(|m| m.name == name && m.params.len() == argc) {
+            return Some((current, m.clone()));
+        }
+        current = info.extends.clone()?;
+    }
+}
+
+/// compiler.md § Template instantiation, "Bounded type parameters" — E037.
+/// Whether `concrete_fqcn` (or an ancestor, via `extends`) satisfies
+/// `bound_fqcn` — either by being a subclass of it, or by `implements`-ing it
+/// directly at some point in the `extends` chain (interfaces don't
+/// themselves `extend` other interfaces in this class table — see
+/// `ClassInfo::implements`'s doc comment — so no further transitivity is
+/// needed there).
+pub fn satisfies_bound(classes: &ClassTable, concrete_fqcn: &str, bound_fqcn: &str) -> bool {
+    if is_subclass_or_same(classes, concrete_fqcn, bound_fqcn) {
+        return true;
+    }
+    let mut current = concrete_fqcn;
+    loop {
+        let Some(info) = classes.get(current) else {
+            return false;
+        };
+        if info.implements.iter().any(|i| i == bound_fqcn) {
+            return true;
+        }
+        match info.extends.as_deref() {
+            Some(parent) => current = parent,
+            None => return false,
+        }
+    }
+}
+
+/// compiler.md § Visibility enforcement — E018. `declaring_fqcn` is the
+/// class that actually declares the member (see `find_field_owner`/
+/// `find_method_owner`); `accessor_fqcn` is the class containing the
+/// reference being checked.
+pub fn is_accessible(classes: &ClassTable, visibility: Visibility, declaring_fqcn: &str, accessor_fqcn: &str) -> bool {
+    match visibility {
+        Visibility::Public => true,
+        Visibility::Private => accessor_fqcn == declaring_fqcn,
+        Visibility::Protected => {
+            accessor_fqcn == declaring_fqcn || is_subclass_or_same(classes, accessor_fqcn, declaring_fqcn)
+        }
+    }
+}
+
 pub fn build_class_table(files: &[SourceFile]) -> ClassTable {
     let mut table = HashMap::with_capacity(files.len());
     for file in files {
@@ -156,6 +238,8 @@ pub fn build_class_table(files: &[SourceFile]) -> ClassTable {
                     .map(|f| FieldInfo {
                         name: f.name.clone(),
                         ty: resolve_type(&f.ty, &imports),
+                        visibility: f.visibility,
+                        readonly: f.readonly,
                     })
                     .collect();
                 let resolve_throws = |m: &nl_syntax::ast::MethodDecl| -> Vec<Type> {
@@ -170,6 +254,10 @@ pub fn build_class_table(files: &[SourceFile]) -> ClassTable {
                         params: m.params.iter().map(|p| resolve_type(&p.ty, &imports)).collect(),
                         return_ty: resolve_type(&m.return_type, &imports),
                         is_static: m.is_static,
+                        is_const: m.is_const,
+                        visibility: m.visibility,
+                        is_abstract: m.is_abstract,
+                        is_final: m.is_final,
                         throws: resolve_throws(m),
                     })
                     .collect();
@@ -180,6 +268,7 @@ pub fn build_class_table(files: &[SourceFile]) -> ClassTable {
                     .map(|m| CtorInfo {
                         params: m.params.iter().map(|p| resolve_type(&p.ty, &imports)).collect(),
                         throws: resolve_throws(m),
+                        visibility: m.visibility,
                     })
                     .collect();
                 let implements = class
@@ -188,7 +277,16 @@ pub fn build_class_table(files: &[SourceFile]) -> ClassTable {
                     .map(|n| imports.get(n).cloned().unwrap_or_else(|| n.clone()))
                     .collect();
                 let extends = class.extends.as_ref().map(|n| imports.get(n).cloned().unwrap_or_else(|| n.clone()));
-                ClassInfo { extends, implements, fields, methods, ctors }
+                ClassInfo {
+                    extends,
+                    implements,
+                    fields,
+                    methods,
+                    ctors,
+                    is_readonly: class.is_readonly,
+                    is_abstract: class.is_abstract,
+                    is_final: class.is_final,
+                }
             }
             SourceItem::Interface(iface) => {
                 let methods = iface
@@ -199,10 +297,30 @@ pub fn build_class_table(files: &[SourceFile]) -> ClassTable {
                         params: m.params.iter().map(|p| resolve_type(&p.ty, &imports)).collect(),
                         return_ty: resolve_type(&m.return_type, &imports),
                         is_static: false,
+                        is_const: m.is_const,
+                        // specs.md § Interfaces — interface methods are
+                        // always public (a contract meant to be implemented
+                        // and called from anywhere).
+                        visibility: Visibility::Public,
+                        // Interface method "abstractness" is a distinct,
+                        // pre-existing mechanism (implements-conformance,
+                        // handled leniently elsewhere in this checker) —
+                        // unrelated to the `abstract class`/E033 rule below.
+                        is_abstract: false,
+                        is_final: false,
                         throws: Vec::new(),
                     })
                     .collect();
-                ClassInfo { extends: None, implements: Vec::new(), fields: Vec::new(), methods, ctors: Vec::new() }
+                ClassInfo {
+                    extends: None,
+                    implements: Vec::new(),
+                    fields: Vec::new(),
+                    methods,
+                    ctors: Vec::new(),
+                    is_readonly: false,
+                    is_abstract: false,
+                    is_final: false,
+                }
             }
         };
         table.insert(fqcn, info);

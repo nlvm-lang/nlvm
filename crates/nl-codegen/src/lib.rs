@@ -138,7 +138,12 @@ fn compile_file(file: &SourceFile, all_files: &[SourceFile], classes: &HashMap<S
 
             let mut methods = Vec::with_capacity(class.methods.len());
             let mut closure_modules = Vec::new();
-            for (method_index, m) in class.methods.iter().enumerate() {
+            // specs.md § Abstract classes and methods — an abstract method
+            // has no body and is never itself instantiable/directly callable
+            // (E032 rejects `new` on its class; E033 guarantees every
+            // concrete subclass provides a real override, which virtual
+            // dispatch always resolves to first) — nothing to emit.
+            for (method_index, m) in class.methods.iter().filter(|m| !m.is_abstract).enumerate() {
                 let (descriptor, closures) =
                     compile_method(m.name.as_str(), method_index, m, class, &mut cp, this_class, &fqcn, &imports, classes, &static_sigs)?;
                 methods.push(descriptor);

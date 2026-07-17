@@ -1,0 +1,28 @@
+---
+title: "Compile E043 — import creates duplicate symbol"
+file_separator: "#NLFILE"
+expected_compile_error: "E043"
+---
+
+#NLFILE phase7/e043/Widget.nl
+namespace phase7.e043.a;
+class Widget {
+	public construct() {}
+}
+
+#NLFILE phase7/e043/other/Widget.nl
+namespace phase7.e043.b;
+class Widget {
+	public construct() {}
+}
+
+#NLFILE phase7/e043/Main.nl
+namespace phase7.e043.main;
+use phase7.e043.a.Widget;
+use phase7.e043.b.Widget;
+class Main {
+	public static int main(string[] args) {
+		auto w = new Widget();
+		return 0;
+	}
+}

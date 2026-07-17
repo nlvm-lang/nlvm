@@ -1,0 +1,20 @@
+---
+title: "Compile E032 — cannot instantiate an abstract class"
+file_separator: "#NLFILE"
+expected_compile_error: "E032"
+---
+
+#NLFILE phase7/e032/Shape.nl
+namespace phase7.e032;
+abstract class Shape {
+	public abstract float area();
+}
+
+#NLFILE phase7/e032/Main.nl
+namespace phase7.e032;
+class Main {
+	public static int main(string[] args) {
+		auto s = new Shape();
+		return 0;
+	}
+}
