@@ -144,6 +144,29 @@ pub struct Param {
     /// the method body, and (for object types) only `const` methods may be
     /// called on it.
     pub is_const: bool,
+    /// `T name = expr` — specs.md § Optional parameters. Only trailing
+    /// parameters may have one; the expression must be a compile-time
+    /// constant (E026), both checked by `nl-sema`.
+    pub default: Option<Expr>,
+    /// `ref T name` — specs.md § Ref parameters. The method receives a true
+    /// reference to the caller's variable (vm.md § Ref parameters
+    /// (boxing)); the call site must use the `ref` keyword too (E021), the
+    /// argument must be a variable (E020), and optional parameters can't be
+    /// `ref` (E022). Independent of `is_const` (`const ref` = read-only
+    /// reference).
+    pub is_ref: bool,
+}
+
+/// One call-site argument — `expr` (positional) or `name: expr` (named,
+/// specs.md § Named parameters). The parser accepts any order; `nl-sema`
+/// does the binding against the callee's signature and validation
+/// (E023-E026).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Arg {
+    pub name: Option<String>,
+    /// `ref expr` — compiler.md § Ref parameter rules (E020/E021).
+    pub is_ref: bool,
+    pub value: Expr,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -224,10 +247,10 @@ pub enum Stmt {
     Block(Block),
     /// `this(args);` constructor delegation — must be the first statement of
     /// a constructor body (compiler.md § Constructor delegation, E045).
-    ThisCall(Vec<Expr>),
+    ThisCall(Vec<Arg>),
     /// `super(args);` constructor delegation to the direct superclass — like
     /// `ThisCall`, must be the first statement of a constructor body.
-    SuperCall(Vec<Expr>),
+    SuperCall(Vec<Arg>),
     Throw(Expr),
     Try {
         body: Block,
@@ -283,21 +306,26 @@ pub enum Expr {
     Super,
     Ident(String),
     Assign(LValue, Box<Expr>),
-    Call(String, Vec<Expr>),
+    Call(String, Vec<Arg>),
     /// `new ClassName(args)` or `new ClassName<TypeArgs>(args)` — see
     /// `nl_syntax::monomorphize`, which rewrites the latter into the
     /// former (against a mangled class name) before this ever reaches
     /// `nl-sema`/`nl-codegen`.
-    New(String, Vec<Type>, Vec<Expr>),
-    /// `new T[size]` — fixed-size single-dimension array creation.
-    NewArray(Box<Type>, Box<Expr>),
+    New(String, Vec<Type>, Vec<Arg>),
+    /// `new T[n1][n2]...[nk]` — fixed-size array creation, one entry per
+    /// bracket pair (`None` for an omitted size, e.g. the `[]` in
+    /// `new int[3][]`). compiler.md § Multidimensional array creation:
+    /// omitted sizes must form a contiguous suffix from the right (checked
+    /// by `nl-sema`, E038) — everything from the first `None` onward stays
+    /// unallocated (`null`).
+    NewArray(Box<Type>, Vec<Option<Expr>>),
     /// `new T[]{ e0, e1, ... }` — initializer-list array creation, size is
     /// the element count (specs.md § Arrays, "Initializer list").
     NewArrayInit(Box<Type>, Vec<Expr>),
     /// `target.field`.
     FieldAccess(Box<Expr>, String),
     /// `target.method(args)`.
-    MethodCall(Box<Expr>, String, Vec<Expr>),
+    MethodCall(Box<Expr>, String, Vec<Arg>),
     /// `array[index]`.
     Index(Box<Expr>, Box<Expr>),
     /// `expr instanceof TypeName`.

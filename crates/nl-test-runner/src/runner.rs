@@ -130,7 +130,10 @@ fn check_module_structure(header: &Header, modules: &[Module]) -> Option<String>
                         .and_then(|v| v.as_str())
                         .unwrap_or_default()
                         .to_string();
-                    let ty = map.get("type").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    let ty = map
+                        .get("type")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
                     (name, ty)
                 }
                 _ => continue,

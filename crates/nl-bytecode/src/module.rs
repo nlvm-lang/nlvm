@@ -103,9 +103,9 @@ impl Module {
     }
 
     pub fn find_method(&self, name: &str) -> Option<&MethodDescriptor> {
-        self.methods.iter().find(|m| {
-            self.constant_pool.utf8_at(m.name_index) == Some(name)
-        })
+        self.methods
+            .iter()
+            .find(|m| self.constant_pool.utf8_at(m.name_index) == Some(name))
     }
 
     pub fn find_field(&self, name: &str) -> Option<&FieldDescriptor> {
@@ -117,7 +117,11 @@ impl Module {
     /// Like `find_method`, but also matches on the method descriptor string
     /// (e.g. `"(int, string) -> void"`) — needed once a name can resolve to
     /// several overloads (constructors, overloaded instance methods).
-    pub fn find_method_by_descriptor(&self, name: &str, descriptor: &str) -> Option<&MethodDescriptor> {
+    pub fn find_method_by_descriptor(
+        &self,
+        name: &str,
+        descriptor: &str,
+    ) -> Option<&MethodDescriptor> {
         self.methods.iter().find(|m| {
             self.constant_pool.utf8_at(m.name_index) == Some(name)
                 && self.constant_pool.type_desc_at(m.descriptor_index) == Some(descriptor)
@@ -368,7 +372,9 @@ fn write_cp_entry(buf: &mut Vec<u8>, entry: &ConstantPoolEntry) {
             buf.extend_from_slice(&name_index.to_be_bytes());
             buf.extend_from_slice(&descriptor_index.to_be_bytes());
         }
-        ConstantPoolEntry::TypeDesc { desc_index } => buf.extend_from_slice(&desc_index.to_be_bytes()),
+        ConstantPoolEntry::TypeDesc { desc_index } => {
+            buf.extend_from_slice(&desc_index.to_be_bytes())
+        }
     }
 }
 

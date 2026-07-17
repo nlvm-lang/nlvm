@@ -1,0 +1,21 @@
+---
+title: "Compile E026 — default value for parameter must be a compile-time constant"
+file_separator: "#NLFILE"
+expected_compile_error: "E026"
+---
+
+#NLFILE phase7/e026/Main.nl
+namespace phase7.e026;
+class Main {
+	public static int compute() {
+		return 42;
+	}
+
+	public static int add(int a, int b = compute()) {
+		return a + b;
+	}
+
+	public static int main(string[] args) {
+		return add(1);
+	}
+}

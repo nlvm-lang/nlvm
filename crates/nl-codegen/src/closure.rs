@@ -36,7 +36,11 @@ fn collect_stmt(stmt: &Stmt, names: &mut HashSet<String>) {
                 collect_expr(e, names);
             }
         }
-        Stmt::If { cond, then_branch, else_branch } => {
+        Stmt::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
             collect_expr(cond, names);
             collect_block(then_branch, names);
             if let Some(b) = else_branch {
@@ -51,7 +55,12 @@ fn collect_stmt(stmt: &Stmt, names: &mut HashSet<String>) {
             collect_expr(iterable, names);
             collect_block(body, names);
         }
-        Stmt::For { init, cond, step, body } => {
+        Stmt::For {
+            init,
+            cond,
+            step,
+            body,
+        } => {
             for s in init {
                 collect_stmt(s, names);
             }
@@ -66,10 +75,14 @@ fn collect_stmt(stmt: &Stmt, names: &mut HashSet<String>) {
         Stmt::Block(b) => collect_block(b, names),
         Stmt::ThisCall(args) | Stmt::SuperCall(args) => {
             for a in args {
-                collect_expr(a, names);
+                collect_expr(&a.value, names);
             }
         }
-        Stmt::Try { body, catches, finally } => {
+        Stmt::Try {
+            body,
+            catches,
+            finally,
+        } => {
             collect_block(body, names);
             for c in catches {
                 collect_block(&c.body, names);
@@ -99,10 +112,14 @@ fn collect_expr(expr: &Expr, names: &mut HashSet<String>) {
         }
         Expr::Call(_, args) | Expr::New(_, _, args) => {
             for a in args {
-                collect_expr(a, names);
+                collect_expr(&a.value, names);
             }
         }
-        Expr::NewArray(_, size) => collect_expr(size, names),
+        Expr::NewArray(_, dims) => {
+            for size in dims.iter().flatten() {
+                collect_expr(size, names);
+            }
+        }
         Expr::NewArrayInit(_, elements) => {
             for e in elements {
                 collect_expr(e, names);
@@ -113,7 +130,7 @@ fn collect_expr(expr: &Expr, names: &mut HashSet<String>) {
         Expr::MethodCall(target, _, args) => {
             collect_expr(target, names);
             for a in args {
-                collect_expr(a, names);
+                collect_expr(&a.value, names);
             }
         }
         Expr::Index(target, index) => {

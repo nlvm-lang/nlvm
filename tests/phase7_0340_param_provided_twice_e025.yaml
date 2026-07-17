@@ -1,0 +1,17 @@
+---
+title: "Compile E025 — parameter provided both positionally and by name"
+file_separator: "#NLFILE"
+expected_compile_error: "E025"
+---
+
+#NLFILE phase7/e025/Main.nl
+namespace phase7.e025;
+class Main {
+	public static int add(int a, int b) {
+		return a + b;
+	}
+
+	public static int main(string[] args) {
+		return add(1, a: 2);
+	}
+}

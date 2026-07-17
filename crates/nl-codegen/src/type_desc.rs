@@ -11,11 +11,18 @@ pub fn type_descriptor(ty: &Type) -> String {
         Type::Array(inner) => format!("{}[]", type_descriptor(inner)),
         Type::Named(name) => name.clone(),
         Type::NullT => "null".to_string(),
-        Type::Union(members) => members.iter().map(type_descriptor).collect::<Vec<_>>().join("|"),
+        Type::Union(members) => members
+            .iter()
+            .map(type_descriptor)
+            .collect::<Vec<_>>()
+            .join("|"),
         // nl_syntax::monomorphize rewrites every `Type::Generic` to a plain
         // `Type::Named` (the monomorphized class's mangled FQCN) before
         // nl-codegen ever runs — see its module doc comment.
-        Type::Generic(name, args) => unreachable!("unresolved generic type '{name}<...>' ({} args) reached codegen", args.len()),
+        Type::Generic(name, args) => unreachable!(
+            "unresolved generic type '{name}<...>' ({} args) reached codegen",
+            args.len()
+        ),
     }
 }
 

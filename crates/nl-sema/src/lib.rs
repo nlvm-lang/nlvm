@@ -20,17 +20,21 @@ pub use error::SemaError;
 /// an unresolved class/field/method defers to nl-codegen's harder error,
 /// same as unresolved calls already did before this phase.
 pub fn check_compile(files: &[SourceFile]) -> Result<(), SemaError> {
-    // Template classes (specs.md § Template class) are expanded into
-    // ordinary monomorphized classes before anything else sees them — see
-    // nl_syntax::monomorphize. Runs ahead of the prelude prepend below
-    // since exception classes are never templates.
-    let expanded = nl_syntax::monomorphize::expand(files.to_vec());
-
     // Built-in exception classes (nl_syntax::prelude) are implicitly part of
     // every program — see class_table::import_map, which seeds their simple
-    // names so user code can reference them without a `use`.
-    let mut all_files = nl_syntax::prelude::files();
-    all_files.extend(expanded);
+    // names so user code can reference them without a `use`. Prepended
+    // *before* expansion (not after): the prelude's `Box<T>` (vm.md § Ref
+    // parameters (boxing)) is itself a template, and `nl_syntax::monomorphize
+    // ::expand` only ever monomorphizes templates it can see in its own
+    // input — it wouldn't be reachable at all if expansion ran on `files`
+    // alone first.
+    let mut unexpanded = nl_syntax::prelude::files();
+    unexpanded.extend(files.to_vec());
+
+    // Template classes (specs.md § Template class) are expanded into
+    // ordinary monomorphized classes before anything else sees them — see
+    // nl_syntax::monomorphize.
+    let all_files = nl_syntax::monomorphize::expand(unexpanded);
 
     check_duplicate_classes(&all_files)?;
     for file in &all_files {
@@ -50,10 +54,16 @@ pub fn check_compile(files: &[SourceFile]) -> Result<(), SemaError> {
 }
 
 /// compiler.md § Template instantiation, "Bounded type parameters" — E037.
-fn check_template_bounds(files: &[SourceFile], classes: &class_table::ClassTable) -> Result<(), SemaError> {
+fn check_template_bounds(
+    files: &[SourceFile],
+    classes: &class_table::ClassTable,
+) -> Result<(), SemaError> {
     let instantiations = nl_syntax::monomorphize::collect_instantiations(files);
     for (template_fqcn, args) in instantiations.values() {
-        let Some(template_file) = files.iter().find(|f| class_table::fqcn_of(f) == *template_fqcn) else {
+        let Some(template_file) = files
+            .iter()
+            .find(|f| class_table::fqcn_of(f) == *template_fqcn)
+        else {
             continue;
         };
         let SourceItem::Class(template_class) = &template_file.item else {
@@ -64,7 +74,10 @@ fn check_template_bounds(files: &[SourceFile], classes: &class_table::ClassTable
             let Some(bound_name) = &type_param.bound else {
                 continue;
             };
-            let bound_fqcn = imports.get(bound_name).cloned().unwrap_or_else(|| bound_name.clone());
+            let bound_fqcn = imports
+                .get(bound_name)
+                .cloned()
+                .unwrap_or_else(|| bound_name.clone());
             let Type::Named(arg_fqcn) = arg else {
                 // A primitive/array concrete argument can't satisfy a
                 // class/interface bound at all, but no test exercises that
@@ -73,7 +86,11 @@ fn check_template_bounds(files: &[SourceFile], classes: &class_table::ClassTable
                 continue;
             };
             if !class_table::satisfies_bound(classes, arg_fqcn, &bound_fqcn) {
-                return Err(SemaError::TemplateBoundNotSatisfied(arg_fqcn.clone(), bound_fqcn, template_fqcn.clone()));
+                return Err(SemaError::TemplateBoundNotSatisfied(
+                    arg_fqcn.clone(),
+                    bound_fqcn,
+                    template_fqcn.clone(),
+                ));
             }
         }
     }

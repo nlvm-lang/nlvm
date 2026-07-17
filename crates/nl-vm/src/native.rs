@@ -117,7 +117,12 @@ pub fn is_native_class(fqcn: &str) -> bool {
 /// Dispatches one native call. `args` has already been popped off the
 /// operand stack by the caller, in declaration order. Returns `Ok(None)`
 /// for a `void` native (nothing to push back).
-pub fn dispatch(program: &Arc<Program>, fqcn: &str, name: &str, mut args: Vec<Value>) -> Result<Option<Value>, VmError> {
+pub fn dispatch(
+    program: &Arc<Program>,
+    fqcn: &str,
+    name: &str,
+    mut args: Vec<Value>,
+) -> Result<Option<Value>, VmError> {
     match (fqcn, name) {
         ("system.Out", "print") => {
             program.write_stdout(&expect_str(&mut args)?);
@@ -163,7 +168,9 @@ pub fn dispatch(program: &Arc<Program>, fqcn: &str, name: &str, mut args: Vec<Va
             Ok(v) => Ok(Some(Value::Int(v))),
             Err(_) => Ok(Some(Value::Null)),
         },
-        ("system.Int", "toString") => Ok(Some(Value::Str(Arc::new(expect_int(&mut args)?.to_string())))),
+        ("system.Int", "toString") => Ok(Some(Value::Str(Arc::new(
+            expect_int(&mut args)?.to_string(),
+        )))),
         ("system.Float", "parse") => match expect_str(&mut args)?.trim().parse::<f64>() {
             Ok(v) => Ok(Some(Value::Float(v))),
             Err(_) => Err(throw_format_error("invalid float literal")),
@@ -172,18 +179,25 @@ pub fn dispatch(program: &Arc<Program>, fqcn: &str, name: &str, mut args: Vec<Va
             Ok(v) => Ok(Some(Value::Float(v))),
             Err(_) => Ok(Some(Value::Null)),
         },
-        ("system.Float", "toString") => Ok(Some(Value::Str(Arc::new(expect_float(&mut args)?.to_string())))),
+        ("system.Float", "toString") => Ok(Some(Value::Str(Arc::new(
+            expect_float(&mut args)?.to_string(),
+        )))),
         ("system.Bool", "parse") => match expect_str(&mut args)?.as_str() {
             "true" => Ok(Some(Value::Bool(true))),
             "false" => Ok(Some(Value::Bool(false))),
-            _ => Err(throw_native("IllegalArgumentException", "expected \"true\" or \"false\"")),
+            _ => Err(throw_native(
+                "IllegalArgumentException",
+                "expected \"true\" or \"false\"",
+            )),
         },
         ("system.Bool", "tryParse") => match expect_str(&mut args)?.as_str() {
             "true" => Ok(Some(Value::Bool(true))),
             "false" => Ok(Some(Value::Bool(false))),
             _ => Ok(Some(Value::Null)),
         },
-        ("system.Bool", "toString") => Ok(Some(Value::Str(Arc::new(expect_bool(&mut args)?.to_string())))),
+        ("system.Bool", "toString") => Ok(Some(Value::Str(Arc::new(
+            expect_bool(&mut args)?.to_string(),
+        )))),
         // stdlib.md § system.String — `args[0]` is always the receiver
         // (whether the call came from `text.trim()` or the equivalent
         // static `system.String.trim(text)`, see nl_codegen::stdlib's doc
@@ -192,19 +206,28 @@ pub fn dispatch(program: &Arc<Program>, fqcn: &str, name: &str, mut args: Vec<Va
         // front. Character positions are counted in `char`s, not bytes
         // (specs.md: "A character is represented as a string of length
         // 1").
-        ("system.String", "length") => Ok(Some(Value::Int(str_at(&args, 0)?.chars().count() as i64))),
+        ("system.String", "length") => {
+            Ok(Some(Value::Int(str_at(&args, 0)?.chars().count() as i64)))
+        }
         ("system.String", "charAt") => {
             let chars: Vec<char> = str_at(&args, 0)?.chars().collect();
             let idx = int_at(&args, 1)?;
             if idx < 0 || idx as usize >= chars.len() {
-                return Err(throw_native("IndexOutOfBoundsException", format!("index {idx}, length {}", chars.len())));
+                return Err(throw_native(
+                    "IndexOutOfBoundsException",
+                    format!("index {idx}, length {}", chars.len()),
+                ));
             }
             Ok(Some(Value::Str(Arc::new(chars[idx as usize].to_string()))))
         }
         ("system.String", "substring") => {
             let chars: Vec<char> = str_at(&args, 0)?.chars().collect();
             let start = int_at(&args, 1)?;
-            let end = if args.len() >= 3 { int_at(&args, 2)? } else { chars.len() as i64 };
+            let end = if args.len() >= 3 {
+                int_at(&args, 2)?
+            } else {
+                chars.len() as i64
+            };
             if start < 0 || end < start || end as usize > chars.len() {
                 return Err(throw_native(
                     "IndexOutOfBoundsException",
@@ -217,30 +240,53 @@ pub fn dispatch(program: &Arc<Program>, fqcn: &str, name: &str, mut args: Vec<Va
         ("system.String", "indexOf") => {
             let haystack = str_at(&args, 0)?;
             let needle = str_at(&args, 1)?;
-            let from = if args.len() >= 3 { int_at(&args, 2)?.max(0) as usize } else { 0 };
-            Ok(Some(Value::Int(char_index_of(&haystack, &needle, from).unwrap_or(-1))))
+            let from = if args.len() >= 3 {
+                int_at(&args, 2)?.max(0) as usize
+            } else {
+                0
+            };
+            Ok(Some(Value::Int(
+                char_index_of(&haystack, &needle, from).unwrap_or(-1),
+            )))
         }
-        ("system.String", "contains") => Ok(Some(Value::Bool(str_at(&args, 0)?.contains(&str_at(&args, 1)?)))),
-        ("system.String", "toUpperCase") => Ok(Some(Value::Str(Arc::new(str_at(&args, 0)?.to_uppercase())))),
-        ("system.String", "toLowerCase") => Ok(Some(Value::Str(Arc::new(str_at(&args, 0)?.to_lowercase())))),
+        ("system.String", "contains") => Ok(Some(Value::Bool(
+            str_at(&args, 0)?.contains(&str_at(&args, 1)?),
+        ))),
+        ("system.String", "toUpperCase") => {
+            Ok(Some(Value::Str(Arc::new(str_at(&args, 0)?.to_uppercase()))))
+        }
+        ("system.String", "toLowerCase") => {
+            Ok(Some(Value::Str(Arc::new(str_at(&args, 0)?.to_lowercase()))))
+        }
         ("system.String", "replace") => {
             let s = str_at(&args, 0)?;
             let from = str_at(&args, 1)?;
             let to = str_at(&args, 2)?;
             Ok(Some(Value::Str(Arc::new(s.replace(&from, &to)))))
         }
-        ("system.String", "startsWith") => Ok(Some(Value::Bool(str_at(&args, 0)?.starts_with(&str_at(&args, 1)?)))),
-        ("system.String", "endsWith") => Ok(Some(Value::Bool(str_at(&args, 0)?.ends_with(&str_at(&args, 1)?)))),
-        ("system.String", "trim") => Ok(Some(Value::Str(Arc::new(str_at(&args, 0)?.trim().to_string())))),
+        ("system.String", "startsWith") => Ok(Some(Value::Bool(
+            str_at(&args, 0)?.starts_with(&str_at(&args, 1)?),
+        ))),
+        ("system.String", "endsWith") => Ok(Some(Value::Bool(
+            str_at(&args, 0)?.ends_with(&str_at(&args, 1)?),
+        ))),
+        ("system.String", "trim") => Ok(Some(Value::Str(Arc::new(
+            str_at(&args, 0)?.trim().to_string(),
+        )))),
         ("system.String", "split") => {
             let s = str_at(&args, 0)?;
             let delim = str_at(&args, 1)?;
-            let parts: Vec<Value> = s.split(delim.as_str()).map(|p| Value::Str(Arc::new(p.to_string()))).collect();
+            let parts: Vec<Value> = s
+                .split(delim.as_str())
+                .map(|p| Value::Str(Arc::new(p.to_string())))
+                .collect();
             Ok(Some(Value::Array(Arc::new(Mutex::new(parts)))))
         }
         // stdlib.md § system.io.File — paths are used as-is, no
         // sanitization ("path validation is the caller's responsibility").
-        ("system.io.File", "exists") => Ok(Some(Value::Bool(std::path::Path::new(&str_at(&args, 0)?).exists()))),
+        ("system.io.File", "exists") => Ok(Some(Value::Bool(
+            std::path::Path::new(&str_at(&args, 0)?).exists(),
+        ))),
         ("system.io.File", "open") => {
             let path = str_at(&args, 0)?;
             // 1-argument open == `FileMode.ReadWrite` (stdlib.md): read and
@@ -251,19 +297,22 @@ pub fn dispatch(program: &Arc<Program>, fqcn: &str, name: &str, mut args: Vec<Va
             let mode = if args.len() > 1 { int_at(&args, 1)? } else { 3 };
             let mut opts = std::fs::OpenOptions::new();
             match mode {
-                0 => opts.read(true),                                             // Read
-                1 => opts.write(true).create(true).truncate(true),                // Write
-                2 => opts.write(true).create(true).append(true),                  // Append
-                3 => opts.read(true).write(true),                                 // ReadWrite
-                4 => opts.read(true).write(true).create(true).truncate(true),     // ReadWriteTruncate
-                5 => opts.read(true).write(true).create(true).append(true),       // ReadWriteAppend
+                0 => opts.read(true),                                         // Read
+                1 => opts.write(true).create(true).truncate(true),            // Write
+                2 => opts.write(true).create(true).append(true),              // Append
+                3 => opts.read(true).write(true),                             // ReadWrite
+                4 => opts.read(true).write(true).create(true).truncate(true), // ReadWriteTruncate
+                5 => opts.read(true).write(true).create(true).append(true),   // ReadWriteAppend
                 _ => return Err(VmError::Malformed("invalid FileMode value")),
             };
             let file = opts.open(&path).map_err(|e| throw_io_error(&path, e))?;
             let id = program.register_file(file);
             let mut fields = HashMap::new();
             fields.insert("__fd__".to_string(), Value::Int(id));
-            Ok(Some(Value::Object(Arc::new(Mutex::new(Object::native("system.io.FileHandle", fields))))))
+            Ok(Some(Value::Object(Arc::new(Mutex::new(Object::native(
+                "system.io.FileHandle",
+                fields,
+            ))))))
         }
         ("system.io.File", "readAllText") => {
             let path = str_at(&args, 0)?;
@@ -279,13 +328,21 @@ pub fn dispatch(program: &Arc<Program>, fqcn: &str, name: &str, mut args: Vec<Va
         ("system.io.File", "glob") => {
             let base = str_at(&args, 0)?;
             let pattern = str_at(&args, 1)?;
-            let regex = crate::mini_regex::Regex::compile(&pattern)
-                .map_err(|e| throw_native("IOException", format!("invalid glob pattern '{pattern}': {e}")))?;
+            let regex = crate::mini_regex::Regex::compile(&pattern).map_err(|e| {
+                throw_native(
+                    "IOException",
+                    format!("invalid glob pattern '{pattern}': {e}"),
+                )
+            })?;
             let base_path = std::path::Path::new(&base);
             let mut matches = Vec::new();
-            collect_glob_matches(base_path, base_path, &regex, &mut matches).map_err(|e| throw_io_error(&base, e))?;
+            collect_glob_matches(base_path, base_path, &regex, &mut matches)
+                .map_err(|e| throw_io_error(&base, e))?;
             matches.sort();
-            let values = matches.into_iter().map(|p| Value::Str(Arc::new(p))).collect();
+            let values = matches
+                .into_iter()
+                .map(|p| Value::Str(Arc::new(p)))
+                .collect();
             Ok(Some(Value::Array(Arc::new(Mutex::new(values)))))
         }
         ("system.io.Directory", "list") => {
@@ -312,28 +369,40 @@ pub fn dispatch(program: &Arc<Program>, fqcn: &str, name: &str, mut args: Vec<Va
             std::fs::remove_dir(&path).map_err(|e| throw_io_error(&path, e))?;
             Ok(None)
         }
-        ("system.io.Directory", "exists") => Ok(Some(Value::Bool(std::path::Path::new(&str_at(&args, 0)?).is_dir()))),
+        ("system.io.Directory", "exists") => Ok(Some(Value::Bool(
+            std::path::Path::new(&str_at(&args, 0)?).is_dir(),
+        ))),
         ("system.io.Path", "join") => {
             let Some(Value::Array(segments)) = args.first() else {
-                return Err(VmError::Malformed("expected string[] argument to native call"));
+                return Err(VmError::Malformed(
+                    "expected string[] argument to native call",
+                ));
             };
             let mut joined = std::path::PathBuf::new();
             for seg in lock(&segments).iter() {
                 let Value::Str(s) = seg else {
-                    return Err(VmError::Malformed("expected string[] argument to native call"));
+                    return Err(VmError::Malformed(
+                        "expected string[] argument to native call",
+                    ));
                 };
                 joined.push(s.as_str());
             }
-            Ok(Some(Value::Str(Arc::new(joined.to_string_lossy().into_owned()))))
+            Ok(Some(Value::Str(Arc::new(
+                joined.to_string_lossy().into_owned(),
+            ))))
         }
         ("system.io.Path", "dirname") => {
             let path = str_at(&args, 0)?;
-            let dir = std::path::Path::new(&path).parent().map(|p| p.to_string_lossy().into_owned());
+            let dir = std::path::Path::new(&path)
+                .parent()
+                .map(|p| p.to_string_lossy().into_owned());
             Ok(Some(Value::Str(Arc::new(dir.unwrap_or_default()))))
         }
         ("system.io.Path", "basename") => {
             let path = str_at(&args, 0)?;
-            let base = std::path::Path::new(&path).file_name().map(|p| p.to_string_lossy().into_owned());
+            let base = std::path::Path::new(&path)
+                .file_name()
+                .map(|p| p.to_string_lossy().into_owned());
             Ok(Some(Value::Str(Arc::new(base.unwrap_or_default()))))
         }
         ("system.io.Path", "extension") => {
@@ -341,11 +410,16 @@ pub fn dispatch(program: &Arc<Program>, fqcn: &str, name: &str, mut args: Vec<Va
             // stdlib.md: "Returns the file extension (e.g. `.nl`)" — with
             // the leading dot, or null when there is none.
             match std::path::Path::new(&path).extension() {
-                Some(ext) => Ok(Some(Value::Str(Arc::new(format!(".{}", ext.to_string_lossy()))))),
+                Some(ext) => Ok(Some(Value::Str(Arc::new(format!(
+                    ".{}",
+                    ext.to_string_lossy()
+                ))))),
                 None => Ok(Some(Value::Null)),
             }
         }
-        ("system.io.Path", "normalize") => Ok(Some(Value::Str(Arc::new(normalize_path(&str_at(&args, 0)?))))),
+        ("system.io.Path", "normalize") => Ok(Some(Value::Str(Arc::new(normalize_path(&str_at(
+            &args, 0,
+        )?))))),
         // stdlib.md § system.io.Grep — line-oriented regex search, backed by
         // `crate::mini_regex` like `system.text.Regex`/`File.glob` above.
         // The two `search` overloads are told apart by `args.len()` (2 =
@@ -364,7 +438,8 @@ pub fn dispatch(program: &Arc<Program>, fqcn: &str, name: &str, mut args: Vec<Va
                 grep_path(std::path::Path::new(&path), &regex, recursive, &mut matches)
                     .map_err(|e| throw_io_error(&path, e))?;
             } else {
-                grep_file(std::path::Path::new(&path), &regex, &mut matches).map_err(|e| throw_io_error(&path, e))?;
+                grep_file(std::path::Path::new(&path), &regex, &mut matches)
+                    .map_err(|e| throw_io_error(&path, e))?;
             }
             Ok(Some(Value::Array(Arc::new(Mutex::new(matches)))))
         }
@@ -372,7 +447,9 @@ pub fn dispatch(program: &Arc<Program>, fqcn: &str, name: &str, mut args: Vec<Va
         // same source `system.Uuid.random` uses. Not seedable.
         ("system.SecureRandom", "nextBytes") => {
             let Some(Value::Array(buffer)) = args.first().cloned() else {
-                return Err(VmError::Malformed("expected byte[] argument to native call"));
+                return Err(VmError::Malformed(
+                    "expected byte[] argument to native call",
+                ));
             };
             let len = lock(&buffer).len();
             let random = secure_random_bytes(len)?;
@@ -443,7 +520,10 @@ pub fn dispatch(program: &Arc<Program>, fqcn: &str, name: &str, mut args: Vec<Va
             let id = program.register_tcp_stream(stream);
             let mut fields = HashMap::new();
             fields.insert("__fd__".to_string(), Value::Int(id));
-            Ok(Some(Value::Object(Arc::new(Mutex::new(Object::native("system.net.TcpStream", fields))))))
+            Ok(Some(Value::Object(Arc::new(Mutex::new(Object::native(
+                "system.net.TcpStream",
+                fields,
+            ))))))
         }
         ("system.net.Http", "get") => {
             let url = str_at(&args, 0)?;
@@ -474,22 +554,31 @@ pub fn dispatch(program: &Arc<Program>, fqcn: &str, name: &str, mut args: Vec<Va
                     .filter_map(|e| e.ok()?.file_name().to_str()?.parse::<u32>().ok())
                     .collect();
                 pids.sort_unstable();
-                pids.into_iter().filter_map(|pid| read_process_info(pid, &usernames)).collect()
+                pids.into_iter()
+                    .filter_map(|pid| read_process_info(pid, &usernames))
+                    .collect()
             } else {
                 let pid = int_at(&args, 0)?;
-                read_process_info(pid as u32, &usernames).into_iter().collect()
+                read_process_info(pid as u32, &usernames)
+                    .into_iter()
+                    .collect()
             };
             Ok(Some(Value::Array(Arc::new(Mutex::new(infos)))))
         }
         ("system.ps.Process", "run") => {
             let output = match args.first() {
-                Some(Value::Str(cmd)) => std::process::Command::new("sh").arg("-c").arg(cmd.as_str()).output(),
+                Some(Value::Str(cmd)) => std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(cmd.as_str())
+                    .output(),
                 Some(Value::Array(items)) => {
                     let parts: Vec<String> = lock(items)
                         .iter()
                         .map(|v| match v {
                             Value::Str(s) => Ok((**s).clone()),
-                            _ => Err(VmError::Malformed("expected string[] argument to native call")),
+                            _ => Err(VmError::Malformed(
+                                "expected string[] argument to native call",
+                            )),
                         })
                         .collect::<Result<_, _>>()?;
                     let Some((program_name, rest)) = parts.split_first() else {
@@ -497,20 +586,34 @@ pub fn dispatch(program: &Arc<Program>, fqcn: &str, name: &str, mut args: Vec<Va
                     };
                     std::process::Command::new(program_name).args(rest).output()
                 }
-                _ => return Err(VmError::Malformed("expected string or string[] argument to native call")),
+                _ => {
+                    return Err(VmError::Malformed(
+                        "expected string or string[] argument to native call",
+                    ))
+                }
             };
             let output = output.map_err(|e| throw_native("IOException", format!("{e}")))?;
             let mut fields = HashMap::new();
-            fields.insert("exitCode".to_string(), Value::Int(output.status.code().unwrap_or(-1) as i64));
+            fields.insert(
+                "exitCode".to_string(),
+                Value::Int(output.status.code().unwrap_or(-1) as i64),
+            );
             fields.insert(
                 "stdout".to_string(),
-                Value::Str(Arc::new(String::from_utf8_lossy(&output.stdout).into_owned())),
+                Value::Str(Arc::new(
+                    String::from_utf8_lossy(&output.stdout).into_owned(),
+                )),
             );
             fields.insert(
                 "stderr".to_string(),
-                Value::Str(Arc::new(String::from_utf8_lossy(&output.stderr).into_owned())),
+                Value::Str(Arc::new(
+                    String::from_utf8_lossy(&output.stderr).into_owned(),
+                )),
             );
-            Ok(Some(Value::Object(Arc::new(Mutex::new(Object::native("system.ps.ProcessResult", fields))))))
+            Ok(Some(Value::Object(Arc::new(Mutex::new(Object::native(
+                "system.ps.ProcessResult",
+                fields,
+            ))))))
         }
         ("system.ps.Process", "pid") => Ok(Some(Value::Int(std::process::id() as i64))),
         // Never actually returns to the caller — see `VmError::Exit`'s doc
@@ -518,7 +621,9 @@ pub fn dispatch(program: &Arc<Program>, fqcn: &str, name: &str, mut args: Vec<Va
         ("system.ps.Process", "exit") => Err(VmError::Exit(expect_int(&mut args)? as i32)),
         ("system.ps.Process", "getCwd") => {
             let cwd = std::env::current_dir().map_err(VmError::Io)?;
-            Ok(Some(Value::Str(Arc::new(cwd.to_string_lossy().into_owned()))))
+            Ok(Some(Value::Str(Arc::new(
+                cwd.to_string_lossy().into_owned(),
+            ))))
         }
         ("system.ps.Process", "setCwd") => {
             let path = str_at(&args, 0)?;
@@ -578,24 +683,33 @@ pub fn dispatch(program: &Arc<Program>, fqcn: &str, name: &str, mut args: Vec<Va
             parts.push(Value::Str(Arc::new(chars[last..].iter().collect())));
             Ok(Some(Value::Array(Arc::new(Mutex::new(parts)))))
         }
-        ("system.text.Regex", "escape") => Ok(Some(Value::Str(Arc::new(crate::mini_regex::escape(&str_at(&args, 0)?))))),
+        ("system.text.Regex", "escape") => Ok(Some(Value::Str(Arc::new(
+            crate::mini_regex::escape(&str_at(&args, 0)?),
+        )))),
         // stdlib.md § system.text.Encoding — byte<->string/base64
         // conversion, no external crate (same stance as `crate::mini_regex`
         // /`system.SecureRandom`'s `/dev/urandom`). `decodeUtf8` is lossy
         // (replaces invalid sequences) rather than throwing: stdlib.md
         // documents no exception for it, unlike `base64Decode`.
-        ("system.text.Encoding", "encodeUtf8") => Ok(Some(array_from_bytes(str_at(&args, 0)?.into_bytes()))),
+        ("system.text.Encoding", "encodeUtf8") => {
+            Ok(Some(array_from_bytes(str_at(&args, 0)?.into_bytes())))
+        }
         ("system.text.Encoding", "decodeUtf8") => {
             let bytes = bytes_from_array(args.first())?;
-            Ok(Some(Value::Str(Arc::new(String::from_utf8_lossy(&bytes).into_owned()))))
+            Ok(Some(Value::Str(Arc::new(
+                String::from_utf8_lossy(&bytes).into_owned(),
+            ))))
         }
         ("system.text.Encoding", "base64Encode") => {
             let bytes = bytes_from_array(args.first())?;
-            Ok(Some(Value::Str(Arc::new(crate::text::base64_encode(&bytes)))))
+            Ok(Some(Value::Str(Arc::new(crate::text::base64_encode(
+                &bytes,
+            )))))
         }
         ("system.text.Encoding", "base64Decode") => {
             let s = str_at(&args, 0)?;
-            let bytes = crate::text::base64_decode(&s).map_err(|e| throw_native("FormatException", e))?;
+            let bytes =
+                crate::text::base64_decode(&s).map_err(|e| throw_native("FormatException", e))?;
             Ok(Some(array_from_bytes(bytes)))
         }
         // stdlib.md § system.time.DateTime — `now()`/`now(zone)` share one
@@ -607,11 +721,15 @@ pub fn dispatch(program: &Arc<Program>, fqcn: &str, name: &str, mut args: Vec<Va
                 Some(v) => timezone_id(v)?,
                 None => crate::mini_tz::default_zone_id(),
             };
-            Ok(Some(new_datetime_object(crate::mini_tz::now_epoch_secs(), zone)))
+            Ok(Some(new_datetime_object(
+                crate::mini_tz::now_epoch_secs(),
+                zone,
+            )))
         }
         ("system.time.DateTime", "parse") => {
             let s = str_at(&args, 0)?;
-            let (epoch, zone) = crate::mini_tz::parse_iso8601(&s).map_err(|e| throw_native("FormatException", e))?;
+            let (epoch, zone) = crate::mini_tz::parse_iso8601(&s)
+                .map_err(|e| throw_native("FormatException", e))?;
             Ok(Some(new_datetime_object(epoch, zone)))
         }
         // stdlib.md § system.time.TimeZone — `get` validates the id by
@@ -619,7 +737,9 @@ pub fn dispatch(program: &Arc<Program>, fqcn: &str, name: &str, mut args: Vec<Va
         // `/usr/share/zoneinfo` entry -> `IllegalArgumentException`,
         // unchecked, same "bad input, no `throws` documented" convention as
         // `Random.nextInt(bound<=0)`).
-        ("system.time.TimeZone", "getDefault") => Ok(Some(new_timezone_object(crate::mini_tz::default_zone_id()))),
+        ("system.time.TimeZone", "getDefault") => {
+            Ok(Some(new_timezone_object(crate::mini_tz::default_zone_id())))
+        }
         ("system.time.TimeZone", "get") => {
             let id = str_at(&args, 0)?;
             crate::mini_tz::zone_offset_seconds(&id, crate::mini_tz::now_epoch_secs())
@@ -672,26 +792,44 @@ fn read_process_info(pid: u32, usernames: &HashMap<u32, String>) -> Option<Value
         .map(|s| String::from_utf8_lossy(s).into_owned())
         .collect();
     let command = if parts.is_empty() {
-        std::fs::read_to_string(format!("{proc_dir}/comm")).map(|s| s.trim_end().to_string()).unwrap_or_default()
+        std::fs::read_to_string(format!("{proc_dir}/comm"))
+            .map(|s| s.trim_end().to_string())
+            .unwrap_or_default()
     } else {
         parts.remove(0)
     };
-    let user = std::fs::read_to_string(format!("{proc_dir}/status")).ok().and_then(|status| {
-        status
-            .lines()
-            .find_map(|line| line.strip_prefix("Uid:")?.split_whitespace().next()?.parse::<u32>().ok())
-            .and_then(|uid| usernames.get(&uid).cloned())
-    });
+    let user = std::fs::read_to_string(format!("{proc_dir}/status"))
+        .ok()
+        .and_then(|status| {
+            status
+                .lines()
+                .find_map(|line| {
+                    line.strip_prefix("Uid:")?
+                        .split_whitespace()
+                        .next()?
+                        .parse::<u32>()
+                        .ok()
+                })
+                .and_then(|uid| usernames.get(&uid).cloned())
+        });
 
     let mut fields = HashMap::new();
     fields.insert("pid".to_string(), Value::Int(pid as i64));
     fields.insert("command".to_string(), Value::Str(Arc::new(command)));
     fields.insert(
         "args".to_string(),
-        Value::Array(Arc::new(Mutex::new(parts.into_iter().map(|a| Value::Str(Arc::new(a))).collect()))),
+        Value::Array(Arc::new(Mutex::new(
+            parts.into_iter().map(|a| Value::Str(Arc::new(a))).collect(),
+        ))),
     );
-    fields.insert("user".to_string(), user.map_or(Value::Null, |u| Value::Str(Arc::new(u))));
-    Some(Value::Object(Arc::new(Mutex::new(Object::native("system.ps.ProcessInfo", fields)))))
+    fields.insert(
+        "user".to_string(),
+        user.map_or(Value::Null, |u| Value::Str(Arc::new(u))),
+    );
+    Some(Value::Object(Arc::new(Mutex::new(Object::native(
+        "system.ps.ProcessInfo",
+        fields,
+    )))))
 }
 
 /// Reads `n` cryptographically secure random bytes from the OS entropy
@@ -716,7 +854,10 @@ fn secure_next_u64() -> Result<u64, VmError> {
 /// multiple of `bound`.
 fn secure_bounded_int(bound: i64) -> Result<i64, VmError> {
     if bound <= 0 {
-        return Err(throw_native("IllegalArgumentException", "bound must be positive"));
+        return Err(throw_native(
+            "IllegalArgumentException",
+            "bound must be positive",
+        ));
     }
     let bound_u = bound as u64;
     let limit = u64::MAX - (u64::MAX % bound_u);
@@ -790,7 +931,9 @@ fn collect_glob_matches(
             collect_glob_matches(base, &path, regex, out)?;
         } else {
             let rel = path.strip_prefix(base).unwrap_or(&path);
-            let rel_str = rel.to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/");
+            let rel_str = rel
+                .to_string_lossy()
+                .replace(std::path::MAIN_SEPARATOR, "/");
             if regex.is_match(&rel_str) {
                 out.push(path.to_string_lossy().into_owned());
             }
@@ -802,7 +945,11 @@ fn collect_glob_matches(
 /// `system.io.Grep.search` on a single file — appends one `GrepMatch` per
 /// line that `regex` matches anywhere in (partial match, see the dispatch
 /// arm's doc comment).
-fn grep_file(path: &std::path::Path, regex: &crate::mini_regex::Regex, out: &mut Vec<Value>) -> std::io::Result<()> {
+fn grep_file(
+    path: &std::path::Path,
+    regex: &crate::mini_regex::Regex,
+    out: &mut Vec<Value>,
+) -> std::io::Result<()> {
     let content = std::fs::read_to_string(path)?;
     let path_str = path.to_string_lossy().into_owned();
     for (i, line) in content.lines().enumerate() {
@@ -852,7 +999,10 @@ fn build_grep_match(path: &str, line_number: i64, line: &str) -> Value {
     fields.insert("path".to_string(), Value::Str(Arc::new(path.to_string())));
     fields.insert("lineNumber".to_string(), Value::Int(line_number));
     fields.insert("line".to_string(), Value::Str(Arc::new(line.to_string())));
-    Value::Object(Arc::new(Mutex::new(Object::native("system.io.GrepMatch", fields))))
+    Value::Object(Arc::new(Mutex::new(Object::native(
+        "system.io.GrepMatch",
+        fields,
+    ))))
 }
 
 /// Maps a host I/O error to the spec's exception types — stdlib.md:
@@ -860,7 +1010,9 @@ fn build_grep_match(path: &str, line_number: i64, line: &str) -> Value {
 /// every other failure.
 fn throw_io_error(path: &str, err: std::io::Error) -> VmError {
     match err.kind() {
-        std::io::ErrorKind::NotFound => throw_native("FileNotFoundException", format!("{path}: {err}")),
+        std::io::ErrorKind::NotFound => {
+            throw_native("FileNotFoundException", format!("{path}: {err}"))
+        }
         _ => throw_native("IOException", format!("{path}: {err}")),
     }
 }
@@ -868,16 +1020,22 @@ fn throw_io_error(path: &str, err: std::io::Error) -> VmError {
 fn str_at(args: &[Value], i: usize) -> Result<String, VmError> {
     match args.get(i) {
         Some(Value::Str(s)) => Ok((**s).clone()),
-        _ => Err(VmError::Malformed("expected string argument to native call")),
+        _ => Err(VmError::Malformed(
+            "expected string argument to native call",
+        )),
     }
 }
 
 fn int_at(args: &[Value], i: usize) -> Result<i64, VmError> {
-    args.get(i).and_then(|v| v.as_int()).ok_or(VmError::Malformed("expected int argument to native call"))
+    args.get(i)
+        .and_then(|v| v.as_int())
+        .ok_or(VmError::Malformed("expected int argument to native call"))
 }
 
 fn bool_at(args: &[Value], i: usize) -> Result<bool, VmError> {
-    args.get(i).and_then(|v| v.as_bool()).ok_or(VmError::Malformed("expected bool argument to native call"))
+    args.get(i)
+        .and_then(|v| v.as_bool())
+        .ok_or(VmError::Malformed("expected bool argument to native call"))
 }
 
 /// Char-index (not byte-index) of the first occurrence of `needle` in
@@ -887,31 +1045,45 @@ fn char_index_of(haystack: &str, needle: &str, from: usize) -> Option<i64> {
     let hay: Vec<char> = haystack.chars().collect();
     let needle: Vec<char> = needle.chars().collect();
     if needle.is_empty() {
-        return if from <= hay.len() { Some(from as i64) } else { None };
+        return if from <= hay.len() {
+            Some(from as i64)
+        } else {
+            None
+        };
     }
     if from > hay.len() || needle.len() > hay.len() {
         return None;
     }
-    (from..=hay.len() - needle.len()).find(|&start| hay[start..start + needle.len()] == needle[..]).map(|s| s as i64)
+    (from..=hay.len() - needle.len())
+        .find(|&start| hay[start..start + needle.len()] == needle[..])
+        .map(|s| s as i64)
 }
 
 fn expect_str(args: &mut Vec<Value>) -> Result<String, VmError> {
     match args.pop() {
         Some(Value::Str(s)) => Ok((*s).clone()),
-        _ => Err(VmError::Malformed("expected string argument to native call")),
+        _ => Err(VmError::Malformed(
+            "expected string argument to native call",
+        )),
     }
 }
 
 fn expect_int(args: &mut Vec<Value>) -> Result<i64, VmError> {
-    args.pop().and_then(|v| v.as_int()).ok_or(VmError::Malformed("expected int argument to native call"))
+    args.pop()
+        .and_then(|v| v.as_int())
+        .ok_or(VmError::Malformed("expected int argument to native call"))
 }
 
 fn expect_float(args: &mut Vec<Value>) -> Result<f64, VmError> {
-    args.pop().and_then(|v| v.as_float()).ok_or(VmError::Malformed("expected float argument to native call"))
+    args.pop()
+        .and_then(|v| v.as_float())
+        .ok_or(VmError::Malformed("expected float argument to native call"))
 }
 
 fn expect_bool(args: &mut Vec<Value>) -> Result<bool, VmError> {
-    args.pop().and_then(|v| v.as_bool()).ok_or(VmError::Malformed("expected bool argument to native call"))
+    args.pop()
+        .and_then(|v| v.as_bool())
+        .ok_or(VmError::Malformed("expected bool argument to native call"))
 }
 
 fn throw_format_error(message: impl Into<String>) -> VmError {
@@ -921,8 +1093,12 @@ fn throw_format_error(message: impl Into<String>) -> VmError {
 /// Shared by every `system.text.Regex` dispatch arm — see that match arm's
 /// doc comment for why an invalid pattern is `IllegalArgumentException`.
 fn compile_regex(pattern: &str) -> Result<crate::mini_regex::Regex, VmError> {
-    crate::mini_regex::Regex::compile(pattern)
-        .map_err(|e| throw_native("IllegalArgumentException", format!("invalid regex pattern '{pattern}': {e}")))
+    crate::mini_regex::Regex::compile(pattern).map_err(|e| {
+        throw_native(
+            "IllegalArgumentException",
+            format!("invalid regex pattern '{pattern}': {e}"),
+        )
+    })
 }
 
 /// Reads a `byte[]` argument's elements into an owned `Vec<u8>` — used by
@@ -931,25 +1107,33 @@ fn compile_regex(pattern: &str) -> Result<crate::mini_regex::Regex, VmError> {
 /// in place.
 fn bytes_from_array(arg: Option<&Value>) -> Result<Vec<u8>, VmError> {
     let Some(Value::Array(arr)) = arg else {
-        return Err(VmError::Malformed("expected byte[] argument to native call"));
+        return Err(VmError::Malformed(
+            "expected byte[] argument to native call",
+        ));
     };
     lock(arr)
         .iter()
         .map(|item| match item {
             Value::Byte(b) => Ok(*b),
-            _ => Err(VmError::Malformed("expected byte[] argument to native call")),
+            _ => Err(VmError::Malformed(
+                "expected byte[] argument to native call",
+            )),
         })
         .collect()
 }
 
 fn array_from_bytes(bytes: Vec<u8>) -> Value {
-    Value::Array(Arc::new(Mutex::new(bytes.into_iter().map(Value::Byte).collect())))
+    Value::Array(Arc::new(Mutex::new(
+        bytes.into_iter().map(Value::Byte).collect(),
+    )))
 }
 
 pub(crate) fn throw_native(class_name: &str, message: impl Into<String>) -> VmError {
     let mut fields = HashMap::new();
     fields.insert("message".to_string(), Value::Str(Arc::new(message.into())));
-    VmError::Thrown(Value::Object(Arc::new(Mutex::new(Object::native(class_name, fields)))))
+    VmError::Thrown(Value::Object(Arc::new(Mutex::new(Object::native(
+        class_name, fields,
+    )))))
 }
 
 /// `system.io.FileHandle` and `system.Random` — like the native generic
@@ -1029,7 +1213,9 @@ pub fn dispatch_native_instance(
     match name {
         "read" | "write" if args.len() == 3 => {
             let Some(Value::Array(buffer)) = args.first().cloned() else {
-                return Err(VmError::Malformed("expected byte[] argument to native call"));
+                return Err(VmError::Malformed(
+                    "expected byte[] argument to native call",
+                ));
             };
             let offset = int_at(&args, 1)?;
             let length = int_at(&args, 2)?;
@@ -1037,7 +1223,10 @@ pub fn dispatch_native_instance(
             // stdlib.md § system.io.FileHandle, Bounds checking: checked
             // *before any I/O*, immune to `offset + length` overflow
             // (checked_add instead of wrapping `+`).
-            if offset < 0 || length < 0 || offset.checked_add(length).is_none_or(|end| end > buf_len) {
+            if offset < 0
+                || length < 0
+                || offset.checked_add(length).is_none_or(|end| end > buf_len)
+            {
                 return Err(throw_native(
                     "IndexOutOfBoundsException",
                     format!("offset {offset}, length {length}, buffer length {buf_len}"),
@@ -1062,7 +1251,9 @@ pub fn dispatch_native_instance(
                         // `int` stored through a `byte[]` element keeps the
                         // low-order bits, same as the `(byte)` cast rule.
                         Value::Int(i) => Ok(*i as u8),
-                        _ => Err(VmError::Malformed("expected byte[] argument to native call")),
+                        _ => Err(VmError::Malformed(
+                            "expected byte[] argument to native call",
+                        )),
                     })
                     .collect::<Result<_, _>>()?;
                 program
@@ -1091,7 +1282,11 @@ pub fn dispatch_native_instance(
                     loop {
                         if f.read(&mut one)? == 0 {
                             // EOF: null if nothing was read at all.
-                            return Ok(if bytes.is_empty() { None } else { Some(lossy_line(bytes)) });
+                            return Ok(if bytes.is_empty() {
+                                None
+                            } else {
+                                Some(lossy_line(bytes))
+                            });
                         }
                         if one[0] == b'\n' {
                             return Ok(Some(lossy_line(bytes)));
@@ -1113,7 +1308,9 @@ pub fn dispatch_native_instance(
                 .map_err(|e| throw_native("IOException", e.to_string()))?;
             Ok(None)
         }
-        _ => Err(VmError::MethodNotFound(format!("system.io.FileHandle.{name}"))),
+        _ => Err(VmError::MethodNotFound(format!(
+            "system.io.FileHandle.{name}"
+        ))),
     }
 }
 
@@ -1142,18 +1339,25 @@ pub fn is_random_class(fqcn: &str) -> bool {
 pub fn new_random_object() -> Value {
     let mut fields = HashMap::new();
     fields.insert("__state__".to_string(), Value::Int(0));
-    Value::Object(Arc::new(Mutex::new(Object::native("system.Random", fields))))
+    Value::Object(Arc::new(Mutex::new(Object::native(
+        "system.Random",
+        fields,
+    ))))
 }
 
 pub fn construct_random(receiver: &Value, mut args: Vec<Value>) -> Result<(), VmError> {
     let seed = match args.pop() {
-        Some(v) => v.as_int().ok_or(VmError::Malformed("expected int seed argument to native call"))? as u64,
+        Some(v) => v.as_int().ok_or(VmError::Malformed(
+            "expected int seed argument to native call",
+        ))? as u64,
         None => default_random_seed(),
     };
     let Value::Object(obj) = receiver else {
         return Err(VmError::Malformed("expected Random receiver"));
     };
-    lock(&obj).fields.insert("__state__".to_string(), Value::Int(seed as i64));
+    lock(&obj)
+        .fields
+        .insert("__state__".to_string(), Value::Int(seed as i64));
     Ok(())
 }
 
@@ -1179,7 +1383,11 @@ fn splitmix64_next(state: &mut u64) -> u64 {
     z ^ (z >> 31)
 }
 
-fn dispatch_random(name: &str, receiver: &Value, mut args: Vec<Value>) -> Result<Option<Value>, VmError> {
+fn dispatch_random(
+    name: &str,
+    receiver: &Value,
+    mut args: Vec<Value>,
+) -> Result<Option<Value>, VmError> {
     let Value::Object(obj) = receiver else {
         return Err(VmError::Malformed("expected Random receiver"));
     };
@@ -1192,7 +1400,10 @@ fn dispatch_random(name: &str, receiver: &Value, mut args: Vec<Value>) -> Result
         "nextInt" => {
             let bound = expect_int(&mut args)?;
             if bound <= 0 {
-                return Err(throw_native("IllegalArgumentException", "bound must be positive"));
+                return Err(throw_native(
+                    "IllegalArgumentException",
+                    "bound must be positive",
+                ));
             }
             Value::Int((splitmix64_next(&mut state) % bound as u64) as i64)
         }
@@ -1202,7 +1413,9 @@ fn dispatch_random(name: &str, receiver: &Value, mut args: Vec<Value>) -> Result
         }
         _ => return Err(VmError::MethodNotFound(format!("system.Random.{name}"))),
     };
-    lock(&obj).fields.insert("__state__".to_string(), Value::Int(state as i64));
+    lock(&obj)
+        .fields
+        .insert("__state__".to_string(), Value::Int(state as i64));
     Ok(Some(result))
 }
 
@@ -1219,19 +1432,27 @@ fn new_datetime_object(epoch: i64, zone: String) -> Value {
     let mut fields = HashMap::new();
     fields.insert("__epoch__".to_string(), Value::Int(epoch));
     fields.insert("__zone__".to_string(), Value::Str(Arc::new(zone)));
-    Value::Object(Arc::new(Mutex::new(Object::native("system.time.DateTime", fields))))
+    Value::Object(Arc::new(Mutex::new(Object::native(
+        "system.time.DateTime",
+        fields,
+    ))))
 }
 
 fn new_timezone_object(id: String) -> Value {
     let mut fields = HashMap::new();
     fields.insert("__id__".to_string(), Value::Str(Arc::new(id)));
-    Value::Object(Arc::new(Mutex::new(Object::native("system.time.TimeZone", fields))))
+    Value::Object(Arc::new(Mutex::new(Object::native(
+        "system.time.TimeZone",
+        fields,
+    ))))
 }
 
 /// Extracts `__id__` from a `TimeZone` argument (`DateTime.now(zone)`).
 fn timezone_id(v: &Value) -> Result<String, VmError> {
     let Value::Object(obj) = v else {
-        return Err(VmError::Malformed("expected TimeZone argument to native call"));
+        return Err(VmError::Malformed(
+            "expected TimeZone argument to native call",
+        ));
     };
     match lock(obj).fields.get("__id__") {
         Some(Value::Str(s)) => Ok((**s).clone()),
@@ -1239,7 +1460,11 @@ fn timezone_id(v: &Value) -> Result<String, VmError> {
     }
 }
 
-fn dispatch_datetime(name: &str, receiver: &Value, mut args: Vec<Value>) -> Result<Option<Value>, VmError> {
+fn dispatch_datetime(
+    name: &str,
+    receiver: &Value,
+    mut args: Vec<Value>,
+) -> Result<Option<Value>, VmError> {
     let Value::Object(obj) = receiver else {
         return Err(VmError::Malformed("expected DateTime receiver"));
     };
@@ -1257,13 +1482,18 @@ fn dispatch_datetime(name: &str, receiver: &Value, mut args: Vec<Value>) -> Resu
     };
     match name {
         "getTimeZone" => Ok(Some(new_timezone_object(zone))),
-        "withTimeZone" => Ok(Some(new_datetime_object(epoch, timezone_id(&expect_object(&mut args)?)?))),
+        "withTimeZone" => Ok(Some(new_datetime_object(
+            epoch,
+            timezone_id(&expect_object(&mut args)?)?,
+        ))),
         "toUtc" => Ok(Some(new_datetime_object(epoch, "UTC".to_string()))),
         "format" => {
             let pattern = expect_str(&mut args)?;
             let offset = crate::mini_tz::zone_offset_seconds(&zone, epoch)
                 .map_err(|e| throw_native("IllegalArgumentException", e))?;
-            Ok(Some(Value::Str(Arc::new(crate::mini_tz::format_datetime(epoch, offset, &pattern)))))
+            Ok(Some(Value::Str(Arc::new(crate::mini_tz::format_datetime(
+                epoch, offset, &pattern,
+            )))))
         }
         "getYear" | "getMonth" | "getDay" | "getHour" | "getMinute" | "getSecond" => {
             let offset = crate::mini_tz::zone_offset_seconds(&zone, epoch)
@@ -1279,11 +1509,17 @@ fn dispatch_datetime(name: &str, receiver: &Value, mut args: Vec<Value>) -> Resu
             };
             Ok(Some(Value::Int(v)))
         }
-        _ => Err(VmError::MethodNotFound(format!("system.time.DateTime.{name}"))),
+        _ => Err(VmError::MethodNotFound(format!(
+            "system.time.DateTime.{name}"
+        ))),
     }
 }
 
-fn dispatch_timezone(name: &str, receiver: &Value, mut args: Vec<Value>) -> Result<Option<Value>, VmError> {
+fn dispatch_timezone(
+    name: &str,
+    receiver: &Value,
+    mut args: Vec<Value>,
+) -> Result<Option<Value>, VmError> {
     let Value::Object(obj) = receiver else {
         return Err(VmError::Malformed("expected TimeZone receiver"));
     };
@@ -1296,7 +1532,9 @@ fn dispatch_timezone(name: &str, receiver: &Value, mut args: Vec<Value>) -> Resu
         "getOffsetMinutes" => {
             let at = expect_object(&mut args)?;
             let Value::Object(at_obj) = &at else {
-                return Err(VmError::Malformed("expected DateTime argument to native call"));
+                return Err(VmError::Malformed(
+                    "expected DateTime argument to native call",
+                ));
             };
             let epoch = match lock(at_obj).fields.get("__epoch__") {
                 Some(Value::Int(e)) => *e,
@@ -1306,14 +1544,18 @@ fn dispatch_timezone(name: &str, receiver: &Value, mut args: Vec<Value>) -> Resu
                 .map_err(|e| throw_native("IllegalArgumentException", e))?;
             Ok(Some(Value::Int((offset / 60) as i64)))
         }
-        _ => Err(VmError::MethodNotFound(format!("system.time.TimeZone.{name}"))),
+        _ => Err(VmError::MethodNotFound(format!(
+            "system.time.TimeZone.{name}"
+        ))),
     }
 }
 
 fn expect_object(args: &mut Vec<Value>) -> Result<Value, VmError> {
     match args.pop() {
         Some(v @ Value::Object(_)) => Ok(v),
-        _ => Err(VmError::Malformed("expected object argument to native call")),
+        _ => Err(VmError::Malformed(
+            "expected object argument to native call",
+        )),
     }
 }
 
@@ -1342,10 +1584,17 @@ pub fn is_net_udp_class(fqcn: &str) -> bool {
 pub fn new_tcp_listener_object() -> Value {
     let mut fields = HashMap::new();
     fields.insert("__fd__".to_string(), Value::Int(-1));
-    Value::Object(Arc::new(Mutex::new(Object::native("system.net.TcpListener", fields))))
+    Value::Object(Arc::new(Mutex::new(Object::native(
+        "system.net.TcpListener",
+        fields,
+    ))))
 }
 
-pub fn construct_tcp_listener(program: &Arc<Program>, receiver: &Value, args: Vec<Value>) -> Result<(), VmError> {
+pub fn construct_tcp_listener(
+    program: &Arc<Program>,
+    receiver: &Value,
+    args: Vec<Value>,
+) -> Result<(), VmError> {
     let host = str_at(&args, 0)?;
     let port = int_at(&args, 1)?;
     let listener = std::net::TcpListener::bind((host.as_str(), port as u16))
@@ -1354,7 +1603,9 @@ pub fn construct_tcp_listener(program: &Arc<Program>, receiver: &Value, args: Ve
     let Value::Object(obj) = receiver else {
         return Err(VmError::Malformed("expected TcpListener receiver"));
     };
-    lock(&obj).fields.insert("__fd__".to_string(), Value::Int(id));
+    lock(&obj)
+        .fields
+        .insert("__fd__".to_string(), Value::Int(id));
     Ok(())
 }
 
@@ -1384,13 +1635,23 @@ fn dispatch_tcp_listener(
             let stream_id = program.register_tcp_stream(stream);
             let mut fields = HashMap::new();
             fields.insert("__fd__".to_string(), Value::Int(stream_id));
-            Ok(Some(Value::Object(Arc::new(Mutex::new(Object::native("system.net.TcpStream", fields))))))
+            Ok(Some(Value::Object(Arc::new(Mutex::new(Object::native(
+                "system.net.TcpStream",
+                fields,
+            ))))))
         }
-        _ => Err(VmError::MethodNotFound(format!("system.net.TcpListener.{name}"))),
+        _ => Err(VmError::MethodNotFound(format!(
+            "system.net.TcpListener.{name}"
+        ))),
     }
 }
 
-fn dispatch_tcp_stream(program: &Arc<Program>, name: &str, receiver: &Value, args: Vec<Value>) -> Result<Option<Value>, VmError> {
+fn dispatch_tcp_stream(
+    program: &Arc<Program>,
+    name: &str,
+    receiver: &Value,
+    args: Vec<Value>,
+) -> Result<Option<Value>, VmError> {
     use std::io::{Read, Write};
 
     let Value::Object(obj) = receiver else {
@@ -1408,7 +1669,9 @@ fn dispatch_tcp_stream(program: &Arc<Program>, name: &str, receiver: &Value, arg
     // Both `read` and `write` take `(byte[] data, int offset, int length)`
     // — same bounds-checking rule as `system.io.FileHandle` (stdlib.md).
     let Some(Value::Array(buffer)) = args.first().cloned() else {
-        return Err(VmError::Malformed("expected byte[] argument to native call"));
+        return Err(VmError::Malformed(
+            "expected byte[] argument to native call",
+        ));
     };
     let offset = int_at(&args, 1)?;
     let length = int_at(&args, 2)?;
@@ -1438,7 +1701,9 @@ fn dispatch_tcp_stream(program: &Arc<Program>, name: &str, receiver: &Value, arg
                 .map(|v| match v {
                     Value::Byte(b) => Ok(*b),
                     Value::Int(i) => Ok(*i as u8),
-                    _ => Err(VmError::Malformed("expected byte[] argument to native call")),
+                    _ => Err(VmError::Malformed(
+                        "expected byte[] argument to native call",
+                    )),
                 })
                 .collect::<Result<_, _>>()?;
             program
@@ -1447,14 +1712,19 @@ fn dispatch_tcp_stream(program: &Arc<Program>, name: &str, receiver: &Value, arg
                 .map_err(|e| throw_native("IOException", e.to_string()))?;
             Ok(None)
         }
-        _ => Err(VmError::MethodNotFound(format!("system.net.TcpStream.{name}"))),
+        _ => Err(VmError::MethodNotFound(format!(
+            "system.net.TcpStream.{name}"
+        ))),
     }
 }
 
 pub fn new_udp_socket_object() -> Value {
     let mut fields = HashMap::new();
     fields.insert("__fd__".to_string(), Value::Int(-1));
-    Value::Object(Arc::new(Mutex::new(Object::native("system.net.UdpSocket", fields))))
+    Value::Object(Arc::new(Mutex::new(Object::native(
+        "system.net.UdpSocket",
+        fields,
+    ))))
 }
 
 /// `construct()` takes no arguments and declares no `throws` (stdlib.md),
@@ -1470,11 +1740,18 @@ pub fn construct_udp_socket(program: &Arc<Program>, receiver: &Value) -> Result<
     let Value::Object(obj) = receiver else {
         return Err(VmError::Malformed("expected UdpSocket receiver"));
     };
-    lock(&obj).fields.insert("__fd__".to_string(), Value::Int(id));
+    lock(&obj)
+        .fields
+        .insert("__fd__".to_string(), Value::Int(id));
     Ok(())
 }
 
-fn dispatch_udp_socket(program: &Arc<Program>, name: &str, receiver: &Value, args: Vec<Value>) -> Result<Option<Value>, VmError> {
+fn dispatch_udp_socket(
+    program: &Arc<Program>,
+    name: &str,
+    receiver: &Value,
+    args: Vec<Value>,
+) -> Result<Option<Value>, VmError> {
     let Value::Object(obj) = receiver else {
         return Err(VmError::Malformed("expected UdpSocket receiver"));
     };
@@ -1499,14 +1776,18 @@ fn dispatch_udp_socket(program: &Arc<Program>, name: &str, receiver: &Value, arg
             let host = str_at(&args, 0)?;
             let port = int_at(&args, 1)?;
             let Some(Value::Array(buffer)) = args.get(2).cloned() else {
-                return Err(VmError::Malformed("expected byte[] argument to native call"));
+                return Err(VmError::Malformed(
+                    "expected byte[] argument to native call",
+                ));
             };
             let data: Vec<u8> = lock(&buffer)
                 .iter()
                 .map(|v| match v {
                     Value::Byte(b) => Ok(*b),
                     Value::Int(i) => Ok(*i as u8),
-                    _ => Err(VmError::Malformed("expected byte[] argument to native call")),
+                    _ => Err(VmError::Malformed(
+                        "expected byte[] argument to native call",
+                    )),
                 })
                 .collect::<Result<_, _>>()?;
             program
@@ -1521,7 +1802,9 @@ fn dispatch_udp_socket(program: &Arc<Program>, name: &str, receiver: &Value, arg
         // discarded, not an error).
         "receive" => {
             let Some(Value::Array(buffer)) = args.first().cloned() else {
-                return Err(VmError::Malformed("expected byte[] argument to native call"));
+                return Err(VmError::Malformed(
+                    "expected byte[] argument to native call",
+                ));
             };
             let buf_len = lock(&buffer).len();
             let mut tmp = vec![0u8; buf_len];
@@ -1535,7 +1818,9 @@ fn dispatch_udp_socket(program: &Arc<Program>, name: &str, receiver: &Value, arg
             }
             Ok(Some(Value::Int(n as i64)))
         }
-        _ => Err(VmError::MethodNotFound(format!("system.net.UdpSocket.{name}"))),
+        _ => Err(VmError::MethodNotFound(format!(
+            "system.net.UdpSocket.{name}"
+        ))),
     }
 }
 
@@ -1571,26 +1856,37 @@ pub fn new_thread_object() -> Value {
     let mut fields = HashMap::new();
     fields.insert("__tid__".to_string(), Value::Int(-1));
     fields.insert("__task__".to_string(), Value::Null);
-    Value::Object(Arc::new(Mutex::new(Object::native("system.thread.Thread", fields))))
+    Value::Object(Arc::new(Mutex::new(Object::native(
+        "system.thread.Thread",
+        fields,
+    ))))
 }
 
 pub fn new_mutex_object() -> Value {
     let mut fields = HashMap::new();
     fields.insert("__mid__".to_string(), Value::Int(-1));
-    Value::Object(Arc::new(Mutex::new(Object::native("system.thread.Mutex", fields))))
+    Value::Object(Arc::new(Mutex::new(Object::native(
+        "system.thread.Mutex",
+        fields,
+    ))))
 }
 
 pub fn new_semaphore_object() -> Value {
     let mut fields = HashMap::new();
     fields.insert("__sid__".to_string(), Value::Int(-1));
-    Value::Object(Arc::new(Mutex::new(Object::native("system.thread.Semaphore", fields))))
+    Value::Object(Arc::new(Mutex::new(Object::native(
+        "system.thread.Semaphore",
+        fields,
+    ))))
 }
 
 /// `Thread(() => void task)` — just stashes the closure; the thread isn't
 /// actually spawned (and doesn't occupy a `Program::threads` slot) until
 /// `start()` (see `dispatch_thread`).
 pub fn construct_thread(receiver: &Value, mut args: Vec<Value>) -> Result<(), VmError> {
-    let task = args.pop().ok_or(VmError::Malformed("expected closure argument to native call"))?;
+    let task = args.pop().ok_or(VmError::Malformed(
+        "expected closure argument to native call",
+    ))?;
     let Value::Object(obj) = receiver else {
         return Err(VmError::Malformed("expected Thread receiver"));
     };
@@ -1603,20 +1899,31 @@ pub fn construct_mutex(program: &Arc<Program>, receiver: &Value) -> Result<(), V
         return Err(VmError::Malformed("expected Mutex receiver"));
     };
     let id = program.register_mutex();
-    lock(&obj).fields.insert("__mid__".to_string(), Value::Int(id));
+    lock(&obj)
+        .fields
+        .insert("__mid__".to_string(), Value::Int(id));
     Ok(())
 }
 
-pub fn construct_semaphore(program: &Arc<Program>, receiver: &Value, mut args: Vec<Value>) -> Result<(), VmError> {
+pub fn construct_semaphore(
+    program: &Arc<Program>,
+    receiver: &Value,
+    mut args: Vec<Value>,
+) -> Result<(), VmError> {
     let initial = expect_int(&mut args)?;
     if initial < 0 {
-        return Err(throw_native("IllegalArgumentException", "initial count must not be negative"));
+        return Err(throw_native(
+            "IllegalArgumentException",
+            "initial count must not be negative",
+        ));
     }
     let Value::Object(obj) = receiver else {
         return Err(VmError::Malformed("expected Semaphore receiver"));
     };
     let id = program.register_semaphore(initial);
-    lock(&obj).fields.insert("__sid__".to_string(), Value::Int(id));
+    lock(&obj)
+        .fields
+        .insert("__sid__".to_string(), Value::Int(id));
     Ok(())
 }
 
@@ -1628,7 +1935,11 @@ pub fn construct_semaphore(program: &Arc<Program>, receiver: &Value, mut args: V
 /// (`invoke_task`) and the array/`Map` methods that accept native callbacks
 /// (`map`/`filter`/`forEach`/`sort`/`find`, `Map.forEach` — see
 /// `dispatch_array`).
-fn invoke_closure(program: &Arc<Program>, closure: &Value, args: Vec<Value>) -> Result<Value, VmError> {
+fn invoke_closure(
+    program: &Arc<Program>,
+    closure: &Value,
+    args: Vec<Value>,
+) -> Result<Value, VmError> {
     let Value::Object(obj) = closure else {
         return Err(VmError::Malformed("expected closure receiver"));
     };
@@ -1664,11 +1975,17 @@ fn dispatch_thread(
         // detects — treated as a no-op, consistent with e.g.
         // `FileHandle.close()` tolerating a redundant call.
         "start" => {
-            let task = lock(&obj).fields.get("__task__").cloned().unwrap_or(Value::Null);
+            let task = lock(&obj)
+                .fields
+                .get("__task__")
+                .cloned()
+                .unwrap_or(Value::Null);
             if task.is_null() {
                 return Ok(None);
             }
-            lock(&obj).fields.insert("__task__".to_string(), Value::Null);
+            lock(&obj)
+                .fields
+                .insert("__task__".to_string(), Value::Null);
             let program_clone = Arc::clone(program);
             let handle = std::thread::spawn(move || match invoke_task(&program_clone, task) {
                 Ok(_) => {}
@@ -1685,7 +2002,9 @@ fn dispatch_thread(
                 Err(e) => program_clone.write_stderr(&format!("Unhandled exception: {e}")),
             });
             let tid = program.register_thread(handle);
-            lock(&obj).fields.insert("__tid__".to_string(), Value::Int(tid));
+            lock(&obj)
+                .fields
+                .insert("__tid__".to_string(), Value::Int(tid));
             Ok(None)
         }
         "join" if args.is_empty() => {
@@ -1701,7 +2020,8 @@ fn dispatch_thread(
             };
             // `std::thread::JoinHandle` has no timed join — polls
             // `is_finished()` instead, bounded by `timeout_millis`.
-            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_millis);
+            let deadline =
+                std::time::Instant::now() + std::time::Duration::from_millis(timeout_millis);
             loop {
                 if program.thread_is_finished(tid) {
                     program.join_thread(tid);
@@ -1717,7 +2037,9 @@ fn dispatch_thread(
             Some(tid) => Ok(Some(Value::Bool(!program.thread_is_finished(tid)))),
             None => Ok(Some(Value::Bool(false))),
         },
-        _ => Err(VmError::MethodNotFound(format!("system.thread.Thread.{name}"))),
+        _ => Err(VmError::MethodNotFound(format!(
+            "system.thread.Thread.{name}"
+        ))),
     }
 }
 
@@ -1728,7 +2050,12 @@ fn thread_id(obj: &Arc<Mutex<Object>>) -> Option<i64> {
     }
 }
 
-fn dispatch_mutex(program: &Arc<Program>, name: &str, receiver: &Value, _args: Vec<Value>) -> Result<Option<Value>, VmError> {
+fn dispatch_mutex(
+    program: &Arc<Program>,
+    name: &str,
+    receiver: &Value,
+    _args: Vec<Value>,
+) -> Result<Option<Value>, VmError> {
     let Value::Object(obj) = receiver else {
         return Err(VmError::Malformed("expected Mutex receiver"));
     };
@@ -1736,7 +2063,9 @@ fn dispatch_mutex(program: &Arc<Program>, name: &str, receiver: &Value, _args: V
         Some(Value::Int(id)) => *id,
         _ => return Err(VmError::Malformed("malformed Mutex object")),
     };
-    let counter = program.mutex(id).ok_or(VmError::Malformed("malformed Mutex object"))?;
+    let counter = program
+        .mutex(id)
+        .ok_or(VmError::Malformed("malformed Mutex object"))?;
     match name {
         "lock" => {
             counter.acquire();
@@ -1747,11 +2076,18 @@ fn dispatch_mutex(program: &Arc<Program>, name: &str, receiver: &Value, _args: V
             Ok(None)
         }
         "tryLock" => Ok(Some(Value::Bool(counter.try_acquire()))),
-        _ => Err(VmError::MethodNotFound(format!("system.thread.Mutex.{name}"))),
+        _ => Err(VmError::MethodNotFound(format!(
+            "system.thread.Mutex.{name}"
+        ))),
     }
 }
 
-fn dispatch_semaphore(program: &Arc<Program>, name: &str, receiver: &Value, _args: Vec<Value>) -> Result<Option<Value>, VmError> {
+fn dispatch_semaphore(
+    program: &Arc<Program>,
+    name: &str,
+    receiver: &Value,
+    _args: Vec<Value>,
+) -> Result<Option<Value>, VmError> {
     let Value::Object(obj) = receiver else {
         return Err(VmError::Malformed("expected Semaphore receiver"));
     };
@@ -1759,7 +2095,9 @@ fn dispatch_semaphore(program: &Arc<Program>, name: &str, receiver: &Value, _arg
         Some(Value::Int(id)) => *id,
         _ => return Err(VmError::Malformed("malformed Semaphore object")),
     };
-    let counter = program.semaphore(id).ok_or(VmError::Malformed("malformed Semaphore object"))?;
+    let counter = program
+        .semaphore(id)
+        .ok_or(VmError::Malformed("malformed Semaphore object"))?;
     match name {
         "acquire" => {
             counter.acquire();
@@ -1770,7 +2108,9 @@ fn dispatch_semaphore(program: &Arc<Program>, name: &str, receiver: &Value, _arg
             Ok(None)
         }
         "tryAcquire" => Ok(Some(Value::Bool(counter.try_acquire()))),
-        _ => Err(VmError::MethodNotFound(format!("system.thread.Semaphore.{name}"))),
+        _ => Err(VmError::MethodNotFound(format!(
+            "system.thread.Semaphore.{name}"
+        ))),
     }
 }
 
@@ -1785,10 +2125,19 @@ pub fn is_native_generic_class(fqcn: &str) -> bool {
 pub fn new_generic_object(fqcn: &str) -> Value {
     let mut fields = HashMap::new();
     if fqcn.starts_with("system.List<") {
-        fields.insert("__data__".to_string(), Value::Array(Arc::new(Mutex::new(Vec::new()))));
+        fields.insert(
+            "__data__".to_string(),
+            Value::Array(Arc::new(Mutex::new(Vec::new()))),
+        );
     } else {
-        fields.insert("__keys__".to_string(), Value::Array(Arc::new(Mutex::new(Vec::new()))));
-        fields.insert("__values__".to_string(), Value::Array(Arc::new(Mutex::new(Vec::new()))));
+        fields.insert(
+            "__keys__".to_string(),
+            Value::Array(Arc::new(Mutex::new(Vec::new()))),
+        );
+        fields.insert(
+            "__values__".to_string(),
+            Value::Array(Arc::new(Mutex::new(Vec::new()))),
+        );
     }
     Value::Object(Arc::new(Mutex::new(Object::native(fqcn, fields))))
 }
@@ -1796,7 +2145,11 @@ pub fn new_generic_object(fqcn: &str) -> Value {
 /// `Opcode::InvokeSpecial` on a native generic class's `<construct>`. Only
 /// `system.List<T>(T[] initial)` does anything; `List()` and `Map()` leave
 /// the empty fields `new_generic_object` already set up untouched.
-pub fn construct_generic(receiver: &Value, fqcn: &str, mut args: Vec<Value>) -> Result<(), VmError> {
+pub fn construct_generic(
+    receiver: &Value,
+    fqcn: &str,
+    mut args: Vec<Value>,
+) -> Result<(), VmError> {
     if fqcn.starts_with("system.List<") {
         if let Some(Value::Array(initial)) = args.pop() {
             let data = list_data(receiver)?;
@@ -1835,7 +2188,11 @@ fn list_data(receiver: &Value) -> Result<ArrayRc, VmError> {
     }
 }
 
-fn dispatch_list(name: &str, receiver: &Value, mut args: Vec<Value>) -> Result<Option<Value>, VmError> {
+fn dispatch_list(
+    name: &str,
+    receiver: &Value,
+    mut args: Vec<Value>,
+) -> Result<Option<Value>, VmError> {
     let data = list_data(receiver)?;
     match name {
         "size" => Ok(Some(Value::Int(lock(&data).len() as i64))),
@@ -1843,38 +2200,56 @@ fn dispatch_list(name: &str, receiver: &Value, mut args: Vec<Value>) -> Result<O
             let idx = expect_int(&mut args)?;
             let d = lock(&data);
             if idx < 0 || idx as usize >= d.len() {
-                return Err(throw_native("IndexOutOfBoundsException", format!("index {idx}, length {}", d.len())));
+                return Err(throw_native(
+                    "IndexOutOfBoundsException",
+                    format!("index {idx}, length {}", d.len()),
+                ));
             }
             Ok(Some(d[idx as usize].clone()))
         }
         "set" => {
-            let value = args.pop().ok_or(VmError::Malformed("missing value argument"))?;
+            let value = args
+                .pop()
+                .ok_or(VmError::Malformed("missing value argument"))?;
             let idx = expect_int(&mut args)?;
             let mut d = lock(&data);
             if idx < 0 || idx as usize >= d.len() {
-                return Err(throw_native("IndexOutOfBoundsException", format!("index {idx}, length {}", d.len())));
+                return Err(throw_native(
+                    "IndexOutOfBoundsException",
+                    format!("index {idx}, length {}", d.len()),
+                ));
             }
             d[idx as usize] = value;
             Ok(None)
         }
         "pushBack" | "add" => {
-            let value = args.pop().ok_or(VmError::Malformed("missing value argument"))?;
+            let value = args
+                .pop()
+                .ok_or(VmError::Malformed("missing value argument"))?;
             lock(&data).push(value);
             Ok(None)
         }
         "pushFront" => {
-            let value = args.pop().ok_or(VmError::Malformed("missing value argument"))?;
+            let value = args
+                .pop()
+                .ok_or(VmError::Malformed("missing value argument"))?;
             lock(&data).insert(0, value);
             Ok(None)
         }
         "popBack" => match lock(&data).pop() {
             Some(v) => Ok(Some(v)),
-            None => Err(throw_native("IndexOutOfBoundsException", "popBack on empty list")),
+            None => Err(throw_native(
+                "IndexOutOfBoundsException",
+                "popBack on empty list",
+            )),
         },
         "popFront" => {
             let mut d = lock(&data);
             if d.is_empty() {
-                return Err(throw_native("IndexOutOfBoundsException", "popFront on empty list"));
+                return Err(throw_native(
+                    "IndexOutOfBoundsException",
+                    "popFront on empty list",
+                ));
             }
             Ok(Some(d.remove(0)))
         }
@@ -1882,13 +2257,20 @@ fn dispatch_list(name: &str, receiver: &Value, mut args: Vec<Value>) -> Result<O
             let idx = expect_int(&mut args)?;
             let mut d = lock(&data);
             if idx < 0 || idx as usize >= d.len() {
-                return Err(throw_native("IndexOutOfBoundsException", format!("index {idx}, length {}", d.len())));
+                return Err(throw_native(
+                    "IndexOutOfBoundsException",
+                    format!("index {idx}, length {}", d.len()),
+                ));
             }
             Ok(Some(d.remove(idx as usize)))
         }
         "contains" => {
-            let value = args.pop().ok_or(VmError::Malformed("missing value argument"))?;
-            Ok(Some(Value::Bool(lock(&data).iter().any(|v| values_equal(v, &value)))))
+            let value = args
+                .pop()
+                .ok_or(VmError::Malformed("missing value argument"))?;
+            Ok(Some(Value::Bool(
+                lock(&data).iter().any(|v| values_equal(v, &value)),
+            )))
         }
         _ => Err(VmError::MethodNotFound(format!("system.List.{name}"))),
     }
@@ -1905,12 +2287,19 @@ fn map_storage(receiver: &Value) -> Result<(ArrayRc, ArrayRc), VmError> {
     }
 }
 
-fn dispatch_map(program: &Arc<Program>, name: &str, receiver: &Value, mut args: Vec<Value>) -> Result<Option<Value>, VmError> {
+fn dispatch_map(
+    program: &Arc<Program>,
+    name: &str,
+    receiver: &Value,
+    mut args: Vec<Value>,
+) -> Result<Option<Value>, VmError> {
     let (keys, values) = map_storage(receiver)?;
     match name {
         "size" => Ok(Some(Value::Int(lock(&keys).len() as i64))),
         "get" => {
-            let key = args.pop().ok_or(VmError::Malformed("missing key argument"))?;
+            let key = args
+                .pop()
+                .ok_or(VmError::Malformed("missing key argument"))?;
             let idx = lock(&keys).iter().position(|k| values_equal(k, &key));
             Ok(Some(match idx {
                 Some(i) => lock(&values)[i].clone(),
@@ -1918,8 +2307,12 @@ fn dispatch_map(program: &Arc<Program>, name: &str, receiver: &Value, mut args: 
             }))
         }
         "set" => {
-            let value = args.pop().ok_or(VmError::Malformed("missing value argument"))?;
-            let key = args.pop().ok_or(VmError::Malformed("missing key argument"))?;
+            let value = args
+                .pop()
+                .ok_or(VmError::Malformed("missing value argument"))?;
+            let key = args
+                .pop()
+                .ok_or(VmError::Malformed("missing key argument"))?;
             let idx = lock(&keys).iter().position(|k| values_equal(k, &key));
             match idx {
                 Some(i) => lock(&values)[i] = value,
@@ -1931,7 +2324,9 @@ fn dispatch_map(program: &Arc<Program>, name: &str, receiver: &Value, mut args: 
             Ok(None)
         }
         "remove" => {
-            let key = args.pop().ok_or(VmError::Malformed("missing key argument"))?;
+            let key = args
+                .pop()
+                .ok_or(VmError::Malformed("missing key argument"))?;
             let idx = lock(&keys).iter().position(|k| values_equal(k, &key));
             match idx {
                 Some(i) => {
@@ -1943,11 +2338,19 @@ fn dispatch_map(program: &Arc<Program>, name: &str, receiver: &Value, mut args: 
             }
         }
         "has" => {
-            let key = args.pop().ok_or(VmError::Malformed("missing key argument"))?;
-            Ok(Some(Value::Bool(lock(&keys).iter().any(|k| values_equal(k, &key)))))
+            let key = args
+                .pop()
+                .ok_or(VmError::Malformed("missing key argument"))?;
+            Ok(Some(Value::Bool(
+                lock(&keys).iter().any(|k| values_equal(k, &key)),
+            )))
         }
-        "keys" => Ok(Some(Value::Array(Arc::new(Mutex::new(lock(&keys).clone()))))),
-        "values" => Ok(Some(Value::Array(Arc::new(Mutex::new(lock(&values).clone()))))),
+        "keys" => Ok(Some(Value::Array(Arc::new(Mutex::new(
+            lock(&keys).clone(),
+        ))))),
+        "values" => Ok(Some(Value::Array(Arc::new(Mutex::new(
+            lock(&values).clone(),
+        ))))),
         // stdlib.md § system.MapEntry — result objects with two public
         // fields, classed under the matching mangled `MapEntry`
         // instantiation (`"system.Map<string, int>"` ->
@@ -1957,7 +2360,10 @@ fn dispatch_map(program: &Arc<Program>, name: &str, receiver: &Value, mut args: 
             let Value::Object(obj) = receiver else {
                 return Err(VmError::Malformed("expected Map receiver"));
             };
-            let entry_class = format!("system.MapEntry<{}", &lock(&obj).class_name["system.Map<".len()..]);
+            let entry_class = format!(
+                "system.MapEntry<{}",
+                &lock(&obj).class_name["system.Map<".len()..]
+            );
             let entries: Vec<Value> = lock(&keys)
                 .iter()
                 .zip(lock(&values).iter())
@@ -1965,7 +2371,10 @@ fn dispatch_map(program: &Arc<Program>, name: &str, receiver: &Value, mut args: 
                     let mut fields = HashMap::new();
                     fields.insert("key".to_string(), k.clone());
                     fields.insert("value".to_string(), v.clone());
-                    Value::Object(Arc::new(Mutex::new(Object::native(entry_class.clone(), fields))))
+                    Value::Object(Arc::new(Mutex::new(Object::native(
+                        entry_class.clone(),
+                        fields,
+                    ))))
                 })
                 .collect();
             Ok(Some(Value::Array(Arc::new(Mutex::new(entries)))))
@@ -1975,7 +2384,9 @@ fn dispatch_map(program: &Arc<Program>, name: &str, receiver: &Value, mut args: 
         // arrays first so a callback that mutates the map mid-iteration
         // (e.g. `remove`) can't shift indices out from under this loop.
         "forEach" => {
-            let f = args.pop().ok_or(VmError::Malformed("missing callback argument"))?;
+            let f = args
+                .pop()
+                .ok_or(VmError::Malformed("missing callback argument"))?;
             let ks = lock(&keys).clone();
             let vs = lock(&values).clone();
             for (k, v) in ks.into_iter().zip(vs) {
@@ -2000,7 +2411,12 @@ fn dispatch_map(program: &Arc<Program>, name: &str, receiver: &Value, mut args: 
 /// into NL code — the callback may itself touch the same array (e.g.
 /// `arr.forEach((v) => arr.pushBack(v))`), which would deadlock on a
 /// re-entrant lock attempt otherwise.
-pub fn dispatch_array(program: &Arc<Program>, name: &str, receiver: &Value, mut args: Vec<Value>) -> Result<Option<Value>, VmError> {
+pub fn dispatch_array(
+    program: &Arc<Program>,
+    name: &str,
+    receiver: &Value,
+    mut args: Vec<Value>,
+) -> Result<Option<Value>, VmError> {
     let Value::Array(arr) = receiver else {
         return Err(VmError::Malformed("expected array receiver"));
     };
@@ -2012,11 +2428,17 @@ pub fn dispatch_array(program: &Arc<Program>, name: &str, receiver: &Value, mut 
             let len = items.len() as i64;
             let start = start.clamp(0, len) as usize;
             let end = end.clamp(0, len) as usize;
-            let sliced = if start < end { items[start..end].to_vec() } else { Vec::new() };
+            let sliced = if start < end {
+                items[start..end].to_vec()
+            } else {
+                Vec::new()
+            };
             Ok(Some(Value::Array(Arc::new(Mutex::new(sliced)))))
         }
         "map" => {
-            let f = args.pop().ok_or(VmError::Malformed("missing callback argument"))?;
+            let f = args
+                .pop()
+                .ok_or(VmError::Malformed("missing callback argument"))?;
             let items = lock(arr).clone();
             let mut out = Vec::with_capacity(items.len());
             for item in items {
@@ -2025,18 +2447,25 @@ pub fn dispatch_array(program: &Arc<Program>, name: &str, receiver: &Value, mut 
             Ok(Some(Value::Array(Arc::new(Mutex::new(out)))))
         }
         "filter" => {
-            let f = args.pop().ok_or(VmError::Malformed("missing callback argument"))?;
+            let f = args
+                .pop()
+                .ok_or(VmError::Malformed("missing callback argument"))?;
             let items = lock(arr).clone();
             let mut out = Vec::new();
             for item in items {
-                if invoke_closure(program, &f, vec![item.clone()])?.as_bool().unwrap_or(false) {
+                if invoke_closure(program, &f, vec![item.clone()])?
+                    .as_bool()
+                    .unwrap_or(false)
+                {
                     out.push(item);
                 }
             }
             Ok(Some(Value::Array(Arc::new(Mutex::new(out)))))
         }
         "forEach" => {
-            let f = args.pop().ok_or(VmError::Malformed("missing callback argument"))?;
+            let f = args
+                .pop()
+                .ok_or(VmError::Malformed("missing callback argument"))?;
             let items = lock(arr).clone();
             for item in items {
                 invoke_closure(program, &f, vec![item])?;
@@ -2044,17 +2473,24 @@ pub fn dispatch_array(program: &Arc<Program>, name: &str, receiver: &Value, mut 
             Ok(None)
         }
         "sort" => {
-            let f = args.pop().ok_or(VmError::Malformed("missing callback argument"))?;
+            let f = args
+                .pop()
+                .ok_or(VmError::Malformed("missing callback argument"))?;
             let mut items = lock(arr).clone();
             insertion_sort_by_closure(program, &mut items, &f)?;
             *lock(arr) = items;
             Ok(None)
         }
         "find" => {
-            let f = args.pop().ok_or(VmError::Malformed("missing callback argument"))?;
+            let f = args
+                .pop()
+                .ok_or(VmError::Malformed("missing callback argument"))?;
             let items = lock(arr).clone();
             for item in items {
-                if invoke_closure(program, &f, vec![item.clone()])?.as_bool().unwrap_or(false) {
+                if invoke_closure(program, &f, vec![item.clone()])?
+                    .as_bool()
+                    .unwrap_or(false)
+                {
                     return Ok(Some(item));
                 }
             }
@@ -2070,7 +2506,11 @@ pub fn dispatch_array(program: &Arc<Program>, name: &str, receiver: &Value, mut 
 /// comparator (`invoke_closure` may throw an NL exception, e.g. a bug in the
 /// callback itself) — same small-test-size tradeoff already made for
 /// `system.Map`'s O(n) key lookup.
-fn insertion_sort_by_closure(program: &Arc<Program>, items: &mut [Value], f: &Value) -> Result<(), VmError> {
+fn insertion_sort_by_closure(
+    program: &Arc<Program>,
+    items: &mut [Value],
+    f: &Value,
+) -> Result<(), VmError> {
     for i in 1..items.len() {
         let mut j = i;
         while j > 0 {

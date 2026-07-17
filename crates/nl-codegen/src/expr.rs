@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use nl_bytecode::{ConstantPool, Opcode};
-use nl_syntax::ast::{BinOp, Expr, LValue, Type, UnOp};
+use nl_syntax::ast::{Arg, BinOp, Expr, LValue, Type, UnOp};
 
 use crate::class_table::{find_ctor, find_field, find_method, resolve_type, ClassInfo, MethodInfo};
 use crate::error::CodegenError;
@@ -56,6 +56,36 @@ fn expr_ty_to_type(ty: &ExprTy) -> Type {
     }
 }
 
+/// `base` wrapped in `depth` array layers — e.g. `plain_array_of(int, 2)` is
+/// `int[][]`. Used to build the element-type descriptor for each allocated
+/// layer of a multidimensional `new T[...]` (compiler.md § Multidimensional
+/// array creation); nullability from omitted deeper dimensions is not
+/// represented here (`ExprTy` erases it — see `nl-codegen`'s doc note in
+/// PLAN.md, values are dynamically tagged at runtime instead).
+fn plain_array_of(base: &Type, depth: usize) -> Type {
+    let mut ty = base.clone();
+    for _ in 0..depth {
+        ty = Type::Array(Box::new(ty));
+    }
+    ty
+}
+
+/// Closure invocations don't support named/optional arguments yet (only
+/// user-class methods/constructors do, via `crate::class_table::
+/// resolve_positional_args` — see PLAN.md) — rejects a named argument with
+/// a clear diagnostic instead of silently misbinding it, and otherwise
+/// just unwraps each `Arg` to its plain expression.
+fn require_positional_args(args: &[Arg]) -> Result<Vec<Expr>, CodegenError> {
+    args.iter()
+        .map(|a| match &a.name {
+            Some(name) => Err(CodegenError::Unsupported(format!(
+                "named argument '{name}' is not supported when calling a closure"
+            ))),
+            None => Ok(a.value.clone()),
+        })
+        .collect()
+}
+
 pub(crate) enum IdentRef {
     Local(LocalSlot),
     CapturedField(ExprTy),
@@ -85,7 +115,10 @@ pub fn expr_ty_of(ty: &Type) -> ExprTy {
             .unwrap_or(ExprTy::Null),
         // nl_syntax::monomorphize resolves every `Type::Generic` to a plain
         // `Type::Named` before nl-codegen ever runs — see its module doc.
-        Type::Generic(name, args) => unreachable!("unresolved generic type '{name}<...>' ({} args) reached codegen", args.len()),
+        Type::Generic(name, args) => unreachable!(
+            "unresolved generic type '{name}<...>' ({} args) reached codegen",
+            args.len()
+        ),
     }
 }
 
@@ -96,6 +129,14 @@ pub fn expr_ty_of(ty: &Type) -> ExprTy {
 #[derive(Debug, Clone)]
 pub struct MethodSig {
     pub param_types: Vec<ExprTy>,
+    /// Parallel to `param_types` — see `crate::class_table::CtorInfo`'s
+    /// fields of the same name/shape (this is the same information, kept
+    /// separately because bare calls resolve through this same-class cache
+    /// rather than `crate::class_table`).
+    pub param_names: Vec<String>,
+    pub defaults: Vec<Option<Expr>>,
+    /// See `crate::class_table::CtorInfo::is_ref`.
+    pub is_ref: Vec<bool>,
     pub return_ty: ExprTy,
     pub method_ref_index: u16,
 }
@@ -103,7 +144,17 @@ pub struct MethodSig {
 #[derive(Debug, Clone)]
 pub(crate) struct LocalSlot {
     pub index: u16,
+    /// The parameter/local's own declared/logical type — for a `ref`
+    /// parameter this is `T` (what the *source* sees), even though the
+    /// slot physically holds a `Box<T>` reference (see `boxed`).
     pub ty: ExprTy,
+    /// `Some(T)` when this slot is a `ref` parameter bound to a caller's
+    /// box (vm.md § Ref parameters (boxing)) rather than a plain local —
+    /// every read/write of it must go through `Box<T>.value` instead of a
+    /// direct `LOAD`/`STORE`/`IINC` on the slot. `None` for every ordinary
+    /// local (locals/other params can never be boxed — only `ref`
+    /// parameters are).
+    pub boxed: Option<ExprTy>,
 }
 
 pub(crate) struct LoopCtx {
@@ -206,7 +257,8 @@ impl<'a> Emitter<'a> {
     /// first — used by `return`/`break`/`continue` before they jump out of
     /// the region those blocks protect (see `finally_stack`).
     pub(crate) fn replay_finally_blocks(&mut self, from: usize) -> Result<(), CodegenError> {
-        let blocks: Vec<nl_syntax::ast::Block> = self.finally_stack[from..].iter().rev().cloned().collect();
+        let blocks: Vec<nl_syntax::ast::Block> =
+            self.finally_stack[from..].iter().rev().cloned().collect();
         for block in &blocks {
             for stmt in block {
                 self.compile_stmt(stmt)?;
@@ -241,7 +293,13 @@ impl<'a> Emitter<'a> {
         self.track(stack_delta);
     }
 
-    pub(crate) fn op_u16_u16(&mut self, op: Opcode, operand1: u16, operand2: u16, stack_delta: i32) {
+    pub(crate) fn op_u16_u16(
+        &mut self,
+        op: Opcode,
+        operand1: u16,
+        operand2: u16,
+        stack_delta: i32,
+    ) {
         self.code.push(op as u8);
         self.code.extend_from_slice(&operand1.to_be_bytes());
         self.code.extend_from_slice(&operand2.to_be_bytes());
@@ -316,7 +374,38 @@ impl<'a> Emitter<'a> {
         self.scopes
             .last_mut()
             .expect("declare_local outside any scope")
-            .insert(name, LocalSlot { index, ty });
+            .insert(
+                name,
+                LocalSlot {
+                    index,
+                    ty,
+                    boxed: None,
+                },
+            );
+        index
+    }
+
+    /// Like `declare_local`, for a `ref` parameter — vm.md § Ref parameters
+    /// (boxing): the slot physically holds the caller's `Box<T>`, not a `T`
+    /// directly, so every later read/write of `name` needs to go through
+    /// the box (see `LocalSlot::boxed`).
+    pub(crate) fn declare_ref_param(&mut self, name: String, inner_ty: ExprTy) -> u16 {
+        let index = self.next_local;
+        self.next_local += 1;
+        if self.next_local > self.max_locals {
+            self.max_locals = self.next_local;
+        }
+        self.scopes
+            .last_mut()
+            .expect("declare_ref_param outside any scope")
+            .insert(
+                name,
+                LocalSlot {
+                    index,
+                    ty: inner_ty.clone(),
+                    boxed: Some(inner_ty),
+                },
+            );
         index
     }
 
@@ -337,7 +426,9 @@ impl<'a> Emitter<'a> {
                 return Ok(slot.clone());
             }
         }
-        Err(CodegenError::Unsupported(format!("undefined variable '{name}'")))
+        Err(CodegenError::Unsupported(format!(
+            "undefined variable '{name}'"
+        )))
     }
 
     /// `name` resolves either to an ordinary local (`self.scopes`, checked
@@ -351,7 +442,9 @@ impl<'a> Emitter<'a> {
         if let Some(ty) = self.captured_fields.get(name) {
             return Ok(IdentRef::CapturedField(ty.clone()));
         }
-        Err(CodegenError::Unsupported(format!("undefined variable '{name}'")))
+        Err(CodegenError::Unsupported(format!(
+            "undefined variable '{name}'"
+        )))
     }
 
     /// Emits `this.name` (`GET_FIELD` off local 0) for a captured variable
@@ -361,13 +454,32 @@ impl<'a> Emitter<'a> {
         self.op_u16(Opcode::Load, 0, 1);
         let class_index = self.cp.add_class(&self.this_fqcn.clone());
         let name_index = self.cp.add_utf8(name.to_string());
-        let type_index = self.cp.add_type_desc(&type_descriptor(&expr_ty_to_type(ty)));
+        let type_index = self
+            .cp
+            .add_type_desc(&type_descriptor(&expr_ty_to_type(ty)));
         let field_ref = self.cp.add_field_ref(class_index, name_index, type_index);
         self.op_u16(Opcode::GetField, field_ref, 0);
     }
 
+    /// `Box<T>.value`'s field-ref constant-pool index, for the box wrapping
+    /// `inner_ty` — vm.md § Ref parameters (boxing). Shared by every
+    /// read/write of a `ref` parameter (`LocalSlot::boxed`) and by the
+    /// caller-side boxing/unboxing sequence around a `ref` call argument.
+    fn box_value_field_ref(&mut self, inner_ty: &ExprTy) -> u16 {
+        let box_fqcn = crate::class_table::box_fqcn(&expr_ty_to_type(inner_ty));
+        let class_index = self.cp.add_class(&box_fqcn);
+        let name_index = self.cp.add_utf8("value".to_string());
+        let type_index = self
+            .cp
+            .add_type_desc(&type_descriptor(&expr_ty_to_type(inner_ty)));
+        self.cp.add_field_ref(class_index, name_index, type_index)
+    }
+
     pub(crate) fn resolve_class_name(&self, name: &str) -> String {
-        self.imports.get(name).cloned().unwrap_or_else(|| name.to_string())
+        self.imports
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| name.to_string())
     }
 
     /// Compiles `expr` as a statement: evaluates it and discards any value
@@ -384,7 +496,9 @@ impl<'a> Emitter<'a> {
     pub(crate) fn compile_expr_bool(&mut self, expr: &Expr) -> Result<(), CodegenError> {
         let ty = self.compile_expr(expr)?;
         if ty != ExprTy::Bool {
-            return Err(CodegenError::Unsupported(format!("expected bool condition, got {ty:?}")));
+            return Err(CodegenError::Unsupported(format!(
+                "expected bool condition, got {ty:?}"
+            )));
         }
         Ok(())
     }
@@ -400,7 +514,14 @@ impl<'a> Emitter<'a> {
                 Ok(ExprTy::Float)
             }
             Expr::BoolLit(v) => {
-                self.op(if *v { Opcode::ConstTrue } else { Opcode::ConstFalse }, 1);
+                self.op(
+                    if *v {
+                        Opcode::ConstTrue
+                    } else {
+                        Opcode::ConstFalse
+                    },
+                    1,
+                );
                 Ok(ExprTy::Bool)
             }
             Expr::StringLit(s) => {
@@ -427,6 +548,13 @@ impl<'a> Emitter<'a> {
             Expr::Ident(name) => match self.resolve_ident(name)? {
                 IdentRef::Local(slot) => {
                     self.op_u16(Opcode::Load, slot.index, 1);
+                    // vm.md § Ref parameters (boxing) — a `ref` parameter's
+                    // slot holds the caller's `Box<T>`; every read unwraps
+                    // it through `Box<T>.value`.
+                    if let Some(inner_ty) = &slot.boxed {
+                        let field_ref = self.box_value_field_ref(inner_ty);
+                        self.op_u16(Opcode::GetField, field_ref, 0);
+                    }
                     Ok(slot.ty)
                 }
                 IdentRef::CapturedField(ty) => {
@@ -437,7 +565,7 @@ impl<'a> Emitter<'a> {
             Expr::Assign(target, value) => self.compile_assign(target, value),
             Expr::Call(name, args) => self.compile_call(name, args),
             Expr::New(class_name, _type_args, args) => self.compile_new(class_name, args),
-            Expr::NewArray(elem_ty, size) => self.compile_new_array(elem_ty, size),
+            Expr::NewArray(elem_ty, dims) => self.compile_new_array(elem_ty, dims),
             Expr::NewArrayInit(elem_ty, elements) => self.compile_new_array_init(elem_ty, elements),
             Expr::FieldAccess(target, name) => self.compile_field_access(target, name),
             Expr::MethodCall(target, name, args) => self.compile_method_call(target, name, args),
@@ -450,7 +578,12 @@ impl<'a> Emitter<'a> {
             Expr::Binary(op, lhs, rhs) => self.compile_binary(*op, lhs, rhs),
             Expr::Match(subject, arms) => self.compile_match(subject, arms),
             Expr::Ternary(cond, then_e, else_e) => self.compile_ternary(cond, then_e, else_e),
-            Expr::Closure { params, return_type, throws, body } => {
+            Expr::Closure {
+                params,
+                return_type,
+                throws,
+                body,
+            } => {
                 let _ = throws; // parsed only — see PLAN.md's closures gap (checked-exception verification not extended into closure bodies).
                 self.compile_closure(params, return_type, body)
             }
@@ -469,8 +602,10 @@ impl<'a> Emitter<'a> {
         return_type: &Option<Type>,
         body: &nl_syntax::ast::ClosureBody,
     ) -> Result<ExprTy, CodegenError> {
-        let param_names: std::collections::HashSet<&str> = params.iter().map(|p| p.name.as_str()).collect();
-        let mut candidates: Vec<String> = crate::closure::referenced_names(body).into_iter().collect();
+        let param_names: std::collections::HashSet<&str> =
+            params.iter().map(|p| p.name.as_str()).collect();
+        let mut candidates: Vec<String> =
+            crate::closure::referenced_names(body).into_iter().collect();
         candidates.retain(|n| !param_names.contains(n.as_str()));
         candidates.sort();
 
@@ -480,24 +615,44 @@ impl<'a> Emitter<'a> {
         // inner emitter to resolve normally.
         let captures: Vec<(String, ExprTy, u16)> = candidates
             .into_iter()
-            .filter_map(|name| self.lookup_local(&name).ok().map(|slot| (name, slot.ty, slot.index)))
+            .filter_map(|name| {
+                self.lookup_local(&name)
+                    .ok()
+                    .map(|slot| (name, slot.ty, slot.index))
+            })
             .collect();
 
-        let synth_fqcn = format!("{}$closure{}", self.closure_name_prefix, self.closure_counter);
+        let synth_fqcn = format!(
+            "{}$closure{}",
+            self.closure_name_prefix, self.closure_counter
+        );
         self.closure_counter += 1;
 
-        let resolved_params: Vec<Type> = params.iter().map(|p| resolve_type(&p.ty, self.imports)).collect();
+        let resolved_params: Vec<Type> = params
+            .iter()
+            .map(|p| resolve_type(&p.ty, self.imports))
+            .collect();
         let param_expr_tys: Vec<ExprTy> = resolved_params.iter().map(expr_ty_of).collect();
 
         let mut synth_cp = ConstantPool::new();
         let synth_this_class = synth_cp.add_class(&synth_fqcn);
-        let captured_fields: HashMap<String, ExprTy> = captures.iter().map(|(n, ty, _)| (n.clone(), ty.clone())).collect();
+        let captured_fields: HashMap<String, ExprTy> = captures
+            .iter()
+            .map(|(n, ty, _)| (n.clone(), ty.clone()))
+            .collect();
 
         let deduced_return_ty;
         let invoke_method;
         let mut nested_closures;
         {
-            let mut inner = Emitter::new(&mut synth_cp, self.static_sigs, self.classes, self.imports, synth_this_class, synth_fqcn.clone());
+            let mut inner = Emitter::new(
+                &mut synth_cp,
+                self.static_sigs,
+                self.classes,
+                self.imports,
+                synth_this_class,
+                synth_fqcn.clone(),
+            );
             inner.captured_fields = captured_fields;
             inner.push_scope();
             inner.declare_local("this".to_string(), ExprTy::Object(synth_fqcn.clone()));
@@ -529,7 +684,8 @@ impl<'a> Emitter<'a> {
             };
             inner.pop_scope();
 
-            let descriptor = method_descriptor(&resolved_params, &expr_ty_to_type(&deduced_return_ty));
+            let descriptor =
+                method_descriptor(&resolved_params, &expr_ty_to_type(&deduced_return_ty));
             let name_index = inner.cp.add_utf8("invoke".to_string());
             let descriptor_index = inner.cp.add_type_desc(&descriptor);
             invoke_method = nl_bytecode::MethodDescriptor {
@@ -551,7 +707,11 @@ impl<'a> Emitter<'a> {
             .map(|(name, ty, _)| {
                 let name_index = synth_cp.add_utf8(name.clone());
                 let type_index = synth_cp.add_type_desc(&type_descriptor(&expr_ty_to_type(ty)));
-                nl_bytecode::FieldDescriptor { flags: nl_bytecode::field_flags::PUBLIC, name_index, type_index }
+                nl_bytecode::FieldDescriptor {
+                    flags: nl_bytecode::field_flags::PUBLIC,
+                    name_index,
+                    type_index,
+                }
             })
             .collect();
 
@@ -577,12 +737,20 @@ impl<'a> Emitter<'a> {
             self.op_u16(Opcode::Load, *outer_index, 1);
             let field_class_index = self.cp.add_class(&synth_fqcn);
             let name_index = self.cp.add_utf8(name.clone());
-            let type_index = self.cp.add_type_desc(&type_descriptor(&expr_ty_to_type(ty)));
-            let field_ref = self.cp.add_field_ref(field_class_index, name_index, type_index);
+            let type_index = self
+                .cp
+                .add_type_desc(&type_descriptor(&expr_ty_to_type(ty)));
+            let field_ref = self
+                .cp
+                .add_field_ref(field_class_index, name_index, type_index);
             self.op_u16(Opcode::SetField, field_ref, -2);
         }
 
-        Ok(ExprTy::Closure { params: param_expr_tys, return_ty: Box::new(deduced_return_ty), fqcn: synth_fqcn })
+        Ok(ExprTy::Closure {
+            params: param_expr_tys,
+            return_ty: Box::new(deduced_return_ty),
+            fqcn: synth_fqcn,
+        })
     }
 
     /// Invokes a closure whose receiver has already been pushed onto the
@@ -594,22 +762,33 @@ impl<'a> Emitter<'a> {
         fqcn: &str,
         args: &[Expr],
     ) -> Result<ExprTy, CodegenError> {
-        self.compile_call_args(args, params, "closure call")?;
+        self.compile_call_args(args, params, &vec![false; args.len()], "closure call")?;
         let class_index = self.cp.add_class(fqcn);
         let name_index = self.cp.add_utf8("invoke".to_string());
         let param_types: Vec<Type> = params.iter().map(expr_ty_to_type).collect();
         let descriptor = method_descriptor(&param_types, &expr_ty_to_type(return_ty));
         let descriptor_index = self.cp.add_type_desc(&descriptor);
-        let method_ref = self.cp.add_method_ref(class_index, name_index, descriptor_index);
+        let method_ref = self
+            .cp
+            .add_method_ref(class_index, name_index, descriptor_index);
         let result_delta = if *return_ty == ExprTy::Void { 0 } else { 1 };
-        self.op_u16(Opcode::InvokeClosure, method_ref, result_delta - args.len() as i32 - 1);
+        self.op_u16(
+            Opcode::InvokeClosure,
+            method_ref,
+            result_delta - args.len() as i32 - 1,
+        );
         Ok(return_ty.clone())
     }
 
     /// `cond ? then : else` — a conditional branch, mirroring
     /// `compile_short_circuit`'s pattern of tracking stack depth linearly
     /// through both (mutually exclusive at runtime) branches.
-    fn compile_ternary(&mut self, cond: &Expr, then_e: &Expr, else_e: &Expr) -> Result<ExprTy, CodegenError> {
+    fn compile_ternary(
+        &mut self,
+        cond: &Expr,
+        then_e: &Expr,
+        else_e: &Expr,
+    ) -> Result<ExprTy, CodegenError> {
         self.compile_expr_bool(cond)?;
         let (else_pc, else_operand) = self.branch(Opcode::IfFalse, -1);
         let then_ty = self.compile_expr(then_e)?;
@@ -626,7 +805,11 @@ impl<'a> Emitter<'a> {
     /// (E047) guarantees exhaustiveness, so a missing `default` arm can only
     /// happen for an exhaustively-covered `bool` subject — in that case the
     /// last arm doubles as the fallback (no comparison emitted for it).
-    fn compile_match(&mut self, subject: &Expr, arms: &[nl_syntax::ast::MatchArm]) -> Result<ExprTy, CodegenError> {
+    fn compile_match(
+        &mut self,
+        subject: &Expr,
+        arms: &[nl_syntax::ast::MatchArm],
+    ) -> Result<ExprTy, CodegenError> {
         let subject_ty = self.compile_expr(subject)?;
         let mut end_patches = Vec::new();
         let mut result_ty: Option<ExprTy> = None;
@@ -637,7 +820,10 @@ impl<'a> Emitter<'a> {
                 None
             } else {
                 self.op(Opcode::Dup, 1);
-                let pattern = arm.pattern.as_ref().expect("non-fallback arm always has a pattern");
+                let pattern = arm
+                    .pattern
+                    .as_ref()
+                    .expect("non-fallback arm always has a pattern");
                 let pattern_ty = self.compile_expr(pattern)?;
                 self.coerce_value(&pattern_ty, &subject_ty, "match pattern")?;
                 self.op(Opcode::CmpEq, -1);
@@ -667,6 +853,21 @@ impl<'a> Emitter<'a> {
             LValue::Local(name) => match self.resolve_ident(name)? {
                 IdentRef::Local(slot) => {
                     let value_ty = self.compile_expr(value)?;
+                    // vm.md § Ref parameters (boxing) — writing to a `ref`
+                    // parameter writes through `Box<T>.value`, not the
+                    // slot directly (which holds the box reference itself).
+                    if let Some(inner_ty) = slot.boxed.clone() {
+                        self.coerce_value(&value_ty, &inner_ty, name)?;
+                        self.op(Opcode::Dup, 1);
+                        let tmp = self.declare_scratch_local(inner_ty.clone());
+                        self.emit_store(tmp);
+                        self.op_u16(Opcode::Load, slot.index, 1);
+                        self.op(Opcode::Swap, 0);
+                        let field_ref = self.box_value_field_ref(&inner_ty);
+                        self.op_u16(Opcode::SetField, field_ref, -2);
+                        self.op_u16(Opcode::Load, tmp, 1);
+                        return Ok(inner_ty);
+                    }
                     self.coerce_value(&value_ty, &slot.ty, name)?;
                     // Leave a copy as the expression's own value (assignment
                     // is an expression, e.g. usable as `a = b = 1;`).
@@ -684,7 +885,9 @@ impl<'a> Emitter<'a> {
                     self.op(Opcode::Swap, 0);
                     let class_index = self.cp.add_class(&self.this_fqcn.clone());
                     let name_index = self.cp.add_utf8(name.clone());
-                    let type_index = self.cp.add_type_desc(&type_descriptor(&expr_ty_to_type(&field_ty)));
+                    let type_index = self
+                        .cp
+                        .add_type_desc(&type_descriptor(&expr_ty_to_type(&field_ty)));
                     let field_ref = self.cp.add_field_ref(class_index, name_index, type_index);
                     self.op_u16(Opcode::SetField, field_ref, -2);
                     self.op_u16(Opcode::Load, tmp, 1);
@@ -724,7 +927,9 @@ impl<'a> Emitter<'a> {
                 let elem_ty = *elem;
                 let index_ty = self.compile_expr(index_expr)?;
                 if index_ty != ExprTy::Int {
-                    return Err(CodegenError::Unsupported("array index must be int".to_string()));
+                    return Err(CodegenError::Unsupported(
+                        "array index must be int".to_string(),
+                    ));
                 }
                 let value_ty = self.compile_expr(value)?;
                 self.coerce_value(&value_ty, &elem_ty, "array element")?;
@@ -750,7 +955,12 @@ impl<'a> Emitter<'a> {
         self.classes
             .get(&self.this_fqcn)
             .and_then(|c| c.extends.clone())
-            .ok_or_else(|| CodegenError::Unsupported(format!("'super' used in class '{}' with no superclass", self.this_fqcn)))
+            .ok_or_else(|| {
+                CodegenError::Unsupported(format!(
+                    "'super' used in class '{}' with no superclass",
+                    self.this_fqcn
+                ))
+            })
     }
 
     fn compile_incr(&mut self, name: &str, delta: i16) -> Result<ExprTy, CodegenError> {
@@ -774,45 +984,73 @@ impl<'a> Emitter<'a> {
                 slot.ty
             )));
         }
+        // vm.md § Ref parameters (boxing) — `IINC` operates on a plain local
+        // slot; a `ref` parameter's slot holds a `Box<int>` reference
+        // instead, so this desugars to an explicit read/add/write through
+        // `Box<int>.value`.
+        if let Some(inner_ty) = slot.boxed.clone() {
+            self.op_u16(Opcode::Load, slot.index, 1);
+            self.op(Opcode::Dup, 1);
+            let field_ref = self.box_value_field_ref(&inner_ty);
+            self.op_u16(Opcode::GetField, field_ref, 0);
+            self.emit_int_const(delta as i64);
+            self.op(Opcode::IAdd, -1);
+            self.op_u16(Opcode::SetField, field_ref, -2);
+            return Ok(ExprTy::Void);
+        }
         self.op_iinc(slot.index, delta);
         Ok(ExprTy::Void)
     }
 
-    fn compile_call(&mut self, name: &str, args: &[Expr]) -> Result<ExprTy, CodegenError> {
+    fn compile_call(&mut self, name: &str, args: &[Arg]) -> Result<ExprTy, CodegenError> {
         // `add(5, 3)` where `add` is a closure-typed local/capture, not a
         // same-class static method — vm.md § Closures: "the compiler
         // determines the closure's type signature at compile time".
         match self.resolve_ident(name) {
             Ok(IdentRef::Local(slot)) => {
-                if let ExprTy::Closure { params, return_ty, fqcn } = slot.ty {
+                if let ExprTy::Closure {
+                    params,
+                    return_ty,
+                    fqcn,
+                } = slot.ty
+                {
                     self.op_u16(Opcode::Load, slot.index, 1);
-                    return self.compile_closure_invoke(&params, &return_ty, &fqcn, args);
+                    let positional = require_positional_args(args)?;
+                    return self.compile_closure_invoke(&params, &return_ty, &fqcn, &positional);
                 }
             }
             Ok(IdentRef::CapturedField(ty)) => {
-                if let ExprTy::Closure { params, return_ty, fqcn } = ty.clone() {
+                if let ExprTy::Closure {
+                    params,
+                    return_ty,
+                    fqcn,
+                } = ty.clone()
+                {
                     self.emit_get_captured_field(name, &ty);
-                    return self.compile_closure_invoke(&params, &return_ty, &fqcn, args);
+                    let positional = require_positional_args(args)?;
+                    return self.compile_closure_invoke(&params, &return_ty, &fqcn, &positional);
                 }
             }
             Err(_) => {}
         }
-        let sig = self
-            .static_sigs
-            .get(name)
-            .cloned()
-            .ok_or_else(|| CodegenError::Unsupported(format!("call to unknown method '{name}'")))?;
-        self.compile_call_args(args, &sig.param_types, name)?;
+        let sig =
+            self.static_sigs.get(name).cloned().ok_or_else(|| {
+                CodegenError::Unsupported(format!("call to unknown method '{name}'"))
+            })?;
+        let positional =
+            crate::class_table::resolve_positional_args(&sig.param_names, &sig.defaults, args);
+        let boxes = self.compile_call_args(&positional, &sig.param_types, &sig.is_ref, name)?;
         let result_delta = if sig.return_ty == ExprTy::Void { 0 } else { 1 };
         self.op_u16(
             Opcode::InvokeStatic,
             sig.method_ref_index,
-            result_delta - args.len() as i32,
+            result_delta - positional.len() as i32,
         );
+        self.emit_unbox_ref_args(&boxes);
         Ok(sig.return_ty)
     }
 
-    fn compile_new(&mut self, class_name: &str, args: &[Expr]) -> Result<ExprTy, CodegenError> {
+    fn compile_new(&mut self, class_name: &str, args: &[Arg]) -> Result<ExprTy, CodegenError> {
         let fqcn = self.resolve_class_name(class_name);
         let class_index = self.cp.add_class(&fqcn);
         self.op_u16(Opcode::New, class_index, 1);
@@ -830,33 +1068,55 @@ impl<'a> Emitter<'a> {
         // `nl_vm::interpreter` intercepts `INVOKE_SPECIAL` against a native
         // generic class before ever consulting `Program`'s module map (like
         // `nl_vm::native::is_native_class` does for `INVOKE_STATIC`).
-        let params: Vec<Type> = if let Some(param_types) = crate::native_generics::ctor_param_types(&fqcn, args.len()) {
-            param_types
+        // Native constructors have no `Param` metadata (no `.nl` source),
+        // so they don't support named/optional arguments — `args` must be
+        // fully positional there.
+        let (params, is_ref, positional): (Vec<Type>, Vec<bool>, Vec<Expr>) = if let Some(
+            param_types,
+        ) =
+            crate::native_generics::ctor_param_types(&fqcn, args.len())
+        {
+            let n = param_types.len();
+            (param_types, vec![false; n], require_positional_args(args)?)
         } else if let Some(param_types) = crate::stdlib::ctor_param_types(&fqcn, args.len()) {
             // `new system.Random()`/`new system.Random(int seed)` — the
             // other native instance class besides FileHandle, but
-            // constructible directly (see `crate::stdlib::ctor_param_types`'s
-            // doc comment).
-            param_types
+            // constructible directly (see
+            // `crate::stdlib::ctor_param_types`'s doc comment).
+            let n = param_types.len();
+            (param_types, vec![false; n], require_positional_args(args)?)
         } else {
-            find_ctor(self.classes, &fqcn, args.len())
+            let ctor = find_ctor(self.classes, &fqcn, args.len())
                 .cloned()
                 .ok_or_else(|| {
                     CodegenError::Unsupported(format!(
                         "no constructor of '{fqcn}' with {} argument(s)",
                         args.len()
                     ))
-                })?
-                .params
+                })?;
+            let positional = crate::class_table::resolve_positional_args(
+                &ctor.param_names,
+                &ctor.defaults,
+                args,
+            );
+            (ctor.params, ctor.is_ref, positional)
         };
         let param_tys: Vec<ExprTy> = params.iter().map(expr_ty_of).collect();
-        self.compile_call_args(args, &param_tys, &fqcn)?;
+        let boxes = self.compile_call_args(&positional, &param_tys, &is_ref, &fqcn)?;
 
-        let descriptor = method_descriptor(&params, &Type::Void);
+        let cc_params = crate::class_table::calling_convention_params(&params, &is_ref);
+        let descriptor = method_descriptor(&cc_params, &Type::Void);
         let name_index = self.cp.add_utf8("<construct>");
         let descriptor_index = self.cp.add_type_desc(&descriptor);
-        let method_ref = self.cp.add_method_ref(class_index, name_index, descriptor_index);
-        self.op_u16(Opcode::InvokeSpecial, method_ref, -(1 + args.len() as i32));
+        let method_ref = self
+            .cp
+            .add_method_ref(class_index, name_index, descriptor_index);
+        self.op_u16(
+            Opcode::InvokeSpecial,
+            method_ref,
+            -(1 + positional.len() as i32),
+        );
+        self.emit_unbox_ref_args(&boxes);
         Ok(ExprTy::Object(fqcn))
     }
 
@@ -871,24 +1131,42 @@ impl<'a> Emitter<'a> {
         &mut self,
         fqcn: &str,
         name: &str,
-        args: &[Expr],
+        args: &[Arg],
         method: MethodInfo,
     ) -> Result<ExprTy, CodegenError> {
+        let positional = crate::class_table::resolve_positional_args(
+            &method.param_names,
+            &method.defaults,
+            args,
+        );
         let param_tys: Vec<ExprTy> = method.params.iter().map(expr_ty_of).collect();
-        self.compile_call_args(args, &param_tys, name)?;
+        let boxes = self.compile_call_args(&positional, &param_tys, &method.is_ref, name)?;
 
-        let descriptor = method_descriptor(&method.params, &method.return_ty);
+        let cc_params =
+            crate::class_table::calling_convention_params(&method.params, &method.is_ref);
+        let descriptor = method_descriptor(&cc_params, &method.return_ty);
         let name_index = self.cp.add_utf8(name.to_string());
         let descriptor_index = self.cp.add_type_desc(&descriptor);
         let class_index = self.cp.add_class(fqcn);
-        let method_ref = self.cp.add_method_ref(class_index, name_index, descriptor_index);
+        let method_ref = self
+            .cp
+            .add_method_ref(class_index, name_index, descriptor_index);
         let return_ty = expr_ty_of(&method.return_ty);
         let result_delta = if return_ty == ExprTy::Void { 0 } else { 1 };
-        self.op_u16(Opcode::InvokeStatic, method_ref, result_delta - args.len() as i32);
+        self.op_u16(
+            Opcode::InvokeStatic,
+            method_ref,
+            result_delta - positional.len() as i32,
+        );
+        self.emit_unbox_ref_args(&boxes);
         Ok(return_ty)
     }
 
-    fn compile_super_method_call(&mut self, name: &str, args: &[Expr]) -> Result<ExprTy, CodegenError> {
+    fn compile_super_method_call(
+        &mut self,
+        name: &str,
+        args: &[Arg],
+    ) -> Result<ExprTy, CodegenError> {
         let super_fqcn = self.superclass_fqcn()?;
         self.op_u16(Opcode::Load, 0, 1);
         let method = find_method(self.classes, &super_fqcn, name, args.len())
@@ -899,24 +1177,38 @@ impl<'a> Emitter<'a> {
                     args.len()
                 ))
             })?;
+        let positional = crate::class_table::resolve_positional_args(
+            &method.param_names,
+            &method.defaults,
+            args,
+        );
         let param_tys: Vec<ExprTy> = method.params.iter().map(expr_ty_of).collect();
-        self.compile_call_args(args, &param_tys, name)?;
+        let boxes = self.compile_call_args(&positional, &param_tys, &method.is_ref, name)?;
 
-        let descriptor = method_descriptor(&method.params, &method.return_ty);
+        let cc_params =
+            crate::class_table::calling_convention_params(&method.params, &method.is_ref);
+        let descriptor = method_descriptor(&cc_params, &method.return_ty);
         let name_index = self.cp.add_utf8(name.to_string());
         let descriptor_index = self.cp.add_type_desc(&descriptor);
         let class_index = self.cp.add_class(&super_fqcn);
-        let method_ref = self.cp.add_method_ref(class_index, name_index, descriptor_index);
+        let method_ref = self
+            .cp
+            .add_method_ref(class_index, name_index, descriptor_index);
         let return_ty = expr_ty_of(&method.return_ty);
         let result_delta = if return_ty == ExprTy::Void { 0 } else { 1 };
-        self.op_u16(Opcode::InvokeSpecial, method_ref, result_delta - args.len() as i32 - 1);
+        self.op_u16(
+            Opcode::InvokeSpecial,
+            method_ref,
+            result_delta - positional.len() as i32 - 1,
+        );
+        self.emit_unbox_ref_args(&boxes);
         Ok(return_ty)
     }
 
     /// `super(args);` constructor delegation — like `this(...)` but invokes
     /// the direct superclass's constructor instead of an overload in the
     /// same class.
-    pub(crate) fn compile_super_call(&mut self, args: &[Expr]) -> Result<(), CodegenError> {
+    pub(crate) fn compile_super_call(&mut self, args: &[Arg]) -> Result<(), CodegenError> {
         let super_fqcn = self.superclass_fqcn()?;
         self.op_u16(Opcode::Load, 0, 1);
         let ctor = find_ctor(self.classes, &super_fqcn, args.len())
@@ -927,19 +1219,29 @@ impl<'a> Emitter<'a> {
                     args.len()
                 ))
             })?;
+        let positional =
+            crate::class_table::resolve_positional_args(&ctor.param_names, &ctor.defaults, args);
         let param_tys: Vec<ExprTy> = ctor.params.iter().map(expr_ty_of).collect();
-        self.compile_call_args(args, &param_tys, "super(...)")?;
+        let boxes = self.compile_call_args(&positional, &param_tys, &ctor.is_ref, "super(...)")?;
 
-        let descriptor = method_descriptor(&ctor.params, &Type::Void);
+        let cc_params = crate::class_table::calling_convention_params(&ctor.params, &ctor.is_ref);
+        let descriptor = method_descriptor(&cc_params, &Type::Void);
         let name_index = self.cp.add_utf8("<construct>");
         let descriptor_index = self.cp.add_type_desc(&descriptor);
         let class_index = self.cp.add_class(&super_fqcn);
-        let method_ref = self.cp.add_method_ref(class_index, name_index, descriptor_index);
-        self.op_u16(Opcode::InvokeSpecial, method_ref, -(1 + args.len() as i32));
+        let method_ref = self
+            .cp
+            .add_method_ref(class_index, name_index, descriptor_index);
+        self.op_u16(
+            Opcode::InvokeSpecial,
+            method_ref,
+            -(1 + positional.len() as i32),
+        );
+        self.emit_unbox_ref_args(&boxes);
         Ok(())
     }
 
-    pub(crate) fn compile_this_call(&mut self, args: &[Expr]) -> Result<(), CodegenError> {
+    pub(crate) fn compile_this_call(&mut self, args: &[Arg]) -> Result<(), CodegenError> {
         self.op_u16(Opcode::Load, 0, 1);
         let ctor = find_ctor(self.classes, &self.this_fqcn, args.len())
             .cloned()
@@ -950,31 +1252,118 @@ impl<'a> Emitter<'a> {
                     args.len()
                 ))
             })?;
+        let positional =
+            crate::class_table::resolve_positional_args(&ctor.param_names, &ctor.defaults, args);
         let param_tys: Vec<ExprTy> = ctor.params.iter().map(expr_ty_of).collect();
-        self.compile_call_args(args, &param_tys, "this(...)")?;
+        let boxes = self.compile_call_args(&positional, &param_tys, &ctor.is_ref, "this(...)")?;
 
-        let descriptor = method_descriptor(&ctor.params, &Type::Void);
+        let cc_params = crate::class_table::calling_convention_params(&ctor.params, &ctor.is_ref);
+        let descriptor = method_descriptor(&cc_params, &Type::Void);
         let name_index = self.cp.add_utf8("<construct>");
         let descriptor_index = self.cp.add_type_desc(&descriptor);
-        let method_ref = self.cp.add_method_ref(self.this_class, name_index, descriptor_index);
-        self.op_u16(Opcode::InvokeSpecial, method_ref, -(1 + args.len() as i32));
+        let method_ref = self
+            .cp
+            .add_method_ref(self.this_class, name_index, descriptor_index);
+        self.op_u16(
+            Opcode::InvokeSpecial,
+            method_ref,
+            -(1 + positional.len() as i32),
+        );
+        self.emit_unbox_ref_args(&boxes);
         Ok(())
     }
 
-    fn compile_new_array(&mut self, elem_ty: &Type, size: &Expr) -> Result<ExprTy, CodegenError> {
-        let size_ty = self.compile_expr(size)?;
+    /// `new T[n1][n2]...` — compiler.md § Multidimensional array creation.
+    /// `m` (the count of leading provided sizes) determines how many array
+    /// layers are actually allocated; nl-sema (E038) already guarantees the
+    /// rest are a contiguous omitted suffix. `m == 0` means nothing is ever
+    /// allocated — the whole expression is `null`.
+    fn compile_new_array(
+        &mut self,
+        elem_ty: &Type,
+        dims: &[Option<Expr>],
+    ) -> Result<ExprTy, CodegenError> {
+        let resolved_elem = resolve_type(elem_ty, self.imports);
+        let k = dims.len();
+        let m = dims.iter().take_while(|d| d.is_some()).count();
+        let result_ty = expr_ty_of(&plain_array_of(&resolved_elem, k));
+        if m == 0 {
+            self.op(Opcode::ConstNull, 1);
+            return Ok(result_ty);
+        }
+        self.emit_new_array_level(0, m, k, &resolved_elem, dims)?;
+        Ok(result_ty)
+    }
+
+    /// Allocates dimension `level` (0-indexed, always `< m`) of a
+    /// multidimensional `new T[...]`, leaving the array reference on the
+    /// stack. Levels below `m - 1` recursively populate every element with
+    /// the next nested array (desugaring steps 2/3); level `m - 1` just
+    /// lets `NEW_ARRAY` default-initialize its elements (`null` for
+    /// reference-typed elements — which covers every omitted deeper level,
+    /// vm.md § `NEW_ARRAY`), matching E031's "non-nullable element has no
+    /// default" rule only ever applying when every dimension is provided.
+    fn emit_new_array_level(
+        &mut self,
+        level: usize,
+        m: usize,
+        k: usize,
+        resolved_elem: &Type,
+        dims: &[Option<Expr>],
+    ) -> Result<(), CodegenError> {
+        let size_expr = dims[level]
+            .as_ref()
+            .expect("level < m always has a provided size");
+        let size_ty = self.compile_expr(size_expr)?;
         if size_ty != ExprTy::Int {
             return Err(CodegenError::Unsupported(format!(
                 "array size must be int, found {size_ty:?}"
             )));
         }
-        let resolved_elem = resolve_type(elem_ty, self.imports);
-        let type_index = self.cp.add_type_desc(&type_descriptor(&resolved_elem));
+        let size_local = self.declare_scratch_local(ExprTy::Int);
+        self.emit_store(size_local);
+
+        let elem_at_level = plain_array_of(resolved_elem, k - level - 1);
+        let type_index = self.cp.add_type_desc(&type_descriptor(&elem_at_level));
+        self.op_u16(Opcode::Load, size_local, 1);
         self.op_u16(Opcode::NewArray, type_index, 0);
-        Ok(ExprTy::Array(Box::new(expr_ty_of(&resolved_elem))))
+
+        if level + 1 >= m {
+            return Ok(());
+        }
+
+        let arr_ty = ExprTy::Array(Box::new(expr_ty_of(&elem_at_level)));
+        let arr_local = self.declare_scratch_local(arr_ty);
+        self.emit_store(arr_local);
+        let idx_local = self.declare_scratch_local(ExprTy::Int);
+        self.emit_int_const(0);
+        self.emit_store(idx_local);
+
+        let cond_pc = self.code.len();
+        self.op_u16(Opcode::Load, idx_local, 1);
+        self.op_u16(Opcode::Load, size_local, 1);
+        self.op(Opcode::CmpLt, -1);
+        let exit_patch = self.branch(Opcode::IfFalse, -1);
+
+        self.op_u16(Opcode::Load, arr_local, 1);
+        self.op_u16(Opcode::Load, idx_local, 1);
+        self.emit_new_array_level(level + 1, m, k, resolved_elem, dims)?;
+        self.op(Opcode::ArrayStore, -3);
+
+        self.op_iinc(idx_local, 1);
+        self.emit_goto_to(cond_pc);
+        let end_pc = self.code.len();
+        self.patch_branch_to(exit_patch.0, exit_patch.1, end_pc);
+
+        self.op_u16(Opcode::Load, arr_local, 1);
+        Ok(())
     }
 
-    fn compile_new_array_init(&mut self, elem_ty: &Type, elements: &[Expr]) -> Result<ExprTy, CodegenError> {
+    fn compile_new_array_init(
+        &mut self,
+        elem_ty: &Type,
+        elements: &[Expr],
+    ) -> Result<ExprTy, CodegenError> {
         let resolved_elem = resolve_type(elem_ty, self.imports);
         let elem_expr_ty = expr_ty_of(&resolved_elem);
         for e in elements {
@@ -1034,7 +1423,12 @@ impl<'a> Emitter<'a> {
         Ok(field_ty)
     }
 
-    fn compile_method_call(&mut self, target: &Expr, name: &str, args: &[Expr]) -> Result<ExprTy, CodegenError> {
+    fn compile_method_call(
+        &mut self,
+        target: &Expr,
+        name: &str,
+        args: &[Arg],
+    ) -> Result<ExprTy, CodegenError> {
         // `super.method(...)` — non-virtual dispatch straight to the
         // superclass's implementation (vm.md § Super calls), unlike every
         // other receiver which goes through virtual INVOKE_INSTANCE below.
@@ -1049,7 +1443,8 @@ impl<'a> Emitter<'a> {
         if let Some(path) = dotted_path(target) {
             let leading = path.split('.').next().expect("dotted_path is never empty");
             if self.lookup_local(leading).is_err() && crate::stdlib::is_stdlib_class(&path) {
-                return self.compile_stdlib_call(&path, name, args);
+                let positional = require_positional_args(args)?;
+                return self.compile_stdlib_call(&path, name, &positional);
             }
             // `Utils.max(a, b)` — a dotted path resolving to a *user* class
             // (as opposed to the `system.*` case above), not a value: same
@@ -1075,9 +1470,13 @@ impl<'a> Emitter<'a> {
             // Arrays, Built-in methods. `length` above is the one dedicated
             // opcode (`ARRAY_LENGTH`, performance-critical per vm.md); the
             // rest go through `compile_array_method_call`'s `INVOKE_INSTANCE`.
+            // Native array built-ins have no `Param` metadata, so (like
+            // every other native call below) they don't support
+            // named/optional arguments.
             ExprTy::Array(elem) => {
                 let elem_ty = (**elem).clone();
-                self.compile_array_method_call(elem_ty, name, args)
+                let positional = require_positional_args(args)?;
+                self.compile_array_method_call(elem_ty, name, &positional)
             }
             // `text.trim()` etc. — stdlib.md § system.String instance
             // methods. The receiver is already compiled and sitting on the
@@ -1088,14 +1487,19 @@ impl<'a> Emitter<'a> {
             ExprTy::StringT => {
                 let full_argc = args.len() + 1;
                 let (param_types, return_ty) =
-                    crate::stdlib::signature("system.String", name, full_argc).ok_or_else(|| {
-                        CodegenError::Unsupported(format!(
-                            "unknown method '{name}' on string with {} argument(s)",
-                            args.len()
-                        ))
-                    })?;
-                let extra_param_tys: Vec<ExprTy> = param_types[1..].iter().map(expr_ty_of).collect();
-                self.compile_call_args(args, &extra_param_tys, name)?;
+                    crate::stdlib::signature("system.String", name, full_argc).ok_or_else(
+                        || {
+                            CodegenError::Unsupported(format!(
+                                "unknown method '{name}' on string with {} argument(s)",
+                                args.len()
+                            ))
+                        },
+                    )?;
+                let extra_param_tys: Vec<ExprTy> =
+                    param_types[1..].iter().map(expr_ty_of).collect();
+                let positional = require_positional_args(args)?;
+                let n = positional.len();
+                self.compile_call_args(&positional, &extra_param_tys, &vec![false; n], name)?;
                 self.emit_native_static("system.String", name, &param_types, &return_ty)
             }
             ExprTy::Object(fqcn) => {
@@ -1105,11 +1509,20 @@ impl<'a> Emitter<'a> {
                 // comment; `handle.read(...)` etc. likewise resolve from
                 // `crate::stdlib::instance_signature` (`system.io.FileHandle`
                 // has no bytecode `Module` either). Falls through to the
-                // ordinary user-class path below for everything else.
-                let (params, return_ty) = if let Some(sig) = crate::stdlib::instance_signature(&fqcn, name, args.len()) {
-                    sig
-                } else if let Some(sig) = crate::native_generics::method_signature(&fqcn, name, args.len()) {
-                    sig
+                // ordinary user-class path below for everything else. Only
+                // that last path has `Param` metadata (a real `.nl`
+                // declaration), so it's the only one that resolves
+                // named/optional arguments rather than requiring positional.
+                let (params, return_ty, is_ref, positional) = if let Some((p, r)) =
+                    crate::stdlib::instance_signature(&fqcn, name, args.len())
+                {
+                    let n = p.len();
+                    (p, r, vec![false; n], require_positional_args(args)?)
+                } else if let Some((p, r)) =
+                    crate::native_generics::method_signature(&fqcn, name, args.len())
+                {
+                    let n = p.len();
+                    (p, r, vec![false; n], require_positional_args(args)?)
                 } else {
                     let method = find_method(self.classes, &fqcn, name, args.len())
                         .cloned()
@@ -1119,12 +1532,18 @@ impl<'a> Emitter<'a> {
                                 args.len()
                             ))
                         })?;
-                    (method.params, method.return_ty)
+                    let positional = crate::class_table::resolve_positional_args(
+                        &method.param_names,
+                        &method.defaults,
+                        args,
+                    );
+                    (method.params, method.return_ty, method.is_ref, positional)
                 };
                 let param_tys: Vec<ExprTy> = params.iter().map(expr_ty_of).collect();
-                self.compile_call_args(args, &param_tys, name)?;
+                let boxes = self.compile_call_args(&positional, &param_tys, &is_ref, name)?;
 
-                let descriptor = method_descriptor(&params, &return_ty);
+                let cc_params = crate::class_table::calling_convention_params(&params, &is_ref);
+                let descriptor = method_descriptor(&cc_params, &return_ty);
                 let name_index = self.cp.add_utf8(name.to_string());
                 let descriptor_index = self.cp.add_type_desc(&descriptor);
                 // The static type's class is enough here: the VM re-resolves
@@ -1132,10 +1551,17 @@ impl<'a> Emitter<'a> {
                 // also works when `fqcn` is an interface with no bytecode of
                 // its own (interface dispatch — vm.md § Interface dispatch).
                 let class_index = self.cp.add_class(&fqcn);
-                let method_ref = self.cp.add_method_ref(class_index, name_index, descriptor_index);
+                let method_ref = self
+                    .cp
+                    .add_method_ref(class_index, name_index, descriptor_index);
                 let return_expr_ty = expr_ty_of(&return_ty);
                 let result_delta = if return_expr_ty == ExprTy::Void { 0 } else { 1 };
-                self.op_u16(Opcode::InvokeInstance, method_ref, result_delta - args.len() as i32 - 1);
+                self.op_u16(
+                    Opcode::InvokeInstance,
+                    method_ref,
+                    result_delta - positional.len() as i32 - 1,
+                );
+                self.emit_unbox_ref_args(&boxes);
                 Ok(return_expr_ty)
             }
             other => Err(CodegenError::Unsupported(format!(
@@ -1161,17 +1587,30 @@ impl<'a> Emitter<'a> {
     /// than falling back to the `Type::Void` wildcard nl-sema uses (see
     /// `checker.rs`'s matching arm), and needed so a subsequent
     /// `U[] result = numbers.map(...)` assignment sees the real `U`.
-    fn compile_array_method_call(&mut self, elem_ty: ExprTy, name: &str, args: &[Expr]) -> Result<ExprTy, CodegenError> {
+    fn compile_array_method_call(
+        &mut self,
+        elem_ty: ExprTy,
+        name: &str,
+        args: &[Expr],
+    ) -> Result<ExprTy, CodegenError> {
         match (name, args.len()) {
             ("slice", 2) => {
-                self.compile_call_args(args, &[ExprTy::Int, ExprTy::Int], name)?;
-                self.emit_array_call(name, &[ExprTy::Int, ExprTy::Int], ExprTy::Array(Box::new(elem_ty)))
+                self.compile_call_args(args, &[ExprTy::Int, ExprTy::Int], &[false, false], name)?;
+                self.emit_array_call(
+                    name,
+                    &[ExprTy::Int, ExprTy::Int],
+                    ExprTy::Array(Box::new(elem_ty)),
+                )
             }
             ("map", 1) => {
                 let closure_ty = self.compile_expr(&args[0])?;
                 let result_elem = match &closure_ty {
                     ExprTy::Closure { return_ty, .. } => (**return_ty).clone(),
-                    _ => return Err(CodegenError::Unsupported(format!("'{name}' expects a closure argument"))),
+                    _ => {
+                        return Err(CodegenError::Unsupported(format!(
+                            "'{name}' expects a closure argument"
+                        )))
+                    }
                 };
                 self.coerce_value(&closure_ty, &ExprTy::Void, name)?;
                 self.emit_array_call(name, &[ExprTy::Void], ExprTy::Array(Box::new(result_elem)))
@@ -1209,15 +1648,26 @@ impl<'a> Emitter<'a> {
     /// placeholder (`"system.Array"`, never a real class) since
     /// `nl_vm::interpreter` dispatches on the receiver's `Value::Array`
     /// variant rather than by class name (see `nl_vm::native::dispatch_array`).
-    fn emit_array_call(&mut self, name: &str, param_types: &[ExprTy], return_ty: ExprTy) -> Result<ExprTy, CodegenError> {
+    fn emit_array_call(
+        &mut self,
+        name: &str,
+        param_types: &[ExprTy],
+        return_ty: ExprTy,
+    ) -> Result<ExprTy, CodegenError> {
         let param_ast_types: Vec<Type> = param_types.iter().map(expr_ty_to_type).collect();
         let descriptor = method_descriptor(&param_ast_types, &expr_ty_to_type(&return_ty));
         let name_index = self.cp.add_utf8(name.to_string());
         let descriptor_index = self.cp.add_type_desc(&descriptor);
         let class_index = self.cp.add_class("system.Array");
-        let method_ref = self.cp.add_method_ref(class_index, name_index, descriptor_index);
+        let method_ref = self
+            .cp
+            .add_method_ref(class_index, name_index, descriptor_index);
         let result_delta = if return_ty == ExprTy::Void { 0 } else { 1 };
-        self.op_u16(Opcode::InvokeInstance, method_ref, result_delta - param_types.len() as i32 - 1);
+        self.op_u16(
+            Opcode::InvokeInstance,
+            method_ref,
+            result_delta - param_types.len() as i32 - 1,
+        );
         Ok(return_ty)
     }
 
@@ -1226,7 +1676,12 @@ impl<'a> Emitter<'a> {
     /// are normalized to their single `(string) -> void` overload first
     /// (`crate::stdlib::is_printlike`); everything else uses its declared
     /// signature from `crate::stdlib::signature`.
-    fn compile_stdlib_call(&mut self, fqcn: &str, name: &str, args: &[Expr]) -> Result<ExprTy, CodegenError> {
+    fn compile_stdlib_call(
+        &mut self,
+        fqcn: &str,
+        name: &str,
+        args: &[Expr],
+    ) -> Result<ExprTy, CodegenError> {
         if crate::stdlib::is_printlike(fqcn, name) {
             if args.len() != 1 {
                 return Err(CodegenError::Unsupported(format!(
@@ -1258,29 +1713,40 @@ impl<'a> Emitter<'a> {
         // descriptor.
         if fqcn == "system.ps.Process" && name == "run" {
             if args.len() != 1 {
-                return Err(CodegenError::Unsupported(format!("'run' expects 1 argument, got {}", args.len())));
+                return Err(CodegenError::Unsupported(format!(
+                    "'run' expects 1 argument, got {}",
+                    args.len()
+                )));
             }
             let ty = self.compile_expr(&args[0])?;
             let param_ty = match &ty {
                 ExprTy::StringT => Type::StringT,
-                ExprTy::Array(elem) if **elem == ExprTy::StringT => Type::Array(Box::new(Type::StringT)),
+                ExprTy::Array(elem) if **elem == ExprTy::StringT => {
+                    Type::Array(Box::new(Type::StringT))
+                }
                 other => {
                     return Err(CodegenError::Unsupported(format!(
                         "'run' expects a string or string[] argument, got {other:?}"
                     )))
                 }
             };
-            return self.emit_native_static(fqcn, name, &[param_ty], &crate::stdlib::process_result());
+            return self.emit_native_static(
+                fqcn,
+                name,
+                &[param_ty],
+                &crate::stdlib::process_result(),
+            );
         }
 
-        let (param_types, return_ty) = crate::stdlib::signature(fqcn, name, args.len()).ok_or_else(|| {
-            CodegenError::Unsupported(format!(
-                "unknown stdlib method '{fqcn}.{name}' with {} argument(s)",
-                args.len()
-            ))
-        })?;
+        let (param_types, return_ty) = crate::stdlib::signature(fqcn, name, args.len())
+            .ok_or_else(|| {
+                CodegenError::Unsupported(format!(
+                    "unknown stdlib method '{fqcn}.{name}' with {} argument(s)",
+                    args.len()
+                ))
+            })?;
         let param_expr_tys: Vec<ExprTy> = param_types.iter().map(expr_ty_of).collect();
-        self.compile_call_args(args, &param_expr_tys, name)?;
+        self.compile_call_args(args, &param_expr_tys, &vec![false; args.len()], name)?;
         self.emit_native_static(fqcn, name, &param_types, &return_ty)
     }
 
@@ -1288,15 +1754,27 @@ impl<'a> Emitter<'a> {
     /// caller must already have pushed exactly `params.len()` values) and
     /// the constant-pool `MethodRef` descriptor the VM's native dispatcher
     /// matches on.
-    fn emit_native_static(&mut self, fqcn: &str, name: &str, params: &[Type], return_ty: &Type) -> Result<ExprTy, CodegenError> {
+    fn emit_native_static(
+        &mut self,
+        fqcn: &str,
+        name: &str,
+        params: &[Type],
+        return_ty: &Type,
+    ) -> Result<ExprTy, CodegenError> {
         let class_index = self.cp.add_class(fqcn);
         let name_index = self.cp.add_utf8(name.to_string());
         let descriptor = method_descriptor(params, return_ty);
         let descriptor_index = self.cp.add_type_desc(&descriptor);
-        let method_ref = self.cp.add_method_ref(class_index, name_index, descriptor_index);
+        let method_ref = self
+            .cp
+            .add_method_ref(class_index, name_index, descriptor_index);
         let ret = expr_ty_of(return_ty);
         let result_delta = if ret == ExprTy::Void { 0 } else { 1 };
-        self.op_u16(Opcode::InvokeStatic, method_ref, result_delta - params.len() as i32);
+        self.op_u16(
+            Opcode::InvokeStatic,
+            method_ref,
+            result_delta - params.len() as i32,
+        );
         Ok(ret)
     }
 
@@ -1309,13 +1787,19 @@ impl<'a> Emitter<'a> {
         };
         let index_ty = self.compile_expr(index)?;
         if index_ty != ExprTy::Int {
-            return Err(CodegenError::Unsupported("array index must be int".to_string()));
+            return Err(CodegenError::Unsupported(
+                "array index must be int".to_string(),
+            ));
         }
         self.op(Opcode::ArrayLoad, -1);
         Ok(*elem)
     }
 
-    fn compile_instanceof(&mut self, target: &Expr, type_name: &str) -> Result<ExprTy, CodegenError> {
+    fn compile_instanceof(
+        &mut self,
+        target: &Expr,
+        type_name: &str,
+    ) -> Result<ExprTy, CodegenError> {
         self.compile_expr(target)?;
         let fqcn = self.resolve_class_name(type_name);
         let class_index = self.cp.add_class(&fqcn);
@@ -1365,7 +1849,12 @@ impl<'a> Emitter<'a> {
     /// any type here since nullability itself is nl-sema's job). Used for
     /// plain-assignment/initializer sites; call-argument lists use
     /// `compile_call_args`, which applies the same rule per argument.
-    pub(crate) fn coerce_value(&mut self, actual: &ExprTy, expected: &ExprTy, what: &str) -> Result<(), CodegenError> {
+    pub(crate) fn coerce_value(
+        &mut self,
+        actual: &ExprTy,
+        expected: &ExprTy,
+        what: &str,
+    ) -> Result<(), CodegenError> {
         if *expected == ExprTy::Float && *actual == ExprTy::Int {
             self.op(Opcode::I2F, 0);
         } else if *actual == ExprTy::Null {
@@ -1391,7 +1880,29 @@ impl<'a> Emitter<'a> {
         Ok(())
     }
 
-    fn compile_call_args(&mut self, args: &[Expr], param_types: &[ExprTy], ctx: &str) -> Result<(), CodegenError> {
+    /// Compiles each of `args`, in order, onto the stack, ready for an
+    /// `INVOKE_*`/`NEW`+`INVOKE_SPECIAL` sequence right after. `is_ref[i]`
+    /// marks a `ref` parameter (compiler.md § Ref parameter rules; vm.md §
+    /// Ref parameters (boxing)) — nl-sema has already validated (E020) that
+    /// its argument is a plain variable, so it's boxed into a scratch local
+    /// *before* any argument is pushed (matching vm.md's own worked
+    /// example), then the box is pushed in the argument's place. Native
+    /// calls (array/string/stdlib built-ins) have no `Param` metadata and
+    /// so are always all-`false` here — same fast path as before this
+    /// existed. Returns one `(var_local, box_local, inner_ty)` triple per
+    /// *freshly* boxed `ref` argument, to be unboxed with
+    /// `emit_unbox_ref_args` right after the call is emitted — forwarding
+    /// an already-boxed `ref` parameter (`ref` passed straight through to
+    /// another `ref` parameter) needs no fresh box and no unboxing here,
+    /// since its original owner already does that once its own call
+    /// returns.
+    fn compile_call_args(
+        &mut self,
+        args: &[Expr],
+        param_types: &[ExprTy],
+        is_ref: &[bool],
+        ctx: &str,
+    ) -> Result<Vec<(u16, u16, ExprTy)>, CodegenError> {
         if args.len() != param_types.len() {
             return Err(CodegenError::Unsupported(format!(
                 "'{ctx}' expects {} argument(s), got {}",
@@ -1399,11 +1910,76 @@ impl<'a> Emitter<'a> {
                 args.len()
             )));
         }
-        for (arg, expected_ty) in args.iter().zip(param_types) {
-            let actual = self.compile_expr(arg)?;
-            self.coerce_value(&actual, expected_ty, ctx)?;
+        enum RefPlan {
+            None,
+            NewBox(u16, u16, ExprTy),
+            Forward(u16),
         }
-        Ok(())
+        let mut plans = Vec::with_capacity(args.len());
+        for ((arg, ty), r) in args.iter().zip(param_types).zip(is_ref) {
+            if *r {
+                let Expr::Ident(var_name) = arg else {
+                    return Err(CodegenError::Unsupported(format!(
+                        "'{ctx}' ref argument must be a variable"
+                    )));
+                };
+                let var_slot = self.lookup_local(var_name)?;
+                if var_slot.boxed.is_some() {
+                    plans.push(RefPlan::Forward(var_slot.index));
+                } else {
+                    let box_local = self.emit_new_box(ty, var_slot.index);
+                    plans.push(RefPlan::NewBox(box_local, var_slot.index, ty.clone()));
+                }
+            } else {
+                plans.push(RefPlan::None);
+            }
+        }
+        for (i, plan) in plans.iter().enumerate() {
+            match plan {
+                RefPlan::NewBox(box_local, ..) | RefPlan::Forward(box_local) => {
+                    self.op_u16(Opcode::Load, *box_local, 1);
+                }
+                RefPlan::None => {
+                    let actual = self.compile_expr(&args[i])?;
+                    self.coerce_value(&actual, &param_types[i], ctx)?;
+                }
+            }
+        }
+        Ok(plans
+            .into_iter()
+            .filter_map(|p| match p {
+                RefPlan::NewBox(box_local, var_local, ty) => Some((var_local, box_local, ty)),
+                _ => None,
+            })
+            .collect())
+    }
+
+    /// `NEW Box<T>; DUP; LOAD var; SET_FIELD Box.value; STORE box_local` —
+    /// vm.md § Ref parameters (boxing), caller side, first half. Returns
+    /// the scratch local now holding the box reference.
+    fn emit_new_box(&mut self, inner_ty: &ExprTy, var_local: u16) -> u16 {
+        let box_fqcn = crate::class_table::box_fqcn(&expr_ty_to_type(inner_ty));
+        let class_index = self.cp.add_class(&box_fqcn);
+        self.op_u16(Opcode::New, class_index, 1);
+        self.op(Opcode::Dup, 1);
+        self.op_u16(Opcode::Load, var_local, 1);
+        let field_ref = self.box_value_field_ref(inner_ty);
+        self.op_u16(Opcode::SetField, field_ref, -2);
+        let box_local = self.declare_scratch_local(ExprTy::Object(box_fqcn));
+        self.emit_store(box_local);
+        box_local
+    }
+
+    /// `LOAD box_local; GET_FIELD Box.value; STORE var_local`, once per
+    /// entry — vm.md § Ref parameters (boxing), caller side, second half,
+    /// emitted right after the call instruction returns.
+    fn emit_unbox_ref_args(&mut self, boxes: &[(u16, u16, ExprTy)]) {
+        for (var_local, box_local, inner_ty) in boxes {
+            self.op_u16(Opcode::Load, *box_local, 1);
+            let field_ref = self.box_value_field_ref(inner_ty);
+            self.op_u16(Opcode::GetField, field_ref, 0);
+            self.emit_store(*var_local);
+        }
     }
 
     pub(crate) fn emit_int_const(&mut self, v: i64) {
@@ -1442,9 +2018,7 @@ impl<'a> Emitter<'a> {
                     self.op(Opcode::FNeg, 0);
                     Ok(ExprTy::Float)
                 }
-                other => Err(CodegenError::Unsupported(format!(
-                    "unary '-' on {other:?}"
-                ))),
+                other => Err(CodegenError::Unsupported(format!("unary '-' on {other:?}"))),
             },
             UnOp::Not => match ty {
                 ExprTy::Bool => {
@@ -1456,7 +2030,12 @@ impl<'a> Emitter<'a> {
         }
     }
 
-    fn compile_binary(&mut self, op: BinOp, lhs: &Expr, rhs: &Expr) -> Result<ExprTy, CodegenError> {
+    fn compile_binary(
+        &mut self,
+        op: BinOp,
+        lhs: &Expr,
+        rhs: &Expr,
+    ) -> Result<ExprTy, CodegenError> {
         match op {
             BinOp::And => return self.compile_short_circuit(true, lhs, rhs),
             BinOp::Or => return self.compile_short_circuit(false, lhs, rhs),
@@ -1488,7 +2067,11 @@ impl<'a> Emitter<'a> {
         // no numeric widening applies, and nl-sema already validated that
         // the comparison is legal.
         if matches!(op, BinOp::Eq | BinOp::Ne) && !(is_numeric_ty(&ty_l) && is_numeric_ty(&ty_r)) {
-            let opcode = if op == BinOp::Eq { Opcode::CmpEq } else { Opcode::CmpNe };
+            let opcode = if op == BinOp::Eq {
+                Opcode::CmpEq
+            } else {
+                Opcode::CmpNe
+            };
             self.op(opcode, -1);
             return Ok(ExprTy::Bool);
         }
@@ -1609,7 +2192,11 @@ impl<'a> Emitter<'a> {
             )));
         }
         self.op(Opcode::Dup, 1);
-        let branch_op = if is_and { Opcode::IfFalse } else { Opcode::IfTrue };
+        let branch_op = if is_and {
+            Opcode::IfFalse
+        } else {
+            Opcode::IfTrue
+        };
         let (branch_pc, branch_operand) = self.branch(branch_op, -1);
         self.op(Opcode::Pop, -1);
         let ty_r = self.compile_expr(rhs)?;

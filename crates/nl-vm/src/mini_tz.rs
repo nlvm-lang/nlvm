@@ -15,7 +15,10 @@
 //! instead of applying the zone's perpetual DST rule.
 
 pub fn now_epoch_secs() -> i64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// The process default timezone (stdlib.md: `TimeZone.getDefault()`) — the
@@ -54,7 +57,10 @@ pub fn zone_offset_seconds(zone_id: &str, epoch: i64) -> Result<i32, String> {
     // traversal/absolute paths before ever touching the filesystem (a
     // dotted-path-shaped id like "../../etc/passwd" must not resolve
     // outside `/usr/share/zoneinfo`).
-    if zone_id.is_empty() || zone_id.starts_with('/') || zone_id.split('/').any(|seg| seg.is_empty() || seg == "..") {
+    if zone_id.is_empty()
+        || zone_id.starts_with('/')
+        || zone_id.split('/').any(|seg| seg.is_empty() || seg == "..")
+    {
         return Err(format!("unknown timezone '{zone_id}'"));
     }
     let path = format!("/usr/share/zoneinfo/{zone_id}");
@@ -122,7 +128,13 @@ fn data_block_len(h: &TzHeader, time_size: usize) -> usize {
 /// records — everything after that, abbreviation strings/leap
 /// seconds/std-wall and UT-local indicators, is irrelevant to a plain offset
 /// lookup and is not parsed).
-fn find_offset(data: &[u8], header_pos: usize, h: &TzHeader, time_size: usize, epoch: i64) -> Result<i32, String> {
+fn find_offset(
+    data: &[u8],
+    header_pos: usize,
+    h: &TzHeader,
+    time_size: usize,
+    epoch: i64,
+) -> Result<i32, String> {
     let mut pos = header_pos + 44;
     let mut transitions = Vec::with_capacity(h.timecnt as usize);
     for _ in 0..h.timecnt {
@@ -160,7 +172,10 @@ fn find_offset(data: &[u8], header_pos: usize, h: &TzHeader, time_size: usize, e
         None => ttinfo.iter().position(|t| !t.1).unwrap_or(0),
         Some(i) => types[i] as usize,
     };
-    ttinfo.get(type_idx).map(|t| t.0).ok_or_else(|| "invalid transition type index".to_string())
+    ttinfo
+        .get(type_idx)
+        .map(|t| t.0)
+        .ok_or_else(|| "invalid transition type index".to_string())
 }
 
 fn tzif_offset(data: &[u8], epoch: i64) -> Result<i32, String> {
@@ -236,13 +251,21 @@ pub fn epoch_to_local(epoch: i64, offset_secs: i32) -> (i64, u32, u32, u32, u32,
     let days = local.div_euclid(86400);
     let secs_of_day = local.rem_euclid(86400);
     let (y, m, d) = civil_from_days(days);
-    (y, m, d, (secs_of_day / 3600) as u32, ((secs_of_day / 60) % 60) as u32, (secs_of_day % 60) as u32)
+    (
+        y,
+        m,
+        d,
+        (secs_of_day / 3600) as u32,
+        ((secs_of_day / 60) % 60) as u32,
+        (secs_of_day % 60) as u32,
+    )
 }
 
 /// Inverse of `epoch_to_local`: a wall-clock civil date/time at UTC offset
 /// `offset_secs` back to the UTC instant it represents.
 pub fn local_to_epoch(y: i64, m: u32, d: u32, hh: u32, mm: u32, ss: u32, offset_secs: i32) -> i64 {
-    days_from_civil(y, m, d) * 86400 + hh as i64 * 3600 + mm as i64 * 60 + ss as i64 - offset_secs as i64
+    days_from_civil(y, m, d) * 86400 + hh as i64 * 3600 + mm as i64 * 60 + ss as i64
+        - offset_secs as i64
 }
 
 /// Parses `YYYY-MM-DDTHH:MM:SS` followed by either `Z` or an explicit
@@ -265,7 +288,14 @@ pub fn parse_iso8601(s: &str) -> Result<(i64, String), String> {
         return Err(fail());
     }
     let digits_only = |part: &str| part.bytes().all(|b| b.is_ascii_digit());
-    for part in [&s[0..4], &s[5..7], &s[8..10], &s[11..13], &s[14..16], &s[17..19]] {
+    for part in [
+        &s[0..4],
+        &s[5..7],
+        &s[8..10],
+        &s[11..13],
+        &s[14..16],
+        &s[17..19],
+    ] {
         if !digits_only(part) {
             return Err(fail());
         }
@@ -276,7 +306,12 @@ pub fn parse_iso8601(s: &str) -> Result<(i64, String), String> {
     let hour: u32 = s[11..13].parse().map_err(|_| fail())?;
     let minute: u32 = s[14..16].parse().map_err(|_| fail())?;
     let second: u32 = s[17..19].parse().map_err(|_| fail())?;
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || hour > 23 || minute > 59 || second > 59 {
+    if !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 59
+    {
         return Err(fail());
     }
     let rest = &s[19..];
@@ -287,7 +322,10 @@ pub fn parse_iso8601(s: &str) -> Result<(i64, String), String> {
     } else {
         return Err(fail());
     };
-    Ok((local_to_epoch(year, month, day, hour, minute, second, offset_secs), zone_id))
+    Ok((
+        local_to_epoch(year, month, day, hour, minute, second, offset_secs),
+        zone_id,
+    ))
 }
 
 /// Formats `epoch`/`offset_secs`'s wall-clock date/time against a small
@@ -329,7 +367,14 @@ mod tests {
 
     #[test]
     fn civil_roundtrip() {
-        for (y, m, d) in [(1970, 1, 1), (2000, 2, 29), (2023, 1, 15), (2038, 1, 19), (1969, 12, 31), (1900, 3, 1)] {
+        for (y, m, d) in [
+            (1970, 1, 1),
+            (2000, 2, 29),
+            (2023, 1, 15),
+            (2038, 1, 19),
+            (1969, 12, 31),
+            (1900, 3, 1),
+        ] {
             let days = days_from_civil(y, m, d);
             assert_eq!(civil_from_days(days), (y, m, d), "{y}-{m}-{d}");
         }
@@ -373,7 +418,10 @@ mod tests {
 
     #[test]
     fn fixed_offset_zone() {
-        assert_eq!(zone_offset_seconds("+05:30", 0).unwrap(), 5 * 3600 + 30 * 60);
+        assert_eq!(
+            zone_offset_seconds("+05:30", 0).unwrap(),
+            5 * 3600 + 30 * 60
+        );
         assert_eq!(zone_offset_seconds("-08:00", 0).unwrap(), -8 * 3600);
     }
 
@@ -403,14 +451,23 @@ mod tests {
     fn america_new_york_dst_transitions() {
         let winter = local_to_epoch(2023, 1, 15, 12, 0, 0, 0);
         let summer = local_to_epoch(2023, 7, 15, 12, 0, 0, 0);
-        assert_eq!(zone_offset_seconds("America/New_York", winter).unwrap(), -5 * 3600);
-        assert_eq!(zone_offset_seconds("America/New_York", summer).unwrap(), -4 * 3600);
+        assert_eq!(
+            zone_offset_seconds("America/New_York", winter).unwrap(),
+            -5 * 3600
+        );
+        assert_eq!(
+            zone_offset_seconds("America/New_York", summer).unwrap(),
+            -4 * 3600
+        );
     }
 
     #[test]
     fn formats_datetime() {
         let epoch = local_to_epoch(2025, 3, 1, 9, 5, 3, 0);
-        assert_eq!(format_datetime(epoch, 0, "yyyy-MM-dd HH:mm"), "2025-03-01 09:05");
+        assert_eq!(
+            format_datetime(epoch, 0, "yyyy-MM-dd HH:mm"),
+            "2025-03-01 09:05"
+        );
         assert_eq!(format_datetime(epoch, 0, "yy/M/d H:m:s"), "25/3/1 9:5:3");
     }
 }

@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use nl_syntax::ast::{MethodKind, SourceFile, SourceItem, Type};
+use nl_syntax::ast::{Arg, Expr, MethodKind, SourceFile, SourceItem, Type};
 
 #[derive(Debug, Clone)]
 pub struct FieldInfo {
@@ -19,6 +19,17 @@ pub struct FieldInfo {
 pub struct CtorInfo {
     /// Resolved parameter types.
     pub params: Vec<Type>,
+    /// Parallel to `params` — parameter names, needed to bind named
+    /// arguments (compiler.md § Named and optional parameter rules).
+    pub param_names: Vec<String>,
+    /// Parallel to `params` — a parameter's default value expression, if
+    /// it's optional. nl-sema has already validated (E026) that every
+    /// present one is a compile-time constant, so it's safe to compile
+    /// directly wherever the call site omits that argument.
+    pub defaults: Vec<Option<Expr>>,
+    /// Parallel to `params` — compiler.md § Ref parameter rules; vm.md §
+    /// Ref parameters (boxing). nl-sema has already validated E020-E022.
+    pub is_ref: Vec<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -26,9 +37,116 @@ pub struct MethodInfo {
     pub name: String,
     /// Resolved parameter types.
     pub params: Vec<Type>,
+    /// See `CtorInfo::param_names`.
+    pub param_names: Vec<String>,
+    /// See `CtorInfo::defaults`.
+    pub defaults: Vec<Option<Expr>>,
+    /// See `CtorInfo::is_ref`.
+    pub is_ref: Vec<bool>,
     /// Resolved return type.
     pub return_ty: Type,
     pub is_static: bool,
+}
+
+/// How many leading parameters have no default value — everything past
+/// this index is optional (specs.md § Optional parameters).
+fn required_count(defaults: &[Option<Expr>]) -> usize {
+    defaults.iter().take_while(|d| d.is_none()).count()
+}
+
+/// Whether a call supplying `argc` total arguments (positional + named)
+/// could bind against a callee with `required`/`total` parameters — see
+/// `nl_sema::class_table::arity_in_range` (same rationale, independent
+/// copy — this crate doesn't depend on `nl-sema`).
+fn arity_in_range(required: usize, total: usize, argc: usize) -> bool {
+    required <= argc && argc <= total
+}
+
+/// Mangled name of a fully-resolved (post-`nl_syntax::monomorphize::expand`)
+/// type. Must match `nl_syntax::monomorphize`'s own (private) `mangle_type`
+/// exactly for the flat shapes handled here — that's the name a `ref`
+/// parameter's `Box<T>` was actually monomorphized/compiled under (see that
+/// module's synthesized `Box<T>` instantiations, one per distinct `ref`
+/// parameter type used anywhere in the program). Restricted to the shapes
+/// that can appear post-expansion (no `Type::Generic`/`Type::Union` — a
+/// bare scalar, `string`, a resolved class FQCN, or an array of one of
+/// those); anything else would mean nl-sema failed to reject a `ref`
+/// parameter of a type that was never expected to reach here.
+pub fn mangle_flat_type(ty: &Type) -> String {
+    match ty {
+        Type::Int => "int".to_string(),
+        Type::Float => "float".to_string(),
+        Type::Bool => "bool".to_string(),
+        Type::Byte => "byte".to_string(),
+        Type::StringT => "string".to_string(),
+        Type::Named(name) => name.clone(),
+        Type::Array(inner) => format!("{}[]", mangle_flat_type(inner)),
+        other => format!("{other:?}"),
+    }
+}
+
+/// The mangled FQCN of the `Box<T>` used to pass `inner` by `ref` — vm.md §
+/// Ref parameters (boxing).
+pub fn box_fqcn(inner: &Type) -> String {
+    format!("Box<{}>", mangle_flat_type(inner))
+}
+
+/// compiler.md § Ref parameter rules; vm.md § Ref parameters (boxing). The
+/// calling-convention parameter types for a signature: same as `params`
+/// except a `ref` parameter's *physical* type on the stack/in the method
+/// descriptor is `Box<T>`, not `T` — the callee reads/writes through the
+/// box, and only the caller (immediately after the call returns) unboxes
+/// the result back into its own variable.
+pub fn calling_convention_params(params: &[Type], is_ref: &[bool]) -> Vec<Type> {
+    params
+        .iter()
+        .zip(is_ref)
+        .map(|(ty, r)| {
+            if *r {
+                Type::Named(box_fqcn(ty))
+            } else {
+                ty.clone()
+            }
+        })
+        .collect()
+}
+
+/// compiler.md § Named and optional parameter rules — E023-E026 already
+/// validated (by nl-sema, which always runs first) that `args` binds
+/// against `param_names`/`defaults`. Resolves that binding into the fully
+/// positional `Vec<Expr>` (one per parameter, in declared order) the rest
+/// of codegen's call-emission code expects — a parameter's own expression
+/// if `args` supplies it (by position or by name), otherwise its default.
+pub fn resolve_positional_args(
+    param_names: &[String],
+    defaults: &[Option<Expr>],
+    args: &[Arg],
+) -> Vec<Expr> {
+    let mut out: Vec<Option<Expr>> = vec![None; param_names.len()];
+    for (i, arg) in args.iter().enumerate() {
+        match &arg.name {
+            None => {
+                if i < out.len() {
+                    out[i] = Some(arg.value.clone());
+                }
+            }
+            Some(name) => {
+                if let Some(p_idx) = param_names.iter().position(|n| n == name) {
+                    out[p_idx] = Some(arg.value.clone());
+                }
+            }
+        }
+    }
+    out.into_iter()
+        .enumerate()
+        .map(|(i, v)| {
+            v.unwrap_or_else(|| {
+                defaults[i]
+                    .clone()
+                    .expect("nl-sema already validated every required parameter is bound")
+            })
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone)]
@@ -87,10 +205,13 @@ pub fn import_map(file: &SourceFile, all_files: &[SourceFile]) -> HashMap<String
     };
     map.insert(simple, fqcn);
     for u in &file.uses {
-        let simple = u
-            .alias
-            .clone()
-            .unwrap_or_else(|| u.path.rsplit('.').next().expect("use path is never empty").to_string());
+        let simple = u.alias.clone().unwrap_or_else(|| {
+            u.path
+                .rsplit('.')
+                .next()
+                .expect("use path is never empty")
+                .to_string()
+        });
         map.insert(simple, u.path.clone());
     }
     map
@@ -101,9 +222,13 @@ pub fn import_map(file: &SourceFile, all_files: &[SourceFile]) -> HashMap<String
 /// a clear "unknown class" error at the point of use, not here).
 pub fn resolve_type(ty: &Type, imports: &HashMap<String, String>) -> Type {
     match ty {
-        Type::Named(name) => Type::Named(imports.get(name).cloned().unwrap_or_else(|| name.clone())),
+        Type::Named(name) => {
+            Type::Named(imports.get(name).cloned().unwrap_or_else(|| name.clone()))
+        }
         Type::Array(inner) => Type::Array(Box::new(resolve_type(inner, imports))),
-        Type::Union(members) => Type::Union(members.iter().map(|m| resolve_type(m, imports)).collect()),
+        Type::Union(members) => {
+            Type::Union(members.iter().map(|m| resolve_type(m, imports)).collect())
+        }
         other => other.clone(),
     }
 }
@@ -127,21 +252,46 @@ pub fn build_class_table(files: &[SourceFile]) -> HashMap<String, ClassInfo> {
                 let mut ctors = Vec::new();
                 let mut methods = Vec::new();
                 for m in &class.methods {
-                    let params: Vec<Type> = m.params.iter().map(|p| resolve_type(&p.ty, &imports)).collect();
+                    let params: Vec<Type> = m
+                        .params
+                        .iter()
+                        .map(|p| resolve_type(&p.ty, &imports))
+                        .collect();
+                    let param_names: Vec<String> =
+                        m.params.iter().map(|p| p.name.clone()).collect();
+                    let defaults: Vec<Option<Expr>> =
+                        m.params.iter().map(|p| p.default.clone()).collect();
+                    let is_ref: Vec<bool> = m.params.iter().map(|p| p.is_ref).collect();
                     match m.kind {
-                        MethodKind::Constructor => ctors.push(CtorInfo { params }),
+                        MethodKind::Constructor => ctors.push(CtorInfo {
+                            params,
+                            param_names,
+                            defaults,
+                            is_ref,
+                        }),
                         MethodKind::Destructor => {}
                         MethodKind::Normal => methods.push(MethodInfo {
                             name: m.name.clone(),
                             params,
+                            param_names,
+                            defaults,
+                            is_ref,
                             return_ty: resolve_type(&m.return_type, &imports),
                             is_static: m.is_static,
                         }),
                     }
                 }
 
-                let extends = class.extends.as_ref().map(|n| imports.get(n).cloned().unwrap_or_else(|| n.clone()));
-                ClassInfo { extends, fields, ctors, methods }
+                let extends = class
+                    .extends
+                    .as_ref()
+                    .map(|n| imports.get(n).cloned().unwrap_or_else(|| n.clone()));
+                ClassInfo {
+                    extends,
+                    fields,
+                    ctors,
+                    methods,
+                }
             }
             SourceItem::Interface(iface) => {
                 let methods = iface
@@ -149,12 +299,24 @@ pub fn build_class_table(files: &[SourceFile]) -> HashMap<String, ClassInfo> {
                     .iter()
                     .map(|m| MethodInfo {
                         name: m.name.clone(),
-                        params: m.params.iter().map(|p| resolve_type(&p.ty, &imports)).collect(),
+                        params: m
+                            .params
+                            .iter()
+                            .map(|p| resolve_type(&p.ty, &imports))
+                            .collect(),
+                        param_names: m.params.iter().map(|p| p.name.clone()).collect(),
+                        defaults: m.params.iter().map(|p| p.default.clone()).collect(),
+                        is_ref: m.params.iter().map(|p| p.is_ref).collect(),
                         return_ty: resolve_type(&m.return_type, &imports),
                         is_static: false,
                     })
                     .collect();
-                ClassInfo { extends: None, fields: Vec::new(), ctors: Vec::new(), methods }
+                ClassInfo {
+                    extends: None,
+                    fields: Vec::new(),
+                    ctors: Vec::new(),
+                    methods,
+                }
             }
         };
         table.insert(fqcn, info);
@@ -166,8 +328,16 @@ pub fn build_class_table(files: &[SourceFile]) -> HashMap<String, ClassInfo> {
 /// enough while the only overloads in scope (constructor chaining) are
 /// distinguished by arity; ambiguous same-arity overloads pick the first
 /// declared, which is a known, documented limitation of this phase.
-pub fn find_ctor<'c>(classes: &'c HashMap<String, ClassInfo>, fqcn: &str, argc: usize) -> Option<&'c CtorInfo> {
-    classes.get(fqcn)?.ctors.iter().find(|c| c.params.len() == argc)
+pub fn find_ctor<'c>(
+    classes: &'c HashMap<String, ClassInfo>,
+    fqcn: &str,
+    argc: usize,
+) -> Option<&'c CtorInfo> {
+    classes
+        .get(fqcn)?
+        .ctors
+        .iter()
+        .find(|c| arity_in_range(required_count(&c.defaults), c.params.len(), argc))
 }
 
 /// Walks `fqcn`'s `extends` chain, so a method declared on an ancestor class
@@ -181,7 +351,9 @@ pub fn find_method<'c>(
     let mut current = fqcn;
     loop {
         let info = classes.get(current)?;
-        if let Some(m) = info.methods.iter().find(|m| m.name == name && m.params.len() == argc) {
+        if let Some(m) = info.methods.iter().find(|m| {
+            m.name == name && arity_in_range(required_count(&m.defaults), m.params.len(), argc)
+        }) {
             return Some(m);
         }
         current = info.extends.as_deref()?;
@@ -189,7 +361,11 @@ pub fn find_method<'c>(
 }
 
 /// Like `find_method`, for fields.
-pub fn find_field<'c>(classes: &'c HashMap<String, ClassInfo>, fqcn: &str, name: &str) -> Option<&'c FieldInfo> {
+pub fn find_field<'c>(
+    classes: &'c HashMap<String, ClassInfo>,
+    fqcn: &str,
+    name: &str,
+) -> Option<&'c FieldInfo> {
     let mut current = fqcn;
     loop {
         let info = classes.get(current)?;

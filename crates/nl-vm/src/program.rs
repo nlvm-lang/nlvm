@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 
-use nl_bytecode::{Module, MethodDescriptor};
+use nl_bytecode::{MethodDescriptor, Module};
 
 use crate::error::VmError;
 use crate::interpreter::call_static;
@@ -23,7 +23,10 @@ pub(crate) struct Counter {
 
 impl Counter {
     fn new(initial: i64) -> Arc<Counter> {
-        Arc::new(Counter { state: Mutex::new(initial), condvar: Condvar::new() })
+        Arc::new(Counter {
+            state: Mutex::new(initial),
+            condvar: Condvar::new(),
+        })
     }
 
     /// Blocks while the count is `0`, then decrements it by one.
@@ -126,7 +129,9 @@ impl Program {
     }
 
     pub fn find_main(&self) -> Option<(&Module, &MethodDescriptor)> {
-        self.modules.values().find_map(|m| m.find_method("main").map(|meth| (m, meth)))
+        self.modules
+            .values()
+            .find_map(|m| m.find_method("main").map(|meth| (m, meth)))
     }
 
     pub fn write_stdout(&self, s: &str) {
@@ -170,7 +175,11 @@ impl Program {
         }
     }
 
-    pub fn with_tcp_listener<R>(&self, id: i64, f: impl FnOnce(&mut std::net::TcpListener) -> R) -> Option<R> {
+    pub fn with_tcp_listener<R>(
+        &self,
+        id: i64,
+        f: impl FnOnce(&mut std::net::TcpListener) -> R,
+    ) -> Option<R> {
         let mut listeners = lock(&self.tcp_listeners);
         listeners.get_mut(id as usize)?.as_mut().map(f)
     }
@@ -187,7 +196,11 @@ impl Program {
         }
     }
 
-    pub fn with_tcp_stream<R>(&self, id: i64, f: impl FnOnce(&mut std::net::TcpStream) -> R) -> Option<R> {
+    pub fn with_tcp_stream<R>(
+        &self,
+        id: i64,
+        f: impl FnOnce(&mut std::net::TcpStream) -> R,
+    ) -> Option<R> {
         let mut streams = lock(&self.tcp_streams);
         streams.get_mut(id as usize)?.as_mut().map(f)
     }
@@ -204,7 +217,11 @@ impl Program {
         }
     }
 
-    pub fn with_udp_socket<R>(&self, id: i64, f: impl FnOnce(&mut std::net::UdpSocket) -> R) -> Option<R> {
+    pub fn with_udp_socket<R>(
+        &self,
+        id: i64,
+        f: impl FnOnce(&mut std::net::UdpSocket) -> R,
+    ) -> Option<R> {
         let mut sockets = lock(&self.udp_sockets);
         sockets.get_mut(id as usize)?.as_mut().map(f)
     }
@@ -241,7 +258,9 @@ impl Program {
     /// re-panicking the joining thread, matching vm.md's destructor
     /// contract stance that one component's failure shouldn't cascade.
     pub(crate) fn join_thread(&self, id: i64) {
-        let handle = lock(&self.threads).get_mut(id as usize).and_then(Option::take);
+        let handle = lock(&self.threads)
+            .get_mut(id as usize)
+            .and_then(Option::take);
         if let Some(handle) = handle {
             let _ = handle.join();
         }
@@ -254,7 +273,9 @@ impl Program {
     }
 
     pub(crate) fn mutex(&self, id: i64) -> Option<Arc<Counter>> {
-        lock(&self.thread_mutexes).get(id as usize).and_then(Clone::clone)
+        lock(&self.thread_mutexes)
+            .get(id as usize)
+            .and_then(Clone::clone)
     }
 
     pub(crate) fn register_semaphore(&self, initial: i64) -> i64 {
@@ -264,7 +285,9 @@ impl Program {
     }
 
     pub(crate) fn semaphore(&self, id: i64) -> Option<Arc<Counter>> {
-        lock(&self.thread_semaphores).get(id as usize).and_then(Clone::clone)
+        lock(&self.thread_semaphores)
+            .get(id as usize)
+            .and_then(Clone::clone)
     }
 }
 
@@ -328,7 +351,11 @@ pub fn run_program(modules: &[Module], program_args: &[String]) -> RunOutcome {
     if let Some(line) = error_line {
         append_line(&mut stderr, &line);
     }
-    RunOutcome { exit_code, stdout, stderr }
+    RunOutcome {
+        exit_code,
+        stdout,
+        stderr,
+    }
 }
 
 fn append_line(buf: &mut String, line: &str) {

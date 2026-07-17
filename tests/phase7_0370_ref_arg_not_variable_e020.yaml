@@ -1,0 +1,18 @@
+---
+title: "Compile E020 — ref argument must be a variable"
+file_separator: "#NLFILE"
+expected_compile_error: "E020"
+---
+
+#NLFILE phase7/e020/Main.nl
+namespace phase7.e020;
+class Main {
+	public static void increment(ref int a) {
+		a = a + 1;
+	}
+
+	public static int main(string[] args) {
+		increment(ref 5);
+		return 0;
+	}
+}

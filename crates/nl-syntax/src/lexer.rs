@@ -142,14 +142,14 @@ impl<'a> Lexer<'a> {
         }
         let text = std::str::from_utf8(&self.src[start..self.pos]).unwrap();
         if is_float {
-            let v: f64 = text
-                .parse()
-                .map_err(|_| SyntaxError::Lex(format!("invalid float literal '{text}'"), self.line))?;
+            let v: f64 = text.parse().map_err(|_| {
+                SyntaxError::Lex(format!("invalid float literal '{text}'"), self.line)
+            })?;
             Ok(TokenKind::FloatLiteral(v))
         } else {
-            let v: i64 = text
-                .parse()
-                .map_err(|_| SyntaxError::Lex(format!("invalid int literal '{text}'"), self.line))?;
+            let v: i64 = text.parse().map_err(|_| {
+                SyntaxError::Lex(format!("invalid int literal '{text}'"), self.line)
+            })?;
             Ok(TokenKind::IntLiteral(v))
         }
     }
@@ -180,13 +180,19 @@ impl<'a> Lexer<'a> {
             ($p:expr) => {{
                 self.bump();
                 self.bump();
-                Ok(Token { kind: TokenKind::Punct($p), line })
+                Ok(Token {
+                    kind: TokenKind::Punct($p),
+                    line,
+                })
             }};
         }
         macro_rules! one {
             ($p:expr) => {{
                 self.bump();
-                Ok(Token { kind: TokenKind::Punct($p), line })
+                Ok(Token {
+                    kind: TokenKind::Punct($p),
+                    line,
+                })
             }};
         }
 
@@ -225,7 +231,10 @@ impl<'a> Lexer<'a> {
                 self.bump();
                 self.bump();
                 self.bump();
-                Ok(Token { kind: TokenKind::Punct(Punct::Spaceship), line })
+                Ok(Token {
+                    kind: TokenKind::Punct(Punct::Spaceship),
+                    line,
+                })
             }
             (b'<', Some(b'=')) => two!(Punct::Le),
             (b'<', _) => one!(Punct::Lt),

@@ -57,12 +57,19 @@ pub struct Match {
 
 impl Regex {
     pub fn compile(pattern: &str) -> Result<Regex, String> {
-        let mut parser = Parser { chars: pattern.chars().collect(), pos: 0, group_count: 0 };
+        let mut parser = Parser {
+            chars: pattern.chars().collect(),
+            pos: 0,
+            group_count: 0,
+        };
         let root = parser.parse_alt()?;
         if parser.pos != parser.chars.len() {
             return Err(format!("unexpected character at position {}", parser.pos));
         }
-        Ok(Regex { root, group_count: parser.group_count })
+        Ok(Regex {
+            root,
+            group_count: parser.group_count,
+        })
     }
 
     /// Whole-string match (matching stdlib.md's glob semantics: "Matching is
@@ -110,7 +117,11 @@ impl Regex {
                 true
             });
             if matched {
-                return Some(Match { start, end: end_cell.get().expect("set on match"), groups: caps.into_inner() });
+                return Some(Match {
+                    start,
+                    end: end_cell.get().expect("set on match"),
+                    groups: caps.into_inner(),
+                });
             }
         }
         None
@@ -123,7 +134,10 @@ impl Regex {
 pub fn escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
-        if matches!(c, '.' | '^' | '$' | '|' | '?' | '*' | '+' | '(' | ')' | '[' | ']' | '{' | '}' | '\\') {
+        if matches!(
+            c,
+            '.' | '^' | '$' | '|' | '?' | '*' | '+' | '(' | ')' | '[' | ']' | '{' | '}' | '\\'
+        ) {
             out.push('\\');
         }
         out.push(c);
@@ -156,7 +170,11 @@ impl Parser {
             self.bump();
             branches.push(self.parse_concat()?);
         }
-        Ok(if branches.len() == 1 { branches.pop().expect("just pushed") } else { Node::Alt(branches) })
+        Ok(if branches.len() == 1 {
+            branches.pop().expect("just pushed")
+        } else {
+            Node::Alt(branches)
+        })
     }
 
     fn parse_concat(&mut self) -> Result<Node, String> {
@@ -232,7 +250,9 @@ impl Parser {
                 _ => {
                     first = false;
                     let lo = self.bump_class_char()?;
-                    if self.peek() == Some('-') && self.chars.get(self.pos + 1).is_some_and(|&c| c != ']') {
+                    if self.peek() == Some('-')
+                        && self.chars.get(self.pos + 1).is_some_and(|&c| c != ']')
+                    {
                         self.bump();
                         let hi = self.bump_class_char()?;
                         ranges.push((lo, hi));
@@ -247,7 +267,9 @@ impl Parser {
 
     fn bump_class_char(&mut self) -> Result<char, String> {
         match self.bump() {
-            Some('\\') => self.bump().ok_or_else(|| "dangling escape in character class".to_string()),
+            Some('\\') => self
+                .bump()
+                .ok_or_else(|| "dangling escape in character class".to_string()),
             Some(c) => Ok(c),
             None => Err("unterminated character class".to_string()),
         }
@@ -276,7 +298,13 @@ type Caps = RefCell<Vec<Option<(usize, usize)>>>;
 /// choice-point stack. Operates on absolute char positions into `chars`
 /// (rather than re-slicing a suffix) so `Node::Group`/`Node::Start`/
 /// `Node::End` can see where they are in the whole string.
-fn match_node(node: &Node, chars: &[char], pos: usize, caps: &Caps, k: &dyn Fn(usize) -> bool) -> bool {
+fn match_node(
+    node: &Node,
+    chars: &[char],
+    pos: usize,
+    caps: &Caps,
+    k: &dyn Fn(usize) -> bool,
+) -> bool {
     match node {
         Node::Char(c) => chars.get(pos) == Some(c) && k(pos + 1),
         Node::Any => pos < chars.len() && k(pos + 1),
@@ -292,7 +320,9 @@ fn match_node(node: &Node, chars: &[char], pos: usize, caps: &Caps, k: &dyn Fn(u
         Node::Concat(items) => match_concat(items, chars, pos, caps, k),
         Node::Alt(branches) => branches.iter().any(|b| match_node(b, chars, pos, caps, k)),
         Node::Star(inner) => match_star(inner, chars, pos, caps, k),
-        Node::Plus(inner) => match_node(inner, chars, pos, caps, &|p2| match_star(inner, chars, p2, caps, k)),
+        Node::Plus(inner) => match_node(inner, chars, pos, caps, &|p2| {
+            match_star(inner, chars, p2, caps, k)
+        }),
         Node::Opt(inner) => match_node(inner, chars, pos, caps, k) || k(pos),
         // Records `[start, end)` for this group right before continuing, and
         // restores whatever was there before on backtrack (failed `k`) — so
@@ -314,10 +344,18 @@ fn match_node(node: &Node, chars: &[char], pos: usize, caps: &Caps, k: &dyn Fn(u
     }
 }
 
-fn match_concat(items: &[Node], chars: &[char], pos: usize, caps: &Caps, k: &dyn Fn(usize) -> bool) -> bool {
+fn match_concat(
+    items: &[Node],
+    chars: &[char],
+    pos: usize,
+    caps: &Caps,
+    k: &dyn Fn(usize) -> bool,
+) -> bool {
     match items.split_first() {
         None => k(pos),
-        Some((first, rest)) => match_node(first, chars, pos, caps, &|p2| match_concat(rest, chars, p2, caps, k)),
+        Some((first, rest)) => match_node(first, chars, pos, caps, &|p2| {
+            match_concat(rest, chars, p2, caps, k)
+        }),
     }
 }
 
@@ -325,8 +363,16 @@ fn match_concat(items: &[Node], chars: &[char], pos: usize, caps: &Caps, k: &dyn
 /// continuation. Guards against infinite recursion on a zero-width
 /// repetition (e.g. a pathological `(a?)*`) by requiring every repetition to
 /// strictly advance past the previous one.
-fn match_star(inner: &Node, chars: &[char], pos: usize, caps: &Caps, k: &dyn Fn(usize) -> bool) -> bool {
-    match_node(inner, chars, pos, caps, &|p2| p2 > pos && match_star(inner, chars, p2, caps, k)) || k(pos)
+fn match_star(
+    inner: &Node,
+    chars: &[char],
+    pos: usize,
+    caps: &Caps,
+    k: &dyn Fn(usize) -> bool,
+) -> bool {
+    match_node(inner, chars, pos, caps, &|p2| {
+        p2 > pos && match_star(inner, chars, p2, caps, k)
+    }) || k(pos)
 }
 
 #[cfg(test)]
@@ -372,8 +418,14 @@ mod tests {
         let m = re.find("abc123def").expect("should find a match");
         assert_eq!(m.start, 3);
         assert_eq!(m.end, 6);
-        assert!(Regex::compile("^\\d+$").expect("valid pattern").find("abc123").is_none());
-        assert!(Regex::compile("^\\d+$").expect("valid pattern").find("123").is_some());
+        assert!(Regex::compile("^\\d+$")
+            .expect("valid pattern")
+            .find("abc123")
+            .is_none());
+        assert!(Regex::compile("^\\d+$")
+            .expect("valid pattern")
+            .find("123")
+            .is_some());
     }
 
     #[test]
@@ -381,7 +433,9 @@ mod tests {
         let re = Regex::compile("(\\d+)-(\\d+)").expect("valid pattern");
         let m = re.find("id 12-34 end").expect("should find a match");
         let chars: Vec<char> = "id 12-34 end".chars().collect();
-        let group = |span: Option<(usize, usize)>| span.map(|(s, e)| chars[s..e].iter().collect::<String>());
+        let group = |span: Option<(usize, usize)>| {
+            span.map(|(s, e)| chars[s..e].iter().collect::<String>())
+        };
         assert_eq!(group(m.groups[0]), Some("12".to_string()));
         assert_eq!(group(m.groups[1]), Some("34".to_string()));
     }

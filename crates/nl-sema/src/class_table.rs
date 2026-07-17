@@ -18,6 +18,16 @@ pub struct FieldInfo {
 pub struct MethodInfo {
     pub name: String,
     pub params: Vec<Type>,
+    /// Parallel to `params` — parameter names, needed to bind named
+    /// arguments (compiler.md § Named and optional parameter rules).
+    pub param_names: Vec<String>,
+    /// How many leading parameters have no default value — everything past
+    /// this index is optional. Used for range-based (rather than exact)
+    /// arity matching, and for E023 ("required parameter not provided").
+    pub required_count: usize,
+    /// Parallel to `params` — compiler.md § Ref parameter rules
+    /// (E020-E022).
+    pub is_ref: Vec<bool>,
     pub return_ty: Type,
     pub is_static: bool,
     pub is_const: bool,
@@ -33,8 +43,31 @@ pub struct MethodInfo {
 #[derive(Debug, Clone)]
 pub struct CtorInfo {
     pub params: Vec<Type>,
+    /// See `MethodInfo::param_names`.
+    pub param_names: Vec<String>,
+    /// See `MethodInfo::required_count`.
+    pub required_count: usize,
+    /// See `MethodInfo::is_ref`.
+    pub is_ref: Vec<bool>,
     pub throws: Vec<Type>,
     pub visibility: Visibility,
+}
+
+/// How many leading parameters of `params` have no default value —
+/// everything past this index is optional (specs.md § Optional parameters:
+/// "must be placed after all required parameters").
+pub fn required_count(params: &[nl_syntax::ast::Param]) -> usize {
+    params.iter().take_while(|p| p.default.is_none()).count()
+}
+
+/// Whether a call supplying `argc` total arguments (positional + named)
+/// could possibly bind against `params` — a range check rather than an
+/// exact-arity one now that optional parameters exist. Best-effort, like
+/// the rest of this checker's arity-only overload resolution: named
+/// arguments can make the true binding non-contiguous, but `argc` alone is
+/// enough to pick the right overload in every case this codebase exercises.
+pub fn arity_in_range(required: usize, total: usize, argc: usize) -> bool {
+    required <= argc && argc <= total
 }
 
 #[derive(Debug, Clone)]
@@ -119,10 +152,13 @@ pub fn import_map(file: &SourceFile, all_files: &[SourceFile]) -> HashMap<String
     };
     map.insert(simple, fqcn);
     for u in &file.uses {
-        let simple = u
-            .alias
-            .clone()
-            .unwrap_or_else(|| u.path.rsplit('.').next().expect("use path is never empty").to_string());
+        let simple = u.alias.clone().unwrap_or_else(|| {
+            u.path
+                .rsplit('.')
+                .next()
+                .expect("use path is never empty")
+                .to_string()
+        });
         map.insert(simple, u.path.clone());
     }
     map
@@ -130,18 +166,28 @@ pub fn import_map(file: &SourceFile, all_files: &[SourceFile]) -> HashMap<String
 
 pub fn resolve_type(ty: &Type, imports: &HashMap<String, String>) -> Type {
     match ty {
-        Type::Named(name) => Type::Named(imports.get(name).cloned().unwrap_or_else(|| name.clone())),
+        Type::Named(name) => {
+            Type::Named(imports.get(name).cloned().unwrap_or_else(|| name.clone()))
+        }
         Type::Array(inner) => Type::Array(Box::new(resolve_type(inner, imports))),
-        Type::Union(members) => Type::Union(members.iter().map(|m| resolve_type(m, imports)).collect()),
+        Type::Union(members) => {
+            Type::Union(members.iter().map(|m| resolve_type(m, imports)).collect())
+        }
         other => other.clone(),
     }
 }
 
 /// Best-effort constructor resolution by arity — mirrors `nl_codegen`'s
 /// `find_ctor` (constructor overloads are only distinguished by arity this
-/// phase; see PLAN.md).
+/// phase; see PLAN.md). Range-based rather than exact since optional
+/// parameters (compiler.md § Named and optional parameter rules) let a
+/// single constructor accept a span of argument counts.
 pub fn find_ctor<'c>(classes: &'c ClassTable, fqcn: &str, argc: usize) -> Option<&'c CtorInfo> {
-    classes.get(fqcn)?.ctors.iter().find(|c| c.params.len() == argc)
+    classes
+        .get(fqcn)?
+        .ctors
+        .iter()
+        .find(|c| arity_in_range(c.required_count, c.params.len(), argc))
 }
 
 /// Walks `fqcn`'s direct-superclass chain (starting at `fqcn` itself)
@@ -149,11 +195,20 @@ pub fn find_ctor<'c>(classes: &'c ClassTable, fqcn: &str, argc: usize) -> Option
 /// Unlike `find_method`'s arity-only matching (good enough for resolving a
 /// call site), overriding requires an exact signature match — used by
 /// E016/E017 to find the specific parent method a subclass method overrides.
-pub fn find_method_exact<'c>(classes: &'c ClassTable, fqcn: &str, name: &str, params: &[Type]) -> Option<&'c MethodInfo> {
+pub fn find_method_exact<'c>(
+    classes: &'c ClassTable,
+    fqcn: &str,
+    name: &str,
+    params: &[Type],
+) -> Option<&'c MethodInfo> {
     let mut current = fqcn;
     loop {
         let info = classes.get(current)?;
-        if let Some(m) = info.methods.iter().find(|m| m.name == name && m.params == params) {
+        if let Some(m) = info
+            .methods
+            .iter()
+            .find(|m| m.name == name && m.params == params)
+        {
             return Some(m);
         }
         current = info.extends.as_deref()?;
@@ -165,7 +220,11 @@ pub fn find_method_exact<'c>(classes: &'c ClassTable, fqcn: &str, name: &str, pa
 /// actually *declares* it — needed by compiler.md § Visibility enforcement
 /// (E018) to check `private`/`protected` against the declaring class, not
 /// whichever subclass the reference happened to be typed as.
-pub fn find_field_owner(classes: &ClassTable, fqcn: &str, name: &str) -> Option<(String, FieldInfo)> {
+pub fn find_field_owner(
+    classes: &ClassTable,
+    fqcn: &str,
+    name: &str,
+) -> Option<(String, FieldInfo)> {
     let mut current = fqcn.to_string();
     loop {
         let info = classes.get(&current)?;
@@ -176,11 +235,20 @@ pub fn find_field_owner(classes: &ClassTable, fqcn: &str, name: &str) -> Option<
     }
 }
 
-pub fn find_method_owner(classes: &ClassTable, fqcn: &str, name: &str, argc: usize) -> Option<(String, MethodInfo)> {
+pub fn find_method_owner(
+    classes: &ClassTable,
+    fqcn: &str,
+    name: &str,
+    argc: usize,
+) -> Option<(String, MethodInfo)> {
     let mut current = fqcn.to_string();
     loop {
         let info = classes.get(&current)?;
-        if let Some(m) = info.methods.iter().find(|m| m.name == name && m.params.len() == argc) {
+        if let Some(m) = info
+            .methods
+            .iter()
+            .find(|m| m.name == name && arity_in_range(m.required_count, m.params.len(), argc))
+        {
             return Some((current, m.clone()));
         }
         current = info.extends.clone()?;
@@ -217,12 +285,18 @@ pub fn satisfies_bound(classes: &ClassTable, concrete_fqcn: &str, bound_fqcn: &s
 /// class that actually declares the member (see `find_field_owner`/
 /// `find_method_owner`); `accessor_fqcn` is the class containing the
 /// reference being checked.
-pub fn is_accessible(classes: &ClassTable, visibility: Visibility, declaring_fqcn: &str, accessor_fqcn: &str) -> bool {
+pub fn is_accessible(
+    classes: &ClassTable,
+    visibility: Visibility,
+    declaring_fqcn: &str,
+    accessor_fqcn: &str,
+) -> bool {
     match visibility {
         Visibility::Public => true,
         Visibility::Private => accessor_fqcn == declaring_fqcn,
         Visibility::Protected => {
-            accessor_fqcn == declaring_fqcn || is_subclass_or_same(classes, accessor_fqcn, declaring_fqcn)
+            accessor_fqcn == declaring_fqcn
+                || is_subclass_or_same(classes, accessor_fqcn, declaring_fqcn)
         }
     }
 }
@@ -245,7 +319,10 @@ pub fn build_class_table(files: &[SourceFile]) -> ClassTable {
                     })
                     .collect();
                 let resolve_throws = |m: &nl_syntax::ast::MethodDecl| -> Vec<Type> {
-                    m.throws.iter().map(|n| Type::Named(imports.get(n).cloned().unwrap_or_else(|| n.clone()))).collect()
+                    m.throws
+                        .iter()
+                        .map(|n| Type::Named(imports.get(n).cloned().unwrap_or_else(|| n.clone())))
+                        .collect()
                 };
                 let methods = class
                     .methods
@@ -253,7 +330,14 @@ pub fn build_class_table(files: &[SourceFile]) -> ClassTable {
                     .filter(|m| m.kind == MethodKind::Normal)
                     .map(|m| MethodInfo {
                         name: m.name.clone(),
-                        params: m.params.iter().map(|p| resolve_type(&p.ty, &imports)).collect(),
+                        params: m
+                            .params
+                            .iter()
+                            .map(|p| resolve_type(&p.ty, &imports))
+                            .collect(),
+                        param_names: m.params.iter().map(|p| p.name.clone()).collect(),
+                        is_ref: m.params.iter().map(|p| p.is_ref).collect(),
+                        required_count: required_count(&m.params),
                         return_ty: resolve_type(&m.return_type, &imports),
                         is_static: m.is_static,
                         is_const: m.is_const,
@@ -268,7 +352,14 @@ pub fn build_class_table(files: &[SourceFile]) -> ClassTable {
                     .iter()
                     .filter(|m| m.kind == MethodKind::Constructor)
                     .map(|m| CtorInfo {
-                        params: m.params.iter().map(|p| resolve_type(&p.ty, &imports)).collect(),
+                        params: m
+                            .params
+                            .iter()
+                            .map(|p| resolve_type(&p.ty, &imports))
+                            .collect(),
+                        param_names: m.params.iter().map(|p| p.name.clone()).collect(),
+                        is_ref: m.params.iter().map(|p| p.is_ref).collect(),
+                        required_count: required_count(&m.params),
                         throws: resolve_throws(m),
                         visibility: m.visibility,
                     })
@@ -278,7 +369,10 @@ pub fn build_class_table(files: &[SourceFile]) -> ClassTable {
                     .iter()
                     .map(|n| imports.get(n).cloned().unwrap_or_else(|| n.clone()))
                     .collect();
-                let extends = class.extends.as_ref().map(|n| imports.get(n).cloned().unwrap_or_else(|| n.clone()));
+                let extends = class
+                    .extends
+                    .as_ref()
+                    .map(|n| imports.get(n).cloned().unwrap_or_else(|| n.clone()));
                 ClassInfo {
                     extends,
                     implements,
@@ -296,7 +390,14 @@ pub fn build_class_table(files: &[SourceFile]) -> ClassTable {
                     .iter()
                     .map(|m| MethodInfo {
                         name: m.name.clone(),
-                        params: m.params.iter().map(|p| resolve_type(&p.ty, &imports)).collect(),
+                        params: m
+                            .params
+                            .iter()
+                            .map(|p| resolve_type(&p.ty, &imports))
+                            .collect(),
+                        param_names: m.params.iter().map(|p| p.name.clone()).collect(),
+                        is_ref: m.params.iter().map(|p| p.is_ref).collect(),
+                        required_count: required_count(&m.params),
                         return_ty: resolve_type(&m.return_type, &imports),
                         is_static: false,
                         is_const: m.is_const,

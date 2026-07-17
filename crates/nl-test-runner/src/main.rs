@@ -22,8 +22,8 @@ fn main() -> Result<()> {
 
     for path in &entries {
         let name = path.file_name().unwrap().to_string_lossy().to_string();
-        let content = std::fs::read_to_string(path)
-            .with_context(|| format!("reading {}", path.display()))?;
+        let content =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
 
         let test = match testfile::parse_test_file(&content) {
             Ok(t) => t,
@@ -47,7 +47,10 @@ fn main() -> Result<()> {
     }
 
     println!("---");
-    println!("{passed} passed, {failed} failed, {} total", passed + failed);
+    println!(
+        "{passed} passed, {failed} failed, {} total",
+        passed + failed
+    );
 
     if failed > 0 {
         std::process::exit(1);

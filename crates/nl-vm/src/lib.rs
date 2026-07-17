@@ -4,8 +4,8 @@ mod mini_regex;
 mod mini_tz;
 mod native;
 mod net_http;
-mod text;
 pub mod program;
+mod text;
 pub mod value;
 
 pub use error::VmError;

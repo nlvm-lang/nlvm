@@ -27,7 +27,10 @@ pub fn is_numeric(ty: &Type) -> bool {
 /// E006) without needing the original `Type` value, only its error-message
 /// string.
 pub fn is_primitive_display(s: &str) -> bool {
-    matches!(s, "int" | "float" | "bool" | "byte" | "string" | "void" | "null")
+    matches!(
+        s,
+        "int" | "float" | "bool" | "byte" | "string" | "void" | "null"
+    )
 }
 
 /// Numeric widening lattice: `byte` -> `int` -> `float` (specs.md § Type
@@ -77,14 +80,12 @@ pub fn is_assignable(value_ty: &Type, target_ty: &Type) -> bool {
         return is_nullable(target_ty);
     }
     let target_members = members(target_ty);
-    members(value_ty)
-        .iter()
-        .all(|vm| {
-            if matches!(vm, Type::NullT) {
-                return target_members.iter().any(|tm| matches!(tm, Type::NullT));
-            }
-            target_members.iter().any(|tm| atom_assignable(vm, tm))
-        })
+    members(value_ty).iter().all(|vm| {
+        if matches!(vm, Type::NullT) {
+            return target_members.iter().any(|tm| matches!(tm, Type::NullT));
+        }
+        target_members.iter().any(|tm| atom_assignable(vm, tm))
+    })
 }
 
 /// Human-readable type name for error messages (E003/E004/E008/E009).
@@ -104,6 +105,9 @@ pub fn display(ty: &Type) -> String {
         // `nl_syntax::monomorphize` before this checker ever runs; formatted
         // rather than panicking since this is only ever used for an error
         // message, and a best-effort rendering beats crashing the compiler.
-        Type::Generic(name, args) => format!("{name}<{}>", args.iter().map(display).collect::<Vec<_>>().join(", ")),
+        Type::Generic(name, args) => format!(
+            "{name}<{}>",
+            args.iter().map(display).collect::<Vec<_>>().join(", ")
+        ),
     }
 }

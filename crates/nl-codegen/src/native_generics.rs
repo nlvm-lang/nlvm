@@ -81,9 +81,15 @@ fn parse_type_segment(s: &str) -> Type {
 /// `"system.Map<string, int>"` -> `[StringT, Int]`. Panics if `fqcn` isn't
 /// a mangled generic name (callers only reach here after `kind_of` matched).
 fn type_args(fqcn: &str) -> Vec<Type> {
-    let start = fqcn.find('<').expect("type_args called on non-generic fqcn") + 1;
+    let start = fqcn
+        .find('<')
+        .expect("type_args called on non-generic fqcn")
+        + 1;
     let inner = &fqcn[start..fqcn.len() - 1];
-    split_top_level(inner).into_iter().map(parse_type_segment).collect()
+    split_top_level(inner)
+        .into_iter()
+        .map(parse_type_segment)
+        .collect()
 }
 
 /// Constructor parameter types for `fqcn`'s `argc`-ary `construct`, or
@@ -114,7 +120,9 @@ pub fn method_signature(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type
                 ("size", 0) => Some((vec![], Type::Int)),
                 ("get", 1) => Some((vec![Type::Int], t)),
                 ("set", 2) => Some((vec![Type::Int, t.clone()], Type::Void)),
-                ("pushBack", 1) | ("pushFront", 1) | ("add", 1) => Some((vec![t.clone()], Type::Void)),
+                ("pushBack", 1) | ("pushFront", 1) | ("add", 1) => {
+                    Some((vec![t.clone()], Type::Void))
+                }
                 ("popBack", 0) | ("popFront", 0) => Some((vec![], t)),
                 ("remove", 1) => Some((vec![Type::Int], t)),
                 ("contains", 1) => Some((vec![t.clone()], Type::Bool)),
@@ -132,7 +140,10 @@ pub fn method_signature(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type
                 ("has", 1) => Some((vec![k.clone()], Type::Bool)),
                 ("keys", 0) => Some((vec![], Type::Array(Box::new(k.clone())))),
                 ("values", 0) => Some((vec![], Type::Array(Box::new(v.clone())))),
-                ("entries", 0) => Some((vec![], Type::Array(Box::new(Type::Named(entry_fqcn_of_map(fqcn)))))),
+                ("entries", 0) => Some((
+                    vec![],
+                    Type::Array(Box::new(Type::Named(entry_fqcn_of_map(fqcn)))),
+                )),
                 // `map.forEach((K key, V value) => void f)` — `Type::Void`
                 // param, same joker used for `system.thread.Thread`'s
                 // `() => void` constructor argument (`Emitter::coerce_value`

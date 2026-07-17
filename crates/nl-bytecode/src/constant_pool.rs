@@ -7,7 +7,9 @@ pub enum ConstantPoolEntry {
     /// String literal or identifier (UTF-8 bytes).
     Utf8(String),
     /// Fully qualified class name (index to a `Utf8` entry).
-    Class { name_index: u16 },
+    Class {
+        name_index: u16,
+    },
     FieldRef {
         class_index: u16,
         name_index: u16,
@@ -19,7 +21,9 @@ pub enum ConstantPoolEntry {
         descriptor_index: u16,
     },
     /// Type descriptor string (index to a `Utf8` entry).
-    TypeDesc { desc_index: u16 },
+    TypeDesc {
+        desc_index: u16,
+    },
 }
 
 impl ConstantPoolEntry {
@@ -44,7 +48,9 @@ pub struct ConstantPool {
 
 impl ConstantPool {
     pub fn new() -> Self {
-        Self { entries: Vec::new() }
+        Self {
+            entries: Vec::new(),
+        }
     }
 
     pub fn entries(&self) -> &[ConstantPoolEntry] {
@@ -78,9 +84,9 @@ impl ConstantPool {
 
     pub fn add_float(&mut self, value: f64) -> u16 {
         // f64 has no total order/Eq; intern by bit pattern to keep dedup correct.
-        if let Some(pos) = self.entries.iter().position(|e| {
-            matches!(e, ConstantPoolEntry::Float(v) if v.to_bits() == value.to_bits())
-        }) {
+        if let Some(pos) = self.entries.iter().position(
+            |e| matches!(e, ConstantPoolEntry::Float(v) if v.to_bits() == value.to_bits()),
+        ) {
             return (pos + 1) as u16;
         }
         self.push(ConstantPoolEntry::Float(value))
@@ -103,7 +109,12 @@ impl ConstantPool {
         })
     }
 
-    pub fn add_method_ref(&mut self, class_index: u16, name_index: u16, descriptor_index: u16) -> u16 {
+    pub fn add_method_ref(
+        &mut self,
+        class_index: u16,
+        name_index: u16,
+        descriptor_index: u16,
+    ) -> u16 {
         self.intern(ConstantPoolEntry::MethodRef {
             class_index,
             name_index,

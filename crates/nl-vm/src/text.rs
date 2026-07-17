@@ -23,14 +23,25 @@ pub fn build_regex_match(m: &mini_regex::Match, chars: &[char]) -> Value {
     let slice = |s: usize, e: usize| -> String { chars[s..e].iter().collect() };
     let full_match = slice(m.start, m.end);
     let mut groups = vec![Value::Str(Arc::new(full_match.clone()))];
-    groups.extend(m.groups.iter().map(|g| Value::Str(Arc::new(g.map(|(s, e)| slice(s, e)).unwrap_or_default()))));
+    groups.extend(
+        m.groups
+            .iter()
+            .map(|g| Value::Str(Arc::new(g.map(|(s, e)| slice(s, e)).unwrap_or_default()))),
+    );
     let mut fields = HashMap::new();
     fields.insert("fullMatch".to_string(), Value::Str(Arc::new(full_match)));
-    fields.insert("groups".to_string(), Value::Array(Arc::new(Mutex::new(groups))));
-    Value::Object(Arc::new(Mutex::new(Object::native("system.text.RegexMatch", fields))))
+    fields.insert(
+        "groups".to_string(),
+        Value::Array(Arc::new(Mutex::new(groups))),
+    );
+    Value::Object(Arc::new(Mutex::new(Object::native(
+        "system.text.RegexMatch",
+        fields,
+    ))))
 }
 
-const BASE64_ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const BASE64_ALPHABET: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 /// Standard (RFC 4648) base64 with `=` padding.
 pub fn base64_encode(bytes: &[u8]) -> String {
@@ -46,7 +57,11 @@ pub fn base64_encode(bytes: &[u8]) -> String {
         } else {
             '='
         });
-        out.push(if chunk.len() > 2 { BASE64_ALPHABET[(b2 & 0x3f) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 2 {
+            BASE64_ALPHABET[(b2 & 0x3f) as usize] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -84,7 +99,16 @@ mod tests {
 
     #[test]
     fn roundtrip() {
-        for s in ["", "f", "fo", "foo", "foob", "fooba", "foobar", "hello, world!"] {
+        for s in [
+            "",
+            "f",
+            "fo",
+            "foo",
+            "foob",
+            "fooba",
+            "foobar",
+            "hello, world!",
+        ] {
             let encoded = base64_encode(s.as_bytes());
             assert_eq!(base64_decode(&encoded).unwrap(), s.as_bytes());
         }

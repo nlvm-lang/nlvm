@@ -40,7 +40,8 @@
 use std::collections::HashMap;
 
 use crate::ast::{
-    Block, ClassDecl, ClosureBody, Expr, FieldDecl, LValue, MethodDecl, SourceFile, SourceItem, Stmt, Type,
+    Arg, Block, ClassDecl, ClosureBody, Expr, FieldDecl, LValue, MethodDecl, SourceFile,
+    SourceItem, Stmt, Type,
 };
 
 struct TemplateInfo {
@@ -59,7 +60,13 @@ pub fn collect_instantiations(files: &[SourceFile]) -> HashMap<String, (String, 
     for file in files {
         if let SourceItem::Class(class) = &file.item {
             if !class.type_params.is_empty() {
-                templates.insert(fqcn_of(file), TemplateInfo { namespace: file.namespace.clone(), decl: class.clone() });
+                templates.insert(
+                    fqcn_of(file),
+                    TemplateInfo {
+                        namespace: file.namespace.clone(),
+                        decl: class.clone(),
+                    },
+                );
             }
         }
     }
@@ -76,7 +83,13 @@ pub fn expand(files: Vec<SourceFile>) -> Vec<SourceFile> {
     for file in &files {
         if let SourceItem::Class(class) = &file.item {
             if !class.type_params.is_empty() {
-                templates.insert(fqcn_of(file), TemplateInfo { namespace: file.namespace.clone(), decl: class.clone() });
+                templates.insert(
+                    fqcn_of(file),
+                    TemplateInfo {
+                        namespace: file.namespace.clone(),
+                        decl: class.clone(),
+                    },
+                );
             }
         }
     }
@@ -99,21 +112,91 @@ pub fn expand(files: Vec<SourceFile>) -> Vec<SourceFile> {
         out.push(rewrite_file(file, &imports, &templates));
     }
 
+    let mut generated: Vec<SourceFile> = Vec::with_capacity(instantiations.len());
     for (mangled_fqcn, (template_fqcn, args)) in &instantiations {
-        let template = &templates[template_fqcn];
-        let subst: HashMap<String, Type> =
-            template.decl.type_params.iter().map(|tp| tp.name.clone()).zip(args.iter().cloned()).collect();
-        let mut decl = subst_class(&template.decl, &subst);
-        decl.type_params = Vec::new();
-        decl.name = mangled_fqcn.strip_prefix(&format!("{}.", template.namespace.join("."))).unwrap_or(mangled_fqcn).to_string();
-        // For a namespace-less template, `strip_prefix` above has nothing
-        // to strip (empty namespace never produces a `"."`-joined prefix),
-        // so `decl.name` is already the whole mangled FQCN in that case —
-        // consistent with `fqcn_of` treating the bare name as the FQCN.
-        out.push(SourceFile { namespace: template.namespace.clone(), uses: Vec::new(), item: SourceItem::Class(decl) });
+        generated.push(generate_instantiation(
+            &templates,
+            mangled_fqcn,
+            template_fqcn,
+            args,
+        ));
     }
 
+    // vm.md § Ref parameters (boxing) — synthesize a `Box<T>` instantiation
+    // (`nl_syntax::prelude::box_class`) for every concrete `T` used as a
+    // `ref` parameter's type, across both the already-expanded plain
+    // classes (`out`) and the just-generated template instantiations
+    // (`generated`). A `ref` parameter inside a template body only has a
+    // concrete type *after* substitution, so this can't run any earlier
+    // than here — but by this point every parameter type in both lists is
+    // fully concrete (`out` went through `rewrite_file`, `generated`
+    // through `subst_class`), so no `imports` resolution is needed.
+    let mut box_instantiations: HashMap<String, (String, Vec<Type>)> = HashMap::new();
+    for file in out.iter().chain(generated.iter()) {
+        if let SourceItem::Class(class) = &file.item {
+            collect_ref_box_requests(class, &mut box_instantiations);
+        }
+    }
+    for (mangled_fqcn, (template_fqcn, args)) in &box_instantiations {
+        generated.push(generate_instantiation(
+            &templates,
+            mangled_fqcn,
+            template_fqcn,
+            args,
+        ));
+    }
+
+    out.extend(generated);
     out
+}
+
+/// Synthesizes the monomorphized `SourceFile` for one `(template, concrete
+/// args)` instantiation — the template's `ClassDecl` with every type
+/// parameter substituted, renamed to the mangled FQCN (e.g. `"Vector<int>"`,
+/// or `"Box<int>"` for a ref-parameter box). Shared by ordinary user/native
+/// template instantiations and the synthetic `Box<T>` ones.
+fn generate_instantiation(
+    templates: &HashMap<String, TemplateInfo>,
+    mangled_fqcn: &str,
+    template_fqcn: &str,
+    args: &[Type],
+) -> SourceFile {
+    let template = &templates[template_fqcn];
+    let subst: HashMap<String, Type> = template
+        .decl
+        .type_params
+        .iter()
+        .map(|tp| tp.name.clone())
+        .zip(args.iter().cloned())
+        .collect();
+    let mut decl = subst_class(&template.decl, &subst);
+    decl.type_params = Vec::new();
+    decl.name = mangled_fqcn
+        .strip_prefix(&format!("{}.", template.namespace.join(".")))
+        .unwrap_or(mangled_fqcn)
+        .to_string();
+    // For a namespace-less template, `strip_prefix` above has nothing to
+    // strip (empty namespace never produces a `"."`-joined prefix), so
+    // `decl.name` is already the whole mangled FQCN in that case —
+    // consistent with `fqcn_of` treating the bare name as the FQCN.
+    SourceFile {
+        namespace: template.namespace.clone(),
+        uses: Vec::new(),
+        item: SourceItem::Class(decl),
+    }
+}
+
+/// See `expand`'s "Ref parameters (boxing)" comment. `class`'s parameter
+/// types are already fully concrete by the time this runs.
+fn collect_ref_box_requests(class: &ClassDecl, out: &mut HashMap<String, (String, Vec<Type>)>) {
+    for m in &class.methods {
+        for p in &m.params {
+            if p.is_ref {
+                let mangled = format!("Box<{}>", mangle_type(&p.ty));
+                out.insert(mangled, ("Box".to_string(), vec![p.ty.clone()]));
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -153,17 +236,23 @@ fn import_map(file: &SourceFile, all_files: &[SourceFile]) -> HashMap<String, St
     };
     map.insert(simple, fqcn_of(file));
     for u in &file.uses {
-        let simple = u
-            .alias
-            .clone()
-            .unwrap_or_else(|| u.path.rsplit('.').next().expect("use path is never empty").to_string());
+        let simple = u.alias.clone().unwrap_or_else(|| {
+            u.path
+                .rsplit('.')
+                .next()
+                .expect("use path is never empty")
+                .to_string()
+        });
         map.insert(simple, u.path.clone());
     }
     map
 }
 
 fn resolve_name(name: &str, imports: &HashMap<String, String>) -> String {
-    imports.get(name).cloned().unwrap_or_else(|| name.to_string())
+    imports
+        .get(name)
+        .cloned()
+        .unwrap_or_else(|| name.to_string())
 }
 
 /// `system.List`/`system.Map` — the two native template classes (vm.md §
@@ -188,8 +277,15 @@ fn mangle_type(ty: &Type) -> String {
         Type::NullT => "null".to_string(),
         Type::Array(inner) => format!("{}[]", mangle_type(inner)),
         Type::Named(name) => name.clone(),
-        Type::Union(members) => members.iter().map(mangle_type).collect::<Vec<_>>().join("|"),
-        Type::Generic(name, args) => format!("{name}<{}>", args.iter().map(mangle_type).collect::<Vec<_>>().join(", ")),
+        Type::Union(members) => members
+            .iter()
+            .map(mangle_type)
+            .collect::<Vec<_>>()
+            .join("|"),
+        Type::Generic(name, args) => format!(
+            "{name}<{}>",
+            args.iter().map(mangle_type).collect::<Vec<_>>().join(", ")
+        ),
     }
 }
 
@@ -200,10 +296,18 @@ fn resolve_type_names(ty: &Type, imports: &HashMap<String, String>) -> Type {
     match ty {
         Type::Named(name) => Type::Named(resolve_name(name, imports)),
         Type::Array(inner) => Type::Array(Box::new(resolve_type_names(inner, imports))),
-        Type::Union(members) => Type::Union(members.iter().map(|m| resolve_type_names(m, imports)).collect()),
-        Type::Generic(name, args) => {
-            Type::Generic(resolve_name(name, imports), args.iter().map(|a| resolve_type_names(a, imports)).collect())
-        }
+        Type::Union(members) => Type::Union(
+            members
+                .iter()
+                .map(|m| resolve_type_names(m, imports))
+                .collect(),
+        ),
+        Type::Generic(name, args) => Type::Generic(
+            resolve_name(name, imports),
+            args.iter()
+                .map(|a| resolve_type_names(a, imports))
+                .collect(),
+        ),
         other => other.clone(),
     }
 }
@@ -219,7 +323,9 @@ fn collect_file(
     templates: &HashMap<String, TemplateInfo>,
     out: &mut HashMap<String, (String, Vec<Type>)>,
 ) {
-    let SourceItem::Class(class) = &file.item else { return };
+    let SourceItem::Class(class) = &file.item else {
+        return;
+    };
     for f in &class.fields {
         collect_type(&f.ty, imports, templates, out);
         if let Some(e) = &f.init {
@@ -235,7 +341,12 @@ fn collect_file(
     }
 }
 
-fn collect_type(ty: &Type, imports: &HashMap<String, String>, templates: &HashMap<String, TemplateInfo>, out: &mut HashMap<String, (String, Vec<Type>)>) {
+fn collect_type(
+    ty: &Type,
+    imports: &HashMap<String, String>,
+    templates: &HashMap<String, TemplateInfo>,
+    out: &mut HashMap<String, (String, Vec<Type>)>,
+) {
     match ty {
         Type::Generic(name, args) => {
             for a in args {
@@ -243,8 +354,18 @@ fn collect_type(ty: &Type, imports: &HashMap<String, String>, templates: &HashMa
             }
             let fqcn = resolve_name(name, imports);
             if templates.contains_key(&fqcn) {
-                let resolved_args: Vec<Type> = args.iter().map(|a| resolve_type_names(a, imports)).collect();
-                let mangled = format!("{fqcn}<{}>", resolved_args.iter().map(mangle_type).collect::<Vec<_>>().join(", "));
+                let resolved_args: Vec<Type> = args
+                    .iter()
+                    .map(|a| resolve_type_names(a, imports))
+                    .collect();
+                let mangled = format!(
+                    "{fqcn}<{}>",
+                    resolved_args
+                        .iter()
+                        .map(mangle_type)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
                 out.insert(mangled, (fqcn, resolved_args));
             }
         }
@@ -258,13 +379,23 @@ fn collect_type(ty: &Type, imports: &HashMap<String, String>, templates: &HashMa
     }
 }
 
-fn collect_block(block: &Block, imports: &HashMap<String, String>, templates: &HashMap<String, TemplateInfo>, out: &mut HashMap<String, (String, Vec<Type>)>) {
+fn collect_block(
+    block: &Block,
+    imports: &HashMap<String, String>,
+    templates: &HashMap<String, TemplateInfo>,
+    out: &mut HashMap<String, (String, Vec<Type>)>,
+) {
     for stmt in block {
         collect_stmt(stmt, imports, templates, out);
     }
 }
 
-fn collect_stmt(stmt: &Stmt, imports: &HashMap<String, String>, templates: &HashMap<String, TemplateInfo>, out: &mut HashMap<String, (String, Vec<Type>)>) {
+fn collect_stmt(
+    stmt: &Stmt,
+    imports: &HashMap<String, String>,
+    templates: &HashMap<String, TemplateInfo>,
+    out: &mut HashMap<String, (String, Vec<Type>)>,
+) {
     match stmt {
         Stmt::Return(Some(e)) | Stmt::Throw(e) => collect_expr(e, imports, templates, out),
         Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
@@ -277,7 +408,11 @@ fn collect_stmt(stmt: &Stmt, imports: &HashMap<String, String>, templates: &Hash
                 collect_expr(e, imports, templates, out);
             }
         }
-        Stmt::If { cond, then_branch, else_branch } => {
+        Stmt::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
             collect_expr(cond, imports, templates, out);
             collect_block(then_branch, imports, templates, out);
             if let Some(b) = else_branch {
@@ -288,14 +423,21 @@ fn collect_stmt(stmt: &Stmt, imports: &HashMap<String, String>, templates: &Hash
             collect_expr(cond, imports, templates, out);
             collect_block(body, imports, templates, out);
         }
-        Stmt::ForEach { ty, iterable, body, .. } => {
+        Stmt::ForEach {
+            ty, iterable, body, ..
+        } => {
             if let Some(t) = ty {
                 collect_type(t, imports, templates, out);
             }
             collect_expr(iterable, imports, templates, out);
             collect_block(body, imports, templates, out);
         }
-        Stmt::For { init, cond, step, body } => {
+        Stmt::For {
+            init,
+            cond,
+            step,
+            body,
+        } => {
             for s in init {
                 collect_stmt(s, imports, templates, out);
             }
@@ -310,10 +452,14 @@ fn collect_stmt(stmt: &Stmt, imports: &HashMap<String, String>, templates: &Hash
         Stmt::Block(b) => collect_block(b, imports, templates, out),
         Stmt::ThisCall(args) | Stmt::SuperCall(args) => {
             for a in args {
-                collect_expr(a, imports, templates, out);
+                collect_expr(&a.value, imports, templates, out);
             }
         }
-        Stmt::Try { body, catches, finally } => {
+        Stmt::Try {
+            body,
+            catches,
+            finally,
+        } => {
             collect_block(body, imports, templates, out);
             for c in catches {
                 collect_block(&c.body, imports, templates, out);
@@ -325,16 +471,30 @@ fn collect_stmt(stmt: &Stmt, imports: &HashMap<String, String>, templates: &Hash
     }
 }
 
-fn collect_expr(expr: &Expr, imports: &HashMap<String, String>, templates: &HashMap<String, TemplateInfo>, out: &mut HashMap<String, (String, Vec<Type>)>) {
+fn collect_expr(
+    expr: &Expr,
+    imports: &HashMap<String, String>,
+    templates: &HashMap<String, TemplateInfo>,
+    out: &mut HashMap<String, (String, Vec<Type>)>,
+) {
     match expr {
-        Expr::IntLit(_) | Expr::FloatLit(_) | Expr::BoolLit(_) | Expr::StringLit(_) | Expr::NullLit | Expr::This | Expr::Super | Expr::Ident(_) | Expr::PostIncr(_) | Expr::PostDecr(_) => {}
+        Expr::IntLit(_)
+        | Expr::FloatLit(_)
+        | Expr::BoolLit(_)
+        | Expr::StringLit(_)
+        | Expr::NullLit
+        | Expr::This
+        | Expr::Super
+        | Expr::Ident(_)
+        | Expr::PostIncr(_)
+        | Expr::PostDecr(_) => {}
         Expr::Assign(target, value) => {
             collect_lvalue(target, imports, templates, out);
             collect_expr(value, imports, templates, out);
         }
         Expr::Call(_, args) => {
             for a in args {
-                collect_expr(a, imports, templates, out);
+                collect_expr(&a.value, imports, templates, out);
             }
         }
         Expr::New(name, type_args, args) => {
@@ -344,18 +504,30 @@ fn collect_expr(expr: &Expr, imports: &HashMap<String, String>, templates: &Hash
                 }
                 let fqcn = resolve_name(name, imports);
                 if templates.contains_key(&fqcn) {
-                    let resolved_args: Vec<Type> = type_args.iter().map(|a| resolve_type_names(a, imports)).collect();
-                    let mangled = format!("{fqcn}<{}>", resolved_args.iter().map(mangle_type).collect::<Vec<_>>().join(", "));
+                    let resolved_args: Vec<Type> = type_args
+                        .iter()
+                        .map(|a| resolve_type_names(a, imports))
+                        .collect();
+                    let mangled = format!(
+                        "{fqcn}<{}>",
+                        resolved_args
+                            .iter()
+                            .map(mangle_type)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
                     out.insert(mangled, (fqcn, resolved_args));
                 }
             }
             for a in args {
-                collect_expr(a, imports, templates, out);
+                collect_expr(&a.value, imports, templates, out);
             }
         }
-        Expr::NewArray(elem_ty, size) => {
+        Expr::NewArray(elem_ty, dims) => {
             collect_type(elem_ty, imports, templates, out);
-            collect_expr(size, imports, templates, out);
+            for size in dims.iter().flatten() {
+                collect_expr(size, imports, templates, out);
+            }
         }
         Expr::NewArrayInit(elem_ty, elements) => {
             collect_type(elem_ty, imports, templates, out);
@@ -363,7 +535,9 @@ fn collect_expr(expr: &Expr, imports: &HashMap<String, String>, templates: &Hash
                 collect_expr(e, imports, templates, out);
             }
         }
-        Expr::FieldAccess(target, _) | Expr::InstanceOf(target, _) => collect_expr(target, imports, templates, out),
+        Expr::FieldAccess(target, _) | Expr::InstanceOf(target, _) => {
+            collect_expr(target, imports, templates, out)
+        }
         Expr::Cast(ty, inner) => {
             collect_type(ty, imports, templates, out);
             collect_expr(inner, imports, templates, out);
@@ -371,7 +545,7 @@ fn collect_expr(expr: &Expr, imports: &HashMap<String, String>, templates: &Hash
         Expr::MethodCall(target, _, args) => {
             collect_expr(target, imports, templates, out);
             for a in args {
-                collect_expr(a, imports, templates, out);
+                collect_expr(&a.value, imports, templates, out);
             }
         }
         Expr::Index(target, index) => {
@@ -397,7 +571,12 @@ fn collect_expr(expr: &Expr, imports: &HashMap<String, String>, templates: &Hash
             collect_expr(then_e, imports, templates, out);
             collect_expr(else_e, imports, templates, out);
         }
-        Expr::Closure { params, return_type, body, .. } => {
+        Expr::Closure {
+            params,
+            return_type,
+            body,
+            ..
+        } => {
             for p in params {
                 collect_type(&p.ty, imports, templates, out);
             }
@@ -412,7 +591,12 @@ fn collect_expr(expr: &Expr, imports: &HashMap<String, String>, templates: &Hash
     }
 }
 
-fn collect_lvalue(lvalue: &LValue, imports: &HashMap<String, String>, templates: &HashMap<String, TemplateInfo>, out: &mut HashMap<String, (String, Vec<Type>)>) {
+fn collect_lvalue(
+    lvalue: &LValue,
+    imports: &HashMap<String, String>,
+    templates: &HashMap<String, TemplateInfo>,
+    out: &mut HashMap<String, (String, Vec<Type>)>,
+) {
     match lvalue {
         LValue::Local(_) => {}
         LValue::Field(target, _) => collect_expr(target, imports, templates, out),
@@ -428,15 +612,27 @@ fn collect_lvalue(lvalue: &LValue, imports: &HashMap<String, String>, templates:
 // `Expr::New(with type args)` references to the mangled monomorphized name.
 // ---------------------------------------------------------------------
 
-fn rewrite_file(file: &SourceFile, imports: &HashMap<String, String>, templates: &HashMap<String, TemplateInfo>) -> SourceFile {
+fn rewrite_file(
+    file: &SourceFile,
+    imports: &HashMap<String, String>,
+    templates: &HashMap<String, TemplateInfo>,
+) -> SourceFile {
     let item = match &file.item {
         SourceItem::Class(class) => SourceItem::Class(rewrite_class(class, imports, templates)),
         SourceItem::Interface(iface) => SourceItem::Interface(iface.clone()),
     };
-    SourceFile { namespace: file.namespace.clone(), uses: file.uses.clone(), item }
+    SourceFile {
+        namespace: file.namespace.clone(),
+        uses: file.uses.clone(),
+        item,
+    }
 }
 
-fn rewrite_class(class: &ClassDecl, imports: &HashMap<String, String>, templates: &HashMap<String, TemplateInfo>) -> ClassDecl {
+fn rewrite_class(
+    class: &ClassDecl,
+    imports: &HashMap<String, String>,
+    templates: &HashMap<String, TemplateInfo>,
+) -> ClassDecl {
     let rw_ty = |t: &Type| rewrite_type(t, imports, templates);
     ClassDecl {
         name: class.name.clone(),
@@ -446,130 +642,312 @@ fn rewrite_class(class: &ClassDecl, imports: &HashMap<String, String>, templates
         fields: class
             .fields
             .iter()
-            .map(|f| FieldDecl { ty: rw_ty(&f.ty), init: f.init.as_ref().map(|e| rewrite_expr(e, imports, templates)), ..f.clone() })
+            .map(|f| FieldDecl {
+                ty: rw_ty(&f.ty),
+                init: f.init.as_ref().map(|e| rewrite_expr(e, imports, templates)),
+                ..f.clone()
+            })
             .collect(),
-        methods: class.methods.iter().map(|m| rewrite_method(m, imports, templates)).collect(),
+        methods: class
+            .methods
+            .iter()
+            .map(|m| rewrite_method(m, imports, templates))
+            .collect(),
         is_readonly: class.is_readonly,
         is_abstract: class.is_abstract,
         is_final: class.is_final,
     }
 }
 
-fn rewrite_method(m: &MethodDecl, imports: &HashMap<String, String>, templates: &HashMap<String, TemplateInfo>) -> MethodDecl {
+fn rewrite_method(
+    m: &MethodDecl,
+    imports: &HashMap<String, String>,
+    templates: &HashMap<String, TemplateInfo>,
+) -> MethodDecl {
     MethodDecl {
-        params: m.params.iter().map(|p| crate::ast::Param { name: p.name.clone(), ty: rewrite_type(&p.ty, imports, templates), is_const: p.is_const }).collect(),
+        params: m
+            .params
+            .iter()
+            .map(|p| crate::ast::Param {
+                name: p.name.clone(),
+                ty: rewrite_type(&p.ty, imports, templates),
+                is_const: p.is_const,
+                is_ref: p.is_ref,
+                default: p
+                    .default
+                    .as_ref()
+                    .map(|e| rewrite_expr(e, imports, templates)),
+            })
+            .collect(),
         return_type: rewrite_type(&m.return_type, imports, templates),
         body: rewrite_block(&m.body, imports, templates),
         ..m.clone()
     }
 }
 
-fn rewrite_type(ty: &Type, imports: &HashMap<String, String>, templates: &HashMap<String, TemplateInfo>) -> Type {
+fn rewrite_type(
+    ty: &Type,
+    imports: &HashMap<String, String>,
+    templates: &HashMap<String, TemplateInfo>,
+) -> Type {
     match ty {
         Type::Generic(name, args) => {
-            let args: Vec<Type> = args.iter().map(|a| rewrite_type(a, imports, templates)).collect();
+            let args: Vec<Type> = args
+                .iter()
+                .map(|a| rewrite_type(a, imports, templates))
+                .collect();
             let fqcn = resolve_name(name, imports);
             if templates.contains_key(&fqcn) || is_native_generic(&fqcn) {
-                let resolved_args: Vec<Type> = args.iter().map(|a| resolve_type_names(a, imports)).collect();
-                Type::Named(format!("{fqcn}<{}>", resolved_args.iter().map(mangle_type).collect::<Vec<_>>().join(", ")))
+                let resolved_args: Vec<Type> = args
+                    .iter()
+                    .map(|a| resolve_type_names(a, imports))
+                    .collect();
+                Type::Named(format!(
+                    "{fqcn}<{}>",
+                    resolved_args
+                        .iter()
+                        .map(mangle_type)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
             } else {
                 Type::Generic(name.clone(), args)
             }
         }
         Type::Array(inner) => Type::Array(Box::new(rewrite_type(inner, imports, templates))),
-        Type::Union(members) => Type::Union(members.iter().map(|m| rewrite_type(m, imports, templates)).collect()),
+        Type::Union(members) => Type::Union(
+            members
+                .iter()
+                .map(|m| rewrite_type(m, imports, templates))
+                .collect(),
+        ),
         other => other.clone(),
     }
 }
 
-fn rewrite_block(block: &Block, imports: &HashMap<String, String>, templates: &HashMap<String, TemplateInfo>) -> Block {
-    block.iter().map(|s| rewrite_stmt(s, imports, templates)).collect()
+fn rewrite_block(
+    block: &Block,
+    imports: &HashMap<String, String>,
+    templates: &HashMap<String, TemplateInfo>,
+) -> Block {
+    block
+        .iter()
+        .map(|s| rewrite_stmt(s, imports, templates))
+        .collect()
 }
 
-fn rewrite_stmt(stmt: &Stmt, imports: &HashMap<String, String>, templates: &HashMap<String, TemplateInfo>) -> Stmt {
+fn rewrite_stmt(
+    stmt: &Stmt,
+    imports: &HashMap<String, String>,
+    templates: &HashMap<String, TemplateInfo>,
+) -> Stmt {
     match stmt {
         Stmt::Return(e) => Stmt::Return(e.as_ref().map(|e| rewrite_expr(e, imports, templates))),
         Stmt::Expr(e) => Stmt::Expr(rewrite_expr(e, imports, templates)),
-        Stmt::VarDecl { ty, name, init, is_const } => Stmt::VarDecl {
+        Stmt::VarDecl {
+            ty,
+            name,
+            init,
+            is_const,
+        } => Stmt::VarDecl {
             ty: ty.as_ref().map(|t| rewrite_type(t, imports, templates)),
             name: name.clone(),
             init: init.as_ref().map(|e| rewrite_expr(e, imports, templates)),
             is_const: *is_const,
         },
-        Stmt::If { cond, then_branch, else_branch } => Stmt::If {
+        Stmt::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => Stmt::If {
             cond: rewrite_expr(cond, imports, templates),
             then_branch: rewrite_block(then_branch, imports, templates),
-            else_branch: else_branch.as_ref().map(|b| rewrite_block(b, imports, templates)),
+            else_branch: else_branch
+                .as_ref()
+                .map(|b| rewrite_block(b, imports, templates)),
         },
-        Stmt::While { cond, body } => Stmt::While { cond: rewrite_expr(cond, imports, templates), body: rewrite_block(body, imports, templates) },
-        Stmt::ForEach { ty, var, iterable, body } => Stmt::ForEach {
+        Stmt::While { cond, body } => Stmt::While {
+            cond: rewrite_expr(cond, imports, templates),
+            body: rewrite_block(body, imports, templates),
+        },
+        Stmt::ForEach {
+            ty,
+            var,
+            iterable,
+            body,
+        } => Stmt::ForEach {
             ty: ty.as_ref().map(|t| rewrite_type(t, imports, templates)),
             var: var.clone(),
             iterable: rewrite_expr(iterable, imports, templates),
             body: rewrite_block(body, imports, templates),
         },
-        Stmt::For { init, cond, step, body } => Stmt::For {
-            init: init.iter().map(|s| rewrite_stmt(s, imports, templates)).collect(),
+        Stmt::For {
+            init,
+            cond,
+            step,
+            body,
+        } => Stmt::For {
+            init: init
+                .iter()
+                .map(|s| rewrite_stmt(s, imports, templates))
+                .collect(),
             cond: cond.as_ref().map(|c| rewrite_expr(c, imports, templates)),
-            step: step.iter().map(|e| rewrite_expr(e, imports, templates)).collect(),
+            step: step
+                .iter()
+                .map(|e| rewrite_expr(e, imports, templates))
+                .collect(),
             body: rewrite_block(body, imports, templates),
         },
         Stmt::Break => Stmt::Break,
         Stmt::Continue => Stmt::Continue,
         Stmt::Block(b) => Stmt::Block(rewrite_block(b, imports, templates)),
-        Stmt::ThisCall(args) => Stmt::ThisCall(args.iter().map(|a| rewrite_expr(a, imports, templates)).collect()),
-        Stmt::SuperCall(args) => Stmt::SuperCall(args.iter().map(|a| rewrite_expr(a, imports, templates)).collect()),
+        Stmt::ThisCall(args) => Stmt::ThisCall(
+            args.iter()
+                .map(|a| rewrite_arg(a, imports, templates))
+                .collect(),
+        ),
+        Stmt::SuperCall(args) => Stmt::SuperCall(
+            args.iter()
+                .map(|a| rewrite_arg(a, imports, templates))
+                .collect(),
+        ),
         Stmt::Throw(e) => Stmt::Throw(rewrite_expr(e, imports, templates)),
-        Stmt::Try { body, catches, finally } => Stmt::Try {
+        Stmt::Try {
+            body,
+            catches,
+            finally,
+        } => Stmt::Try {
             body: rewrite_block(body, imports, templates),
             catches: catches
                 .iter()
-                .map(|c| crate::ast::CatchClause { ty: c.ty.clone(), var: c.var.clone(), body: rewrite_block(&c.body, imports, templates) })
+                .map(|c| crate::ast::CatchClause {
+                    ty: c.ty.clone(),
+                    var: c.var.clone(),
+                    body: rewrite_block(&c.body, imports, templates),
+                })
                 .collect(),
-            finally: finally.as_ref().map(|b| rewrite_block(b, imports, templates)),
+            finally: finally
+                .as_ref()
+                .map(|b| rewrite_block(b, imports, templates)),
         },
     }
 }
 
-fn rewrite_expr(expr: &Expr, imports: &HashMap<String, String>, templates: &HashMap<String, TemplateInfo>) -> Expr {
+fn rewrite_expr(
+    expr: &Expr,
+    imports: &HashMap<String, String>,
+    templates: &HashMap<String, TemplateInfo>,
+) -> Expr {
     match expr {
-        Expr::IntLit(_) | Expr::FloatLit(_) | Expr::BoolLit(_) | Expr::StringLit(_) | Expr::NullLit | Expr::This | Expr::Super | Expr::Ident(_) | Expr::PostIncr(_) | Expr::PostDecr(_) => expr.clone(),
-        Expr::Assign(target, value) => Expr::Assign(rewrite_lvalue(target, imports, templates), Box::new(rewrite_expr(value, imports, templates))),
-        Expr::Call(name, args) => Expr::Call(name.clone(), args.iter().map(|a| rewrite_expr(a, imports, templates)).collect()),
+        Expr::IntLit(_)
+        | Expr::FloatLit(_)
+        | Expr::BoolLit(_)
+        | Expr::StringLit(_)
+        | Expr::NullLit
+        | Expr::This
+        | Expr::Super
+        | Expr::Ident(_)
+        | Expr::PostIncr(_)
+        | Expr::PostDecr(_) => expr.clone(),
+        Expr::Assign(target, value) => Expr::Assign(
+            rewrite_lvalue(target, imports, templates),
+            Box::new(rewrite_expr(value, imports, templates)),
+        ),
+        Expr::Call(name, args) => Expr::Call(
+            name.clone(),
+            args.iter()
+                .map(|a| rewrite_arg(a, imports, templates))
+                .collect(),
+        ),
         Expr::New(name, type_args, args) => {
-            let rw_args: Vec<Type> = type_args.iter().map(|a| rewrite_type(a, imports, templates)).collect();
+            let rw_args: Vec<Type> = type_args
+                .iter()
+                .map(|a| rewrite_type(a, imports, templates))
+                .collect();
             let fqcn = resolve_name(name, imports);
-            if !type_args.is_empty() && (templates.contains_key(&fqcn) || is_native_generic(&fqcn)) {
-                let resolved_args: Vec<Type> = rw_args.iter().map(|a| resolve_type_names(a, imports)).collect();
-                let mangled = format!("{fqcn}<{}>", resolved_args.iter().map(mangle_type).collect::<Vec<_>>().join(", "));
-                Expr::New(mangled, Vec::new(), args.iter().map(|a| rewrite_expr(a, imports, templates)).collect())
+            if !type_args.is_empty() && (templates.contains_key(&fqcn) || is_native_generic(&fqcn))
+            {
+                let resolved_args: Vec<Type> = rw_args
+                    .iter()
+                    .map(|a| resolve_type_names(a, imports))
+                    .collect();
+                let mangled = format!(
+                    "{fqcn}<{}>",
+                    resolved_args
+                        .iter()
+                        .map(mangle_type)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                Expr::New(
+                    mangled,
+                    Vec::new(),
+                    args.iter()
+                        .map(|a| rewrite_arg(a, imports, templates))
+                        .collect(),
+                )
             } else {
-                Expr::New(name.clone(), rw_args, args.iter().map(|a| rewrite_expr(a, imports, templates)).collect())
+                Expr::New(
+                    name.clone(),
+                    rw_args,
+                    args.iter()
+                        .map(|a| rewrite_arg(a, imports, templates))
+                        .collect(),
+                )
             }
         }
-        Expr::NewArray(elem_ty, size) => Expr::NewArray(Box::new(rewrite_type(elem_ty, imports, templates)), Box::new(rewrite_expr(size, imports, templates))),
+        Expr::NewArray(elem_ty, dims) => Expr::NewArray(
+            Box::new(rewrite_type(elem_ty, imports, templates)),
+            dims.iter()
+                .map(|d| d.as_ref().map(|e| rewrite_expr(e, imports, templates)))
+                .collect(),
+        ),
         Expr::NewArrayInit(elem_ty, elements) => Expr::NewArrayInit(
             Box::new(rewrite_type(elem_ty, imports, templates)),
-            elements.iter().map(|e| rewrite_expr(e, imports, templates)).collect(),
+            elements
+                .iter()
+                .map(|e| rewrite_expr(e, imports, templates))
+                .collect(),
         ),
-        Expr::FieldAccess(target, name) => Expr::FieldAccess(Box::new(rewrite_expr(target, imports, templates)), name.clone()),
+        Expr::FieldAccess(target, name) => Expr::FieldAccess(
+            Box::new(rewrite_expr(target, imports, templates)),
+            name.clone(),
+        ),
         Expr::MethodCall(target, name, args) => Expr::MethodCall(
             Box::new(rewrite_expr(target, imports, templates)),
             name.clone(),
-            args.iter().map(|a| rewrite_expr(a, imports, templates)).collect(),
+            args.iter()
+                .map(|a| rewrite_arg(a, imports, templates))
+                .collect(),
         ),
-        Expr::Index(target, index) => Expr::Index(Box::new(rewrite_expr(target, imports, templates)), Box::new(rewrite_expr(index, imports, templates))),
-        Expr::InstanceOf(target, type_name) => Expr::InstanceOf(Box::new(rewrite_expr(target, imports, templates)), type_name.clone()),
-        Expr::Cast(ty, inner) => {
-            Expr::Cast(Box::new(rewrite_type(ty, imports, templates)), Box::new(rewrite_expr(inner, imports, templates)))
+        Expr::Index(target, index) => Expr::Index(
+            Box::new(rewrite_expr(target, imports, templates)),
+            Box::new(rewrite_expr(index, imports, templates)),
+        ),
+        Expr::InstanceOf(target, type_name) => Expr::InstanceOf(
+            Box::new(rewrite_expr(target, imports, templates)),
+            type_name.clone(),
+        ),
+        Expr::Cast(ty, inner) => Expr::Cast(
+            Box::new(rewrite_type(ty, imports, templates)),
+            Box::new(rewrite_expr(inner, imports, templates)),
+        ),
+        Expr::Unary(op, inner) => {
+            Expr::Unary(*op, Box::new(rewrite_expr(inner, imports, templates)))
         }
-        Expr::Unary(op, inner) => Expr::Unary(*op, Box::new(rewrite_expr(inner, imports, templates))),
-        Expr::Binary(op, lhs, rhs) => Expr::Binary(*op, Box::new(rewrite_expr(lhs, imports, templates)), Box::new(rewrite_expr(rhs, imports, templates))),
+        Expr::Binary(op, lhs, rhs) => Expr::Binary(
+            *op,
+            Box::new(rewrite_expr(lhs, imports, templates)),
+            Box::new(rewrite_expr(rhs, imports, templates)),
+        ),
         Expr::Match(subject, arms) => Expr::Match(
             Box::new(rewrite_expr(subject, imports, templates)),
             arms.iter()
                 .map(|a| crate::ast::MatchArm {
-                    pattern: a.pattern.as_ref().map(|p| rewrite_expr(p, imports, templates)),
+                    pattern: a
+                        .pattern
+                        .as_ref()
+                        .map(|p| rewrite_expr(p, imports, templates)),
                     value: rewrite_expr(&a.value, imports, templates),
                 })
                 .collect(),
@@ -579,23 +957,66 @@ fn rewrite_expr(expr: &Expr, imports: &HashMap<String, String>, templates: &Hash
             Box::new(rewrite_expr(then_e, imports, templates)),
             Box::new(rewrite_expr(else_e, imports, templates)),
         ),
-        Expr::Closure { params, return_type, throws, body } => Expr::Closure {
-            params: params.iter().map(|p| crate::ast::Param { name: p.name.clone(), ty: rewrite_type(&p.ty, imports, templates), is_const: p.is_const }).collect(),
-            return_type: return_type.as_ref().map(|t| rewrite_type(t, imports, templates)),
+        Expr::Closure {
+            params,
+            return_type,
+            throws,
+            body,
+        } => Expr::Closure {
+            params: params
+                .iter()
+                .map(|p| crate::ast::Param {
+                    name: p.name.clone(),
+                    ty: rewrite_type(&p.ty, imports, templates),
+                    is_const: p.is_const,
+                    is_ref: p.is_ref,
+                    default: p
+                        .default
+                        .as_ref()
+                        .map(|e| rewrite_expr(e, imports, templates)),
+                })
+                .collect(),
+            return_type: return_type
+                .as_ref()
+                .map(|t| rewrite_type(t, imports, templates)),
             throws: throws.clone(),
             body: match body {
                 ClosureBody::Block(b) => ClosureBody::Block(rewrite_block(b, imports, templates)),
-                ClosureBody::Expr(e) => ClosureBody::Expr(Box::new(rewrite_expr(e, imports, templates))),
+                ClosureBody::Expr(e) => {
+                    ClosureBody::Expr(Box::new(rewrite_expr(e, imports, templates)))
+                }
             },
         },
     }
 }
 
-fn rewrite_lvalue(lvalue: &LValue, imports: &HashMap<String, String>, templates: &HashMap<String, TemplateInfo>) -> LValue {
+fn rewrite_arg(
+    arg: &Arg,
+    imports: &HashMap<String, String>,
+    templates: &HashMap<String, TemplateInfo>,
+) -> Arg {
+    Arg {
+        name: arg.name.clone(),
+        is_ref: arg.is_ref,
+        value: rewrite_expr(&arg.value, imports, templates),
+    }
+}
+
+fn rewrite_lvalue(
+    lvalue: &LValue,
+    imports: &HashMap<String, String>,
+    templates: &HashMap<String, TemplateInfo>,
+) -> LValue {
     match lvalue {
         LValue::Local(name) => LValue::Local(name.clone()),
-        LValue::Field(target, name) => LValue::Field(Box::new(rewrite_expr(target, imports, templates)), name.clone()),
-        LValue::Index(target, index) => LValue::Index(Box::new(rewrite_expr(target, imports, templates)), Box::new(rewrite_expr(index, imports, templates))),
+        LValue::Field(target, name) => LValue::Field(
+            Box::new(rewrite_expr(target, imports, templates)),
+            name.clone(),
+        ),
+        LValue::Index(target, index) => LValue::Index(
+            Box::new(rewrite_expr(target, imports, templates)),
+            Box::new(rewrite_expr(index, imports, templates)),
+        ),
     }
 }
 
@@ -613,9 +1034,17 @@ fn subst_class(class: &ClassDecl, subst: &HashMap<String, Type>) -> ClassDecl {
         fields: class
             .fields
             .iter()
-            .map(|f| FieldDecl { ty: subst_type(&f.ty, subst), init: f.init.as_ref().map(|e| subst_expr(e, subst)), ..f.clone() })
+            .map(|f| FieldDecl {
+                ty: subst_type(&f.ty, subst),
+                init: f.init.as_ref().map(|e| subst_expr(e, subst)),
+                ..f.clone()
+            })
             .collect(),
-        methods: class.methods.iter().map(|m| subst_method(m, subst)).collect(),
+        methods: class
+            .methods
+            .iter()
+            .map(|m| subst_method(m, subst))
+            .collect(),
         is_readonly: class.is_readonly,
         is_abstract: class.is_abstract,
         is_final: class.is_final,
@@ -624,7 +1053,17 @@ fn subst_class(class: &ClassDecl, subst: &HashMap<String, Type>) -> ClassDecl {
 
 fn subst_method(m: &MethodDecl, subst: &HashMap<String, Type>) -> MethodDecl {
     MethodDecl {
-        params: m.params.iter().map(|p| crate::ast::Param { name: p.name.clone(), ty: subst_type(&p.ty, subst), is_const: p.is_const }).collect(),
+        params: m
+            .params
+            .iter()
+            .map(|p| crate::ast::Param {
+                name: p.name.clone(),
+                ty: subst_type(&p.ty, subst),
+                is_const: p.is_const,
+                is_ref: p.is_ref,
+                default: p.default.as_ref().map(|e| subst_expr(e, subst)),
+            })
+            .collect(),
         return_type: subst_type(&m.return_type, subst),
         body: subst_block(&m.body, subst),
         ..m.clone()
@@ -636,7 +1075,10 @@ fn subst_type(ty: &Type, subst: &HashMap<String, Type>) -> Type {
         Type::Named(name) => subst.get(name).cloned().unwrap_or_else(|| ty.clone()),
         Type::Array(inner) => Type::Array(Box::new(subst_type(inner, subst))),
         Type::Union(members) => Type::Union(members.iter().map(|m| subst_type(m, subst)).collect()),
-        Type::Generic(name, args) => Type::Generic(name.clone(), args.iter().map(|a| subst_type(a, subst)).collect()),
+        Type::Generic(name, args) => Type::Generic(
+            name.clone(),
+            args.iter().map(|a| subst_type(a, subst)).collect(),
+        ),
         other => other.clone(),
     }
 }
@@ -649,25 +1091,47 @@ fn subst_stmt(stmt: &Stmt, subst: &HashMap<String, Type>) -> Stmt {
     match stmt {
         Stmt::Return(e) => Stmt::Return(e.as_ref().map(|e| subst_expr(e, subst))),
         Stmt::Expr(e) => Stmt::Expr(subst_expr(e, subst)),
-        Stmt::VarDecl { ty, name, init, is_const } => Stmt::VarDecl {
+        Stmt::VarDecl {
+            ty,
+            name,
+            init,
+            is_const,
+        } => Stmt::VarDecl {
             ty: ty.as_ref().map(|t| subst_type(t, subst)),
             name: name.clone(),
             init: init.as_ref().map(|e| subst_expr(e, subst)),
             is_const: *is_const,
         },
-        Stmt::If { cond, then_branch, else_branch } => Stmt::If {
+        Stmt::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => Stmt::If {
             cond: subst_expr(cond, subst),
             then_branch: subst_block(then_branch, subst),
             else_branch: else_branch.as_ref().map(|b| subst_block(b, subst)),
         },
-        Stmt::While { cond, body } => Stmt::While { cond: subst_expr(cond, subst), body: subst_block(body, subst) },
-        Stmt::ForEach { ty, var, iterable, body } => Stmt::ForEach {
+        Stmt::While { cond, body } => Stmt::While {
+            cond: subst_expr(cond, subst),
+            body: subst_block(body, subst),
+        },
+        Stmt::ForEach {
+            ty,
+            var,
+            iterable,
+            body,
+        } => Stmt::ForEach {
             ty: ty.as_ref().map(|t| subst_type(t, subst)),
             var: var.clone(),
             iterable: subst_expr(iterable, subst),
             body: subst_block(body, subst),
         },
-        Stmt::For { init, cond, step, body } => Stmt::For {
+        Stmt::For {
+            init,
+            cond,
+            step,
+            body,
+        } => Stmt::For {
             init: init.iter().map(|s| subst_stmt(s, subst)).collect(),
             cond: cond.as_ref().map(|c| subst_expr(c, subst)),
             step: step.iter().map(|e| subst_expr(e, subst)).collect(),
@@ -676,12 +1140,25 @@ fn subst_stmt(stmt: &Stmt, subst: &HashMap<String, Type>) -> Stmt {
         Stmt::Break => Stmt::Break,
         Stmt::Continue => Stmt::Continue,
         Stmt::Block(b) => Stmt::Block(subst_block(b, subst)),
-        Stmt::ThisCall(args) => Stmt::ThisCall(args.iter().map(|a| subst_expr(a, subst)).collect()),
-        Stmt::SuperCall(args) => Stmt::SuperCall(args.iter().map(|a| subst_expr(a, subst)).collect()),
+        Stmt::ThisCall(args) => Stmt::ThisCall(args.iter().map(|a| subst_arg(a, subst)).collect()),
+        Stmt::SuperCall(args) => {
+            Stmt::SuperCall(args.iter().map(|a| subst_arg(a, subst)).collect())
+        }
         Stmt::Throw(e) => Stmt::Throw(subst_expr(e, subst)),
-        Stmt::Try { body, catches, finally } => Stmt::Try {
+        Stmt::Try {
+            body,
+            catches,
+            finally,
+        } => Stmt::Try {
             body: subst_block(body, subst),
-            catches: catches.iter().map(|c| crate::ast::CatchClause { ty: c.ty.clone(), var: c.var.clone(), body: subst_block(&c.body, subst) }).collect(),
+            catches: catches
+                .iter()
+                .map(|c| crate::ast::CatchClause {
+                    ty: c.ty.clone(),
+                    var: c.var.clone(),
+                    body: subst_block(&c.body, subst),
+                })
+                .collect(),
             finally: finally.as_ref().map(|b| subst_block(b, subst)),
         },
     }
@@ -689,39 +1166,97 @@ fn subst_stmt(stmt: &Stmt, subst: &HashMap<String, Type>) -> Stmt {
 
 fn subst_expr(expr: &Expr, subst: &HashMap<String, Type>) -> Expr {
     match expr {
-        Expr::IntLit(_) | Expr::FloatLit(_) | Expr::BoolLit(_) | Expr::StringLit(_) | Expr::NullLit | Expr::This | Expr::Super | Expr::Ident(_) | Expr::PostIncr(_) | Expr::PostDecr(_) => expr.clone(),
-        Expr::Assign(target, value) => Expr::Assign(subst_lvalue(target, subst), Box::new(subst_expr(value, subst))),
-        Expr::Call(name, args) => Expr::Call(name.clone(), args.iter().map(|a| subst_expr(a, subst)).collect()),
-        Expr::New(name, type_args, args) => {
-            Expr::New(name.clone(), type_args.iter().map(|t| subst_type(t, subst)).collect(), args.iter().map(|a| subst_expr(a, subst)).collect())
+        Expr::IntLit(_)
+        | Expr::FloatLit(_)
+        | Expr::BoolLit(_)
+        | Expr::StringLit(_)
+        | Expr::NullLit
+        | Expr::This
+        | Expr::Super
+        | Expr::Ident(_)
+        | Expr::PostIncr(_)
+        | Expr::PostDecr(_) => expr.clone(),
+        Expr::Assign(target, value) => Expr::Assign(
+            subst_lvalue(target, subst),
+            Box::new(subst_expr(value, subst)),
+        ),
+        Expr::Call(name, args) => Expr::Call(
+            name.clone(),
+            args.iter().map(|a| subst_arg(a, subst)).collect(),
+        ),
+        Expr::New(name, type_args, args) => Expr::New(
+            name.clone(),
+            type_args.iter().map(|t| subst_type(t, subst)).collect(),
+            args.iter().map(|a| subst_arg(a, subst)).collect(),
+        ),
+        Expr::NewArray(elem_ty, dims) => Expr::NewArray(
+            Box::new(subst_type(elem_ty, subst)),
+            dims.iter()
+                .map(|d| d.as_ref().map(|e| subst_expr(e, subst)))
+                .collect(),
+        ),
+        Expr::NewArrayInit(elem_ty, elements) => Expr::NewArrayInit(
+            Box::new(subst_type(elem_ty, subst)),
+            elements.iter().map(|e| subst_expr(e, subst)).collect(),
+        ),
+        Expr::FieldAccess(target, name) => {
+            Expr::FieldAccess(Box::new(subst_expr(target, subst)), name.clone())
         }
-        Expr::NewArray(elem_ty, size) => Expr::NewArray(Box::new(subst_type(elem_ty, subst)), Box::new(subst_expr(size, subst))),
-        Expr::NewArrayInit(elem_ty, elements) => {
-            Expr::NewArrayInit(Box::new(subst_type(elem_ty, subst)), elements.iter().map(|e| subst_expr(e, subst)).collect())
-        }
-        Expr::FieldAccess(target, name) => Expr::FieldAccess(Box::new(subst_expr(target, subst)), name.clone()),
-        Expr::MethodCall(target, name, args) => {
-            Expr::MethodCall(Box::new(subst_expr(target, subst)), name.clone(), args.iter().map(|a| subst_expr(a, subst)).collect())
-        }
-        Expr::Index(target, index) => Expr::Index(Box::new(subst_expr(target, subst)), Box::new(subst_expr(index, subst))),
+        Expr::MethodCall(target, name, args) => Expr::MethodCall(
+            Box::new(subst_expr(target, subst)),
+            name.clone(),
+            args.iter().map(|a| subst_arg(a, subst)).collect(),
+        ),
+        Expr::Index(target, index) => Expr::Index(
+            Box::new(subst_expr(target, subst)),
+            Box::new(subst_expr(index, subst)),
+        ),
         // `instanceof T` inside a template body isn't substitutable this
         // phase (`type_name` is a bare `String`, not a `Type`) — left as-is
         // (rare inside template bodies; not exercised by tests).
-        Expr::InstanceOf(target, type_name) => Expr::InstanceOf(Box::new(subst_expr(target, subst)), type_name.clone()),
-        Expr::Cast(ty, inner) => Expr::Cast(Box::new(subst_type(ty, subst)), Box::new(subst_expr(inner, subst))),
+        Expr::InstanceOf(target, type_name) => {
+            Expr::InstanceOf(Box::new(subst_expr(target, subst)), type_name.clone())
+        }
+        Expr::Cast(ty, inner) => Expr::Cast(
+            Box::new(subst_type(ty, subst)),
+            Box::new(subst_expr(inner, subst)),
+        ),
         Expr::Unary(op, inner) => Expr::Unary(*op, Box::new(subst_expr(inner, subst))),
-        Expr::Binary(op, lhs, rhs) => Expr::Binary(*op, Box::new(subst_expr(lhs, subst)), Box::new(subst_expr(rhs, subst))),
+        Expr::Binary(op, lhs, rhs) => Expr::Binary(
+            *op,
+            Box::new(subst_expr(lhs, subst)),
+            Box::new(subst_expr(rhs, subst)),
+        ),
         Expr::Match(subject, arms) => Expr::Match(
             Box::new(subst_expr(subject, subst)),
             arms.iter()
-                .map(|a| crate::ast::MatchArm { pattern: a.pattern.as_ref().map(|p| subst_expr(p, subst)), value: subst_expr(&a.value, subst) })
+                .map(|a| crate::ast::MatchArm {
+                    pattern: a.pattern.as_ref().map(|p| subst_expr(p, subst)),
+                    value: subst_expr(&a.value, subst),
+                })
                 .collect(),
         ),
-        Expr::Ternary(cond, then_e, else_e) => {
-            Expr::Ternary(Box::new(subst_expr(cond, subst)), Box::new(subst_expr(then_e, subst)), Box::new(subst_expr(else_e, subst)))
-        }
-        Expr::Closure { params, return_type, throws, body } => Expr::Closure {
-            params: params.iter().map(|p| crate::ast::Param { name: p.name.clone(), ty: subst_type(&p.ty, subst), is_const: p.is_const }).collect(),
+        Expr::Ternary(cond, then_e, else_e) => Expr::Ternary(
+            Box::new(subst_expr(cond, subst)),
+            Box::new(subst_expr(then_e, subst)),
+            Box::new(subst_expr(else_e, subst)),
+        ),
+        Expr::Closure {
+            params,
+            return_type,
+            throws,
+            body,
+        } => Expr::Closure {
+            params: params
+                .iter()
+                .map(|p| crate::ast::Param {
+                    name: p.name.clone(),
+                    ty: subst_type(&p.ty, subst),
+                    is_const: p.is_const,
+                    is_ref: p.is_ref,
+                    default: p.default.as_ref().map(|e| subst_expr(e, subst)),
+                })
+                .collect(),
             return_type: return_type.as_ref().map(|t| subst_type(t, subst)),
             throws: throws.clone(),
             body: match body {
@@ -732,10 +1267,23 @@ fn subst_expr(expr: &Expr, subst: &HashMap<String, Type>) -> Expr {
     }
 }
 
+fn subst_arg(arg: &Arg, subst: &HashMap<String, Type>) -> Arg {
+    Arg {
+        name: arg.name.clone(),
+        is_ref: arg.is_ref,
+        value: subst_expr(&arg.value, subst),
+    }
+}
+
 fn subst_lvalue(lvalue: &LValue, subst: &HashMap<String, Type>) -> LValue {
     match lvalue {
         LValue::Local(name) => LValue::Local(name.clone()),
-        LValue::Field(target, name) => LValue::Field(Box::new(subst_expr(target, subst)), name.clone()),
-        LValue::Index(target, index) => LValue::Index(Box::new(subst_expr(target, subst)), Box::new(subst_expr(index, subst))),
+        LValue::Field(target, name) => {
+            LValue::Field(Box::new(subst_expr(target, subst)), name.clone())
+        }
+        LValue::Index(target, index) => LValue::Index(
+            Box::new(subst_expr(target, subst)),
+            Box::new(subst_expr(index, subst)),
+        ),
     }
 }

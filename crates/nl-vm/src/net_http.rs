@@ -43,7 +43,9 @@ fn throw_io(message: impl Into<String>) -> VmError {
 /// exercised by anything this client needs to talk to (its own test
 /// server, or a plain `http(s)://host[:port]/path`).
 fn parse_url(url: &str) -> Result<ParsedUrl, VmError> {
-    let (scheme, rest) = url.split_once("://").ok_or_else(|| throw_io(format!("invalid URL: {url}")))?;
+    let (scheme, rest) = url
+        .split_once("://")
+        .ok_or_else(|| throw_io(format!("invalid URL: {url}")))?;
     let https = match scheme {
         "http" => false,
         "https" => true,
@@ -63,11 +65,23 @@ fn parse_url(url: &str) -> Result<ParsedUrl, VmError> {
     if host.is_empty() {
         return Err(throw_io(format!("invalid URL: {url}")));
     }
-    Ok(ParsedUrl { https, host, port, path: if path.is_empty() { "/".to_string() } else { path } })
+    Ok(ParsedUrl {
+        https,
+        host,
+        port,
+        path: if path.is_empty() {
+            "/".to_string()
+        } else {
+            path
+        },
+    })
 }
 
 fn build_request(parsed: &ParsedUrl, method: &str, body: Option<&str>) -> String {
-    let mut req = format!("{method} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n", parsed.path, parsed.host);
+    let mut req = format!(
+        "{method} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n",
+        parsed.path, parsed.host
+    );
     if let Some(b) = body {
         req.push_str(&format!("Content-Length: {}\r\n", b.len()));
     }
@@ -92,22 +106,27 @@ pub fn http_request(url: &str, method: &str, body: Option<&str>) -> Result<Value
 }
 
 fn plain_roundtrip(mut tcp: TcpStream, request: &str) -> Result<Vec<u8>, VmError> {
-    tcp.write_all(request.as_bytes()).map_err(|e| throw_io(e.to_string()))?;
+    tcp.write_all(request.as_bytes())
+        .map_err(|e| throw_io(e.to_string()))?;
     let mut raw = Vec::new();
-    tcp.read_to_end(&mut raw).map_err(|e| throw_io(e.to_string()))?;
+    tcp.read_to_end(&mut raw)
+        .map_err(|e| throw_io(e.to_string()))?;
     Ok(raw)
 }
 
 fn https_roundtrip(tcp: TcpStream, host: &str, request: &str) -> Result<Vec<u8>, VmError> {
     let mut root_store = rustls::RootCertStore::empty();
     root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    let config = rustls::ClientConfig::builder().with_root_certificates(root_store).with_no_client_auth();
+    let config = rustls::ClientConfig::builder()
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
     let server_name = rustls::pki_types::ServerName::try_from(host.to_string())
         .map_err(|_| throw_io(format!("invalid hostname: {host}")))?;
     let conn = rustls::ClientConnection::new(Arc::new(config), server_name)
         .map_err(|e| throw_io(format!("TLS setup failed: {e}")))?;
     let mut tls = rustls::StreamOwned::new(conn, tcp);
-    tls.write_all(request.as_bytes()).map_err(|e| throw_io(format!("TLS: {e}")))?;
+    tls.write_all(request.as_bytes())
+        .map_err(|e| throw_io(format!("TLS: {e}")))?;
     let mut raw = Vec::new();
     match tls.read_to_end(&mut raw) {
         Ok(_) => {}
@@ -125,7 +144,8 @@ fn find_double_crlf(raw: &[u8]) -> Option<usize> {
 }
 
 fn parse_response(raw: &[u8]) -> Result<Value, VmError> {
-    let header_end = find_double_crlf(raw).ok_or_else(|| throw_io("malformed HTTP response: no header terminator"))?;
+    let header_end = find_double_crlf(raw)
+        .ok_or_else(|| throw_io("malformed HTTP response: no header terminator"))?;
     let header_text = String::from_utf8_lossy(&raw[..header_end]);
     let mut lines = header_text.split("\r\n");
     let status_line = lines.next().unwrap_or("");
@@ -142,7 +162,9 @@ fn parse_response(raw: &[u8]) -> Result<Value, VmError> {
             continue;
         }
         if let Some((name, value)) = line.split_once(':') {
-            if name.trim().eq_ignore_ascii_case("transfer-encoding") && value.to_ascii_lowercase().contains("chunked") {
+            if name.trim().eq_ignore_ascii_case("transfer-encoding")
+                && value.to_ascii_lowercase().contains("chunked")
+            {
                 chunked = true;
             }
         }
@@ -150,14 +172,30 @@ fn parse_response(raw: &[u8]) -> Result<Value, VmError> {
     }
 
     let body_bytes = &raw[header_end + 4..];
-    let body = if chunked { dechunk(body_bytes) } else { body_bytes.to_vec() };
+    let body = if chunked {
+        dechunk(body_bytes)
+    } else {
+        body_bytes.to_vec()
+    };
 
     let mut fields = HashMap::new();
     fields.insert("statusCode".to_string(), Value::Int(status_code));
-    fields.insert("body".to_string(), Value::Str(Arc::new(String::from_utf8_lossy(&body).into_owned())));
-    let header_values: Vec<Value> = headers.into_iter().map(|h| Value::Str(Arc::new(h))).collect();
-    fields.insert("headers".to_string(), Value::Array(Arc::new(Mutex::new(header_values))));
-    Ok(Value::Object(Arc::new(Mutex::new(Object::native("system.net.HttpResponse", fields)))))
+    fields.insert(
+        "body".to_string(),
+        Value::Str(Arc::new(String::from_utf8_lossy(&body).into_owned())),
+    );
+    let header_values: Vec<Value> = headers
+        .into_iter()
+        .map(|h| Value::Str(Arc::new(h)))
+        .collect();
+    fields.insert(
+        "headers".to_string(),
+        Value::Array(Arc::new(Mutex::new(header_values))),
+    );
+    Ok(Value::Object(Arc::new(Mutex::new(Object::native(
+        "system.net.HttpResponse",
+        fields,
+    )))))
 }
 
 /// Unwraps `Transfer-Encoding: chunked` (RFC 7230 § 4.1): `<size in
@@ -248,7 +286,9 @@ mod tests {
     fn get_plain_http() {
         let port = serve_once("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nhello world");
         let result = http_request(&format!("http://127.0.0.1:{port}/"), "GET", None).unwrap();
-        let Value::Object(obj) = result else { panic!("expected object") };
+        let Value::Object(obj) = result else {
+            panic!("expected object")
+        };
         let obj = lock(&obj);
         assert_eq!(field_int(&obj, "statusCode"), 200);
         assert_eq!(field_str(&obj, "body"), "hello world");
@@ -257,8 +297,15 @@ mod tests {
     #[test]
     fn post_with_body() {
         let port = serve_once("HTTP/1.1 201 Created\r\n\r\ncreated");
-        let result = http_request(&format!("http://127.0.0.1:{port}/items"), "POST", Some("payload")).unwrap();
-        let Value::Object(obj) = result else { panic!("expected object") };
+        let result = http_request(
+            &format!("http://127.0.0.1:{port}/items"),
+            "POST",
+            Some("payload"),
+        )
+        .unwrap();
+        let Value::Object(obj) = result else {
+            panic!("expected object")
+        };
         let obj = lock(&obj);
         assert_eq!(field_int(&obj, "statusCode"), 201);
         assert_eq!(field_str(&obj, "body"), "created");
@@ -268,7 +315,9 @@ mod tests {
     fn chunked_response_is_decoded() {
         let port = serve_once("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n1\r\n \r\n5\r\nworld\r\n0\r\n\r\n");
         let result = http_request(&format!("http://127.0.0.1:{port}/"), "GET", None).unwrap();
-        let Value::Object(obj) = result else { panic!("expected object") };
+        let Value::Object(obj) = result else {
+            panic!("expected object")
+        };
         let obj = lock(&obj);
         assert_eq!(field_str(&obj, "body"), "hello world");
     }
@@ -282,7 +331,9 @@ mod tests {
     #[ignore = "requires internet access"]
     fn get_https_real_server() {
         let result = http_request("https://example.com/", "GET", None).unwrap();
-        let Value::Object(obj) = result else { panic!("expected object") };
+        let Value::Object(obj) = result else {
+            panic!("expected object")
+        };
         let obj = lock(&obj);
         assert_eq!(field_int(&obj, "statusCode"), 200);
         assert!(field_str(&obj, "body").contains("Example Domain"));

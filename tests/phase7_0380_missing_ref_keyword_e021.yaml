@@ -1,0 +1,19 @@
+---
+title: "Compile E021 — missing 'ref' keyword at call site"
+file_separator: "#NLFILE"
+expected_compile_error: "E021"
+---
+
+#NLFILE phase7/e021/Main.nl
+namespace phase7.e021;
+class Main {
+	public static void increment(ref int a) {
+		a = a + 1;
+	}
+
+	public static int main(string[] args) {
+		int x = 5;
+		increment(x);
+		return 0;
+	}
+}

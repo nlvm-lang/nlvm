@@ -1,0 +1,17 @@
+---
+title: "Compile E022 — optional parameters cannot be declared 'ref'"
+file_separator: "#NLFILE"
+expected_compile_error: "E022"
+---
+
+#NLFILE phase7/e022/Main.nl
+namespace phase7.e022;
+class Main {
+	public static void bad(ref int a = 0) {
+		a = a + 1;
+	}
+
+	public static int main(string[] args) {
+		return 0;
+	}
+}

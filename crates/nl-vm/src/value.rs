@@ -63,9 +63,12 @@ impl Drop for Object {
         let Some(program) = self.program.upgrade() else {
             return;
         };
-        let Some((module, method)) =
-            crate::interpreter::resolve_virtual(&program, &self.class_name, "<destruct>", "() -> void")
-        else {
+        let Some((module, method)) = crate::interpreter::resolve_virtual(
+            &program,
+            &self.class_name,
+            "<destruct>",
+            "() -> void",
+        ) else {
             return;
         };
         let this = Value::Object(Arc::new(Mutex::new(Object {

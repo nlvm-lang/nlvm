@@ -1,0 +1,14 @@
+---
+title: "Compile E038 — omitted array dimension not a contiguous suffix"
+file_separator: "#NLFILE"
+expected_compile_error: "E038"
+---
+
+#NLFILE phase7/e038/Main.nl
+namespace phase7.e038;
+class Main {
+	public static int main(string[] args) {
+		auto bad = new int[][3][];
+		return 0;
+	}
+}

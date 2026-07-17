@@ -1,0 +1,54 @@
+---
+title: "Named and optional parameters (positional, named, mixed, defaults)"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "1|Hello|3.14|true 1|Hello|0|false 1|Hello|0|true 1|Hello|3.14|false Doe|John|0 Smith|Jane|30"
+---
+
+#NLFILE phase7/named_params/Thing.nl
+namespace phase7.named_params;
+class Thing {
+	public static string doSomething(int a, string b, float c = 0.0, bool d = false) {
+		return system.Int.toString(a) + "|" + b + "|" + system.Float.toString(c) + "|" + system.Bool.toString(d);
+	}
+}
+
+#NLFILE phase7/named_params/Contact.nl
+namespace phase7.named_params;
+class Contact {
+	public string lastName;
+	public string firstName;
+	public int age;
+
+	public construct(string lastName, string firstName, int age = 0) {
+		this.lastName = lastName;
+		this.firstName = firstName;
+		this.age = age;
+	}
+
+	public string describe() {
+		return this.lastName + "|" + this.firstName + "|" + system.Int.toString(this.age);
+	}
+}
+
+#NLFILE phase7/named_params/Main.nl
+namespace phase7.named_params;
+class Main {
+	public static int main(string[] args) {
+		system.Out.print(Thing.doSomething(1, "Hello", 3.14, true));
+		system.Out.print(" ");
+		system.Out.print(Thing.doSomething(a: 1, b: "Hello"));
+		system.Out.print(" ");
+		system.Out.print(Thing.doSomething(b: "Hello", a: 1, d: true));
+		system.Out.print(" ");
+		system.Out.print(Thing.doSomething(1, "Hello", c: 3.14));
+		system.Out.print(" ");
+
+		auto john = new Contact(lastName: "Doe", firstName: "John");
+		system.Out.print(john.describe());
+		system.Out.print(" ");
+		auto jane = new Contact(firstName: "Jane", lastName: "Smith", age: 30);
+		system.Out.print(jane.describe());
+		return 0;
+	}
+}

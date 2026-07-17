@@ -10,7 +10,9 @@ pub enum SemaError {
     AutoWithoutInitializer,
     #[error("E007 — Cannot cast '{0}' to '{1}'")]
     BadCast(String, String),
-    #[error("E008 — Cannot concatenate 'string' with type '{0}' (type does not implement Stringable)")]
+    #[error(
+        "E008 — Cannot concatenate 'string' with type '{0}' (type does not implement Stringable)"
+    )]
     BadConcatenation(String),
     #[error("E009 — Operator '{0}' is not defined for types '{1}' and '{2}'")]
     BadBinaryOperator(String, String, String),
@@ -39,13 +41,17 @@ pub enum SemaError {
     NoMainMethod,
     #[error("E028 — Multiple 'main' methods found")]
     MultipleMainMethods,
-    #[error("E029 — 'main' method has incorrect signature (expected: public static int main(string[]))")]
+    #[error(
+        "E029 — 'main' method has incorrect signature (expected: public static int main(string[]))"
+    )]
     BadMainSignature,
     #[error("E040 — Cannot use '{0}' in a static context")]
     StaticContextMisuse(String),
     #[error("E043 — Import creates duplicate symbol '{0}'")]
     DuplicateImportSymbol(String),
-    #[error("E031 — Cannot create array of non-nullable type '{0}' with fixed size (no default value)")]
+    #[error(
+        "E031 — Cannot create array of non-nullable type '{0}' with fixed size (no default value)"
+    )]
     NonNullableArrayFixedSize(String),
     #[error("E018 — Member '{0}' is not accessible from '{1}' (visibility: {2})")]
     MemberNotAccessible(String, String, String),
@@ -73,7 +79,9 @@ pub enum SemaError {
     ReadonlyPropertyModification(String),
     #[error("E032 — Cannot instantiate abstract class '{0}'")]
     InstantiateAbstractClass(String),
-    #[error("E033 — Class '{0}' must be declared abstract (has unimplemented abstract method '{1}')")]
+    #[error(
+        "E033 — Class '{0}' must be declared abstract (has unimplemented abstract method '{1}')"
+    )]
     ClassMustBeAbstract(String, String),
     #[error("E034 — Abstract method '{0}' cannot have a body")]
     AbstractMethodHasBody(String),
@@ -83,6 +91,22 @@ pub enum SemaError {
     OverrideFinalMethod(String),
     #[error("E049 — Conflicting modifiers 'abstract' and 'final' on '{0}'")]
     ConflictingModifiers(String),
+    #[error("E038 — Non-first dimension size omitted in middle position in '{0}'")]
+    NonContiguousArrayDimensionOmission(String),
+    #[error("E023 — Required parameter '{0}' not provided")]
+    RequiredParamNotProvided(String),
+    #[error("E024 — Positional argument after named argument")]
+    PositionalArgAfterNamed,
+    #[error("E025 — Parameter '{0}' provided both positionally and by name")]
+    ParamProvidedTwice(String),
+    #[error("E026 — Default value for parameter '{0}' must be a compile-time constant")]
+    DefaultNotConstant(String),
+    #[error("E020 — Argument for 'ref' parameter '{0}' must be a variable")]
+    RefArgNotVariable(String),
+    #[error("E021 — Missing 'ref' keyword at call site for parameter '{0}'")]
+    MissingRefKeyword(String),
+    #[error("E022 — Optional parameters cannot be declared 'ref'")]
+    OptionalCannotBeRef,
 }
 
 impl SemaError {
@@ -130,6 +154,14 @@ impl SemaError {
             SemaError::ExtendFinalClass(_) => "E035",
             SemaError::OverrideFinalMethod(_) => "E036",
             SemaError::ConflictingModifiers(_) => "E049",
+            SemaError::NonContiguousArrayDimensionOmission(_) => "E038",
+            SemaError::RequiredParamNotProvided(_) => "E023",
+            SemaError::PositionalArgAfterNamed => "E024",
+            SemaError::ParamProvidedTwice(_) => "E025",
+            SemaError::DefaultNotConstant(_) => "E026",
+            SemaError::RefArgNotVariable(_) => "E020",
+            SemaError::MissingRefKeyword(_) => "E021",
+            SemaError::OptionalCannotBeRef => "E022",
         }
     }
 }

@@ -9,11 +9,13 @@ mod type_desc;
 
 use std::collections::HashMap;
 
-use nl_bytecode::{class_flags, field_flags, method_flags, ConstantPool, HashAlgo, MethodDescriptor, Module};
+use nl_bytecode::{
+    class_flags, field_flags, method_flags, ConstantPool, HashAlgo, MethodDescriptor, Module,
+};
 use nl_syntax::ast::{ClassDecl, MethodKind, SourceFile, SourceItem, Type, Visibility};
 
-pub use error::CodegenError;
 use class_table::{build_class_table, fqcn_of, import_map, resolve_type, ClassInfo};
+pub use error::CodegenError;
 use expr::{expr_ty_of, Emitter, MethodSig};
 use type_desc::method_descriptor;
 
@@ -23,17 +25,22 @@ use type_desc::method_descriptor;
 /// entries. See `nl_vm::Program` for how these modules are linked at load
 /// time.
 pub fn compile_program(files: &[SourceFile]) -> Result<Vec<Module>, CodegenError> {
-    // Template classes (specs.md § Template class) are expanded into
-    // ordinary monomorphized classes before anything else sees them — see
-    // nl_syntax::monomorphize. nl-sema expands the *same* input the same
-    // way, so both crates always agree on the expanded program.
-    let expanded = nl_syntax::monomorphize::expand(files.to_vec());
-
     // Built-in exception classes (nl_syntax::prelude) are implicitly part of
     // every program — see class_table::import_map, which seeds their simple
-    // names so user code can reference them without a `use`.
-    let mut all_files = nl_syntax::prelude::files();
-    all_files.extend(expanded);
+    // names so user code can reference them without a `use`. Prepended
+    // *before* expansion (not after): the prelude's `Box<T>` (vm.md § Ref
+    // parameters (boxing)) is itself a template, and `nl_syntax::monomorphize
+    // ::expand` only ever monomorphizes templates it can see in its own
+    // input. nl-sema expands the exact same combined input the same way
+    // (see its `check_compile`), so both crates always agree on the
+    // expanded program.
+    let mut unexpanded = nl_syntax::prelude::files();
+    unexpanded.extend(files.to_vec());
+
+    // Template classes (specs.md § Template class) are expanded into
+    // ordinary monomorphized classes before anything else sees them — see
+    // nl_syntax::monomorphize.
+    let all_files = nl_syntax::monomorphize::expand(unexpanded);
 
     let classes = build_class_table(&all_files);
     let mut modules = Vec::new();
@@ -59,7 +66,11 @@ pub fn compile_source_file(file: &SourceFile) -> Result<Module, CodegenError> {
 /// Returns the file's own module first, followed by any synthetic closure
 /// classes generated while compiling its methods (vm.md § Closures — "the
 /// compiler generates a synthetic class for each closure").
-fn compile_file(file: &SourceFile, all_files: &[SourceFile], classes: &HashMap<String, ClassInfo>) -> Result<Vec<Module>, CodegenError> {
+fn compile_file(
+    file: &SourceFile,
+    all_files: &[SourceFile],
+    classes: &HashMap<String, ClassInfo>,
+) -> Result<Vec<Module>, CodegenError> {
     let imports = import_map(file, all_files);
     let fqcn = fqcn_of(file);
     let mut cp = ConstantPool::new();
@@ -108,7 +119,11 @@ fn compile_file(file: &SourceFile, all_files: &[SourceFile], classes: &HashMap<S
                     if f.readonly {
                         flags |= field_flags::READONLY;
                     }
-                    nl_bytecode::FieldDescriptor { flags, name_index, type_index }
+                    nl_bytecode::FieldDescriptor {
+                        flags,
+                        name_index,
+                        type_index,
+                    }
                 })
                 .collect();
 
@@ -120,15 +135,27 @@ fn compile_file(file: &SourceFile, all_files: &[SourceFile], classes: &HashMap<S
             for m in &class.methods {
                 if m.is_static && m.kind == MethodKind::Normal {
                     let name_index = cp.add_utf8(m.name.clone());
-                    let params: Vec<Type> = m.params.iter().map(|p| resolve_type(&p.ty, &imports)).collect();
+                    let params: Vec<Type> = m
+                        .params
+                        .iter()
+                        .map(|p| resolve_type(&p.ty, &imports))
+                        .collect();
+                    let is_ref: Vec<bool> = m.params.iter().map(|p| p.is_ref).collect();
                     let return_ty = resolve_type(&m.return_type, &imports);
-                    let descriptor = method_descriptor(&params, &return_ty);
+                    // vm.md § Ref parameters (boxing) — a `ref` parameter's
+                    // *physical* type in the descriptor is `Box<T>`, not `T`.
+                    let cc_params = class_table::calling_convention_params(&params, &is_ref);
+                    let descriptor = method_descriptor(&cc_params, &return_ty);
                     let descriptor_index = cp.add_type_desc(&descriptor);
-                    let method_ref_index = cp.add_method_ref(this_class, name_index, descriptor_index);
+                    let method_ref_index =
+                        cp.add_method_ref(this_class, name_index, descriptor_index);
                     static_sigs.insert(
                         m.name.clone(),
                         MethodSig {
                             param_types: params.iter().map(expr_ty_of).collect(),
+                            param_names: m.params.iter().map(|p| p.name.clone()).collect(),
+                            defaults: m.params.iter().map(|p| p.default.clone()).collect(),
+                            is_ref,
                             return_ty: expr_ty_of(&return_ty),
                             method_ref_index,
                         },
@@ -144,8 +171,18 @@ fn compile_file(file: &SourceFile, all_files: &[SourceFile], classes: &HashMap<S
             // concrete subclass provides a real override, which virtual
             // dispatch always resolves to first) — nothing to emit.
             for (method_index, m) in class.methods.iter().filter(|m| !m.is_abstract).enumerate() {
-                let (descriptor, closures) =
-                    compile_method(m.name.as_str(), method_index, m, class, &mut cp, this_class, &fqcn, &imports, classes, &static_sigs)?;
+                let (descriptor, closures) = compile_method(
+                    m.name.as_str(),
+                    method_index,
+                    m,
+                    class,
+                    &mut cp,
+                    this_class,
+                    &fqcn,
+                    &imports,
+                    classes,
+                    &static_sigs,
+                )?;
                 methods.push(descriptor);
                 closure_modules.extend(closures);
             }
@@ -154,7 +191,11 @@ fn compile_file(file: &SourceFile, all_files: &[SourceFile], classes: &HashMap<S
                 version: nl_bytecode::module::VERSION,
                 constant_pool: cp,
                 this_class,
-                class_flags: if class.is_readonly { class_flags::READONLY } else { 0 },
+                class_flags: if class.is_readonly {
+                    class_flags::READONLY
+                } else {
+                    0
+                },
                 super_class,
                 interfaces,
                 fields,
@@ -182,19 +223,42 @@ fn compile_method(
 ) -> Result<(MethodDescriptor, Vec<Module>), CodegenError> {
     let _ = class;
     let name_index = cp.add_utf8(name.to_string());
-    let resolved_params: Vec<Type> = method.params.iter().map(|p| resolve_type(&p.ty, imports)).collect();
+    let resolved_params: Vec<Type> = method
+        .params
+        .iter()
+        .map(|p| resolve_type(&p.ty, imports))
+        .collect();
+    let is_ref: Vec<bool> = method.params.iter().map(|p| p.is_ref).collect();
     let resolved_return = resolve_type(&method.return_type, imports);
-    let descriptor = method_descriptor(&resolved_params, &resolved_return);
+    // vm.md § Ref parameters (boxing) — a `ref` parameter's *physical* type
+    // in this method's own descriptor is `Box<T>`, not `T` (must match
+    // what every call site builds its `method_ref`/`INVOKE_*` against).
+    let cc_params = class_table::calling_convention_params(&resolved_params, &is_ref);
+    let descriptor = method_descriptor(&cc_params, &resolved_return);
     let descriptor_index = cp.add_type_desc(&descriptor);
 
-    let mut emitter = Emitter::new(cp, static_sigs, classes, imports, this_class, this_fqcn.to_string());
+    let mut emitter = Emitter::new(
+        cp,
+        static_sigs,
+        classes,
+        imports,
+        this_class,
+        this_fqcn.to_string(),
+    );
     emitter.closure_name_prefix = format!("{this_fqcn}$m{method_index}");
     emitter.push_scope();
     if !method.is_static {
-        emitter.declare_local("this".to_string(), expr::ExprTy::Object(this_fqcn.to_string()));
+        emitter.declare_local(
+            "this".to_string(),
+            expr::ExprTy::Object(this_fqcn.to_string()),
+        );
     }
-    for (param, resolved_ty) in method.params.iter().zip(&resolved_params) {
-        emitter.declare_local(param.name.clone(), expr_ty_of(resolved_ty));
+    for ((param, resolved_ty), r) in method.params.iter().zip(&resolved_params).zip(&is_ref) {
+        if *r {
+            emitter.declare_ref_param(param.name.clone(), expr_ty_of(resolved_ty));
+        } else {
+            emitter.declare_local(param.name.clone(), expr_ty_of(resolved_ty));
+        }
     }
     for stmt in &method.body {
         emitter.compile_stmt(stmt)?;

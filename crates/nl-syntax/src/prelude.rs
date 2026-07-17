@@ -13,8 +13,8 @@
 //! enforced either — see PLAN.md Phase 5.
 
 use crate::ast::{
-    Block, ClassDecl, Expr, FieldDecl, InterfaceDecl, LValue, MethodDecl, MethodKind, MethodSig, Param, SourceFile,
-    SourceItem, Stmt, Type, Visibility,
+    Arg, Block, ClassDecl, Expr, FieldDecl, InterfaceDecl, LValue, MethodDecl, MethodKind,
+    MethodSig, Param, SourceFile, SourceItem, Stmt, Type, TypeParam, Visibility,
 };
 
 /// `(name, parent)` pairs describing the built-in hierarchy — specs.md §
@@ -58,8 +58,75 @@ pub fn files() -> Vec<SourceFile> {
             item: SourceItem::Class(exception_class(name, *parent)),
         })
         .collect();
-    files.push(SourceFile { namespace: Vec::new(), uses: Vec::new(), item: SourceItem::Interface(stringable()) });
+    files.push(SourceFile {
+        namespace: Vec::new(),
+        uses: Vec::new(),
+        item: SourceItem::Interface(stringable()),
+    });
+    files.push(SourceFile {
+        namespace: Vec::new(),
+        uses: Vec::new(),
+        item: SourceItem::Class(box_class()),
+    });
     files
+}
+
+/// vm.md § Ref parameters (boxing) — the single-field generic box a `ref`
+/// parameter is passed through: the compiler `NEW`s one per call-site `ref`
+/// argument, the callee reads/writes `value` in place of the parameter
+/// directly, and the caller reads `value` back into its own variable after
+/// the call returns. Never written by user source — `nl_syntax::monomorphize`
+/// synthesizes a `Box<T>` instantiation for every concrete `T` used as a
+/// `ref` parameter's type anywhere in the program (see its doc comment),
+/// the same way it would for a user `new Vector<int>(...)`.
+fn box_class() -> ClassDecl {
+    let field = FieldDecl {
+        name: "value".to_string(),
+        visibility: Visibility::Public,
+        visibility_explicit: true,
+        is_static: false,
+        readonly: false,
+        ty: Type::Named("T".to_string()),
+        init: None,
+    };
+    let param = Param {
+        name: "value".to_string(),
+        ty: Type::Named("T".to_string()),
+        is_const: false,
+        default: None,
+        is_ref: false,
+    };
+    let ctor = MethodDecl {
+        name: "<construct>".to_string(),
+        kind: MethodKind::Constructor,
+        visibility: Visibility::Public,
+        visibility_explicit: true,
+        is_static: false,
+        is_const: false,
+        is_abstract: false,
+        is_final: false,
+        return_type: Type::Void,
+        params: vec![param],
+        throws: Vec::new(),
+        body: vec![Stmt::Expr(Expr::Assign(
+            LValue::Field(Box::new(Expr::This), "value".to_string()),
+            Box::new(Expr::Ident("value".to_string())),
+        ))],
+    };
+    ClassDecl {
+        name: "Box".to_string(),
+        type_params: vec![TypeParam {
+            name: "T".to_string(),
+            bound: None,
+        }],
+        extends: None,
+        implements: Vec::new(),
+        fields: vec![field],
+        methods: vec![ctor],
+        is_readonly: false,
+        is_abstract: false,
+        is_final: false,
+    }
 }
 
 /// specs.md § Stringable interface — `public string toString() const;`. A
@@ -71,12 +138,23 @@ pub fn files() -> Vec<SourceFile> {
 fn stringable() -> InterfaceDecl {
     InterfaceDecl {
         name: "Stringable".to_string(),
-        methods: vec![MethodSig { name: "toString".to_string(), return_type: Type::StringT, params: Vec::new(), is_const: true }],
+        methods: vec![MethodSig {
+            name: "toString".to_string(),
+            return_type: Type::StringT,
+            params: Vec::new(),
+            is_const: true,
+        }],
     }
 }
 
 fn exception_class(name: &str, parent: Option<&str>) -> ClassDecl {
-    let param = Param { name: "what".to_string(), ty: Type::StringT, is_const: false };
+    let param = Param {
+        name: "what".to_string(),
+        ty: Type::StringT,
+        is_const: false,
+        default: None,
+        is_ref: false,
+    };
     let ctor_body: Block = match parent {
         // The root `Exception` class owns the `message` field and sets it
         // directly from its constructor argument.
@@ -85,7 +163,11 @@ fn exception_class(name: &str, parent: Option<&str>) -> ClassDecl {
             Box::new(Expr::Ident("what".to_string())),
         ))],
         // Every other class in the hierarchy just forwards to its parent.
-        Some(_) => vec![Stmt::SuperCall(vec![Expr::Ident("what".to_string())])],
+        Some(_) => vec![Stmt::SuperCall(vec![Arg {
+            name: None,
+            is_ref: false,
+            value: Expr::Ident("what".to_string()),
+        }])],
     };
     let ctor = MethodDecl {
         name: "<construct>".to_string(),

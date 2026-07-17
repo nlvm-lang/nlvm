@@ -63,7 +63,8 @@ fn main() -> Result<()> {
     let mut modules = Vec::with_capacity(module_paths.len());
     for path in &module_paths {
         let bytes = std::fs::read(path).with_context(|| format!("reading {path}"))?;
-        let module = nl_vm::load_module(&bytes).map_err(|e| anyhow::anyhow!("loading {path}: {e}"))?;
+        let module =
+            nl_vm::load_module(&bytes).map_err(|e| anyhow::anyhow!("loading {path}: {e}"))?;
         modules.push(module);
     }
 

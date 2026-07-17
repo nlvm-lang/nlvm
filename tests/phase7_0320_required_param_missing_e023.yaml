@@ -1,0 +1,17 @@
+---
+title: "Compile E023 — required parameter not provided"
+file_separator: "#NLFILE"
+expected_compile_error: "E023"
+---
+
+#NLFILE phase7/e023/Main.nl
+namespace phase7.e023;
+class Main {
+	public static int add(int a, int b = 1) {
+		return a + b;
+	}
+
+	public static int main(string[] args) {
+		return add(b: 5);
+	}
+}

@@ -117,7 +117,10 @@ impl Parser {
                 None
             };
             self.eat_punct(Punct::Semi)?;
-            uses.push(UseDecl { path: segments.join("."), alias });
+            uses.push(UseDecl {
+                path: segments.join("."),
+                alias,
+            });
         }
 
         // specs.md § Readonly, "Modifier order": `[abstract | final] class
@@ -147,7 +150,11 @@ impl Parser {
         } else {
             SourceItem::Class(self.parse_class_decl(Vec::new(), is_abstract, is_final)?)
         };
-        Ok(SourceFile { namespace, uses, item })
+        Ok(SourceFile {
+            namespace,
+            uses,
+            item,
+        })
     }
 
     /// `template <type T [extends Bound], ...>` before a `class` — specs.md
@@ -217,13 +224,23 @@ impl Parser {
             };
             self.parse_throws_clause()?;
             self.eat_punct(Punct::Semi)?;
-            methods.push(MethodSig { name, return_type, params, is_const });
+            methods.push(MethodSig {
+                name,
+                return_type,
+                params,
+                is_const,
+            });
         }
         self.eat_punct(Punct::RBrace)?;
         Ok(InterfaceDecl { name, methods })
     }
 
-    fn parse_class_decl(&mut self, type_params: Vec<TypeParam>, is_abstract: bool, is_final: bool) -> Result<ClassDecl, SyntaxError> {
+    fn parse_class_decl(
+        &mut self,
+        type_params: Vec<TypeParam>,
+        is_abstract: bool,
+        is_final: bool,
+    ) -> Result<ClassDecl, SyntaxError> {
         self.eat_keyword(Keyword::Class)?;
         // specs.md § Readonly, "Modifier order": `[abstract | final] class
         // [readonly] Name` — `readonly` follows `class`, before the name.
@@ -262,7 +279,17 @@ impl Parser {
             self.parse_member(&mut fields, &mut methods)?;
         }
         self.eat_punct(Punct::RBrace)?;
-        Ok(ClassDecl { name, type_params, extends, implements, fields, methods, is_readonly, is_abstract, is_final })
+        Ok(ClassDecl {
+            name,
+            type_params,
+            extends,
+            implements,
+            fields,
+            methods,
+            is_readonly,
+            is_abstract,
+            is_final,
+        })
     }
 
     /// `throws Type1, Type2, ...` — optional, after a method/constructor's
@@ -432,7 +459,15 @@ impl Parser {
                 None
             };
             self.eat_punct(Punct::Semi)?;
-            fields.push(FieldDecl { name, visibility, visibility_explicit, is_static, readonly, ty, init });
+            fields.push(FieldDecl {
+                name,
+                visibility,
+                visibility_explicit,
+                is_static,
+                readonly,
+                ty,
+                init,
+            });
         }
         Ok(())
     }
@@ -446,9 +481,24 @@ impl Parser {
             } else {
                 false
             };
+            // `const ref T param` — specs.md § Ref parameters, always
+            // `const` before `ref` when both are present.
+            let is_ref = if self.is_keyword(Keyword::Ref) {
+                self.bump();
+                true
+            } else {
+                false
+            };
             let ty = self.parse_type()?;
             let name = self.eat_ident()?;
-            params.push(Param { name, ty, is_const });
+            let default = self.parse_param_default()?;
+            params.push(Param {
+                name,
+                ty,
+                is_const,
+                default,
+                is_ref,
+            });
             if self.is_punct(Punct::Comma) {
                 self.bump();
             } else {
@@ -458,10 +508,21 @@ impl Parser {
         Ok(params)
     }
 
-    fn parse_args(&mut self) -> Result<Vec<Expr>, SyntaxError> {
+    /// `= expr` — specs.md § Optional parameters. Shared by `parse_params`
+    /// and `parse_closure`'s inline param loop.
+    fn parse_param_default(&mut self) -> Result<Option<Expr>, SyntaxError> {
+        if self.is_punct(Punct::Assign) {
+            self.bump();
+            Ok(Some(self.parse_expr()?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn parse_args(&mut self) -> Result<Vec<Arg>, SyntaxError> {
         let mut args = Vec::new();
         while !self.is_punct(Punct::RParen) {
-            args.push(self.parse_expr()?);
+            args.push(self.parse_arg()?);
             if self.is_punct(Punct::Comma) {
                 self.bump();
             } else {
@@ -469,6 +530,42 @@ impl Parser {
             }
         }
         Ok(args)
+    }
+
+    /// One call-site argument — `expr`, `name: expr` (specs.md § Named
+    /// parameters), or either prefixed with `ref` (specs.md § Ref
+    /// parameters, e.g. `Utils.swap(ref x, ref y)`, or `foo(a: ref x)`
+    /// combining both). The named form is recognized by a bare identifier
+    /// immediately followed by `:` — distinct from the ternary
+    /// `cond ? a : b`'s `:` (always preceded by a `?`, never adjacent to
+    /// the identifier) and from `foreach`/`match`'s `:` (not reachable
+    /// from `parse_expr`, which is the only thing called here). `nl-sema`
+    /// validates ordering/binding/ref-correctness (E020-E026); the parser
+    /// accepts any mix.
+    fn parse_arg(&mut self) -> Result<Arg, SyntaxError> {
+        let name = if let TokenKind::Ident(name) = &self.peek().kind {
+            if matches!(self.peek_at(1), Some(TokenKind::Punct(Punct::Colon))) {
+                let name = name.clone();
+                self.bump();
+                self.bump();
+                Some(name)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let is_ref = if self.is_keyword(Keyword::Ref) {
+            self.bump();
+            true
+        } else {
+            false
+        };
+        Ok(Arg {
+            name,
+            is_ref,
+            value: self.parse_expr()?,
+        })
     }
 
     /// Parses `Type1|Type2|...` — see specs.md § Union types and explicit
@@ -606,7 +703,9 @@ impl Parser {
     }
 
     fn parse_stmt(&mut self) -> Result<Stmt, SyntaxError> {
-        if self.is_keyword(Keyword::This) && matches!(self.peek_at(1), Some(TokenKind::Punct(Punct::LParen))) {
+        if self.is_keyword(Keyword::This)
+            && matches!(self.peek_at(1), Some(TokenKind::Punct(Punct::LParen)))
+        {
             self.bump();
             self.eat_punct(Punct::LParen)?;
             let args = self.parse_args()?;
@@ -614,7 +713,9 @@ impl Parser {
             self.eat_punct(Punct::Semi)?;
             return Ok(Stmt::ThisCall(args));
         }
-        if self.is_keyword(Keyword::Super) && matches!(self.peek_at(1), Some(TokenKind::Punct(Punct::LParen))) {
+        if self.is_keyword(Keyword::Super)
+            && matches!(self.peek_at(1), Some(TokenKind::Punct(Punct::LParen)))
+        {
             self.bump();
             self.eat_punct(Punct::LParen)?;
             let args = self.parse_args()?;
@@ -714,7 +815,10 @@ impl Parser {
             }
             return matches!(
                 (self.peek_at(offset), self.peek_at(offset + 1)),
-                (Some(TokenKind::Punct(Punct::LBracket)), Some(TokenKind::Punct(Punct::RBracket)))
+                (
+                    Some(TokenKind::Punct(Punct::LBracket)),
+                    Some(TokenKind::Punct(Punct::RBracket))
+                )
             );
         }
         false
@@ -768,7 +872,12 @@ impl Parser {
             None
         };
         self.eat_punct(Punct::Semi)?;
-        Ok(Stmt::VarDecl { ty, name, init, is_const })
+        Ok(Stmt::VarDecl {
+            ty,
+            name,
+            init,
+            is_const,
+        })
     }
 
     fn parse_if_stmt(&mut self) -> Result<Stmt, SyntaxError> {
@@ -820,7 +929,12 @@ impl Parser {
         let iterable = self.parse_expr()?;
         self.eat_punct(Punct::RParen)?;
         let body = self.parse_block()?;
-        Ok(Some(Stmt::ForEach { ty, var, iterable, body }))
+        Ok(Some(Stmt::ForEach {
+            ty,
+            var,
+            iterable,
+            body,
+        }))
     }
 
     /// `try { ... } catch (Type name) { ... } ... finally { ... }` —
@@ -838,7 +952,11 @@ impl Parser {
             let var = self.eat_ident()?;
             self.eat_punct(Punct::RParen)?;
             let catch_body = self.parse_block()?;
-            catches.push(CatchClause { ty, var, body: catch_body });
+            catches.push(CatchClause {
+                ty,
+                var,
+                body: catch_body,
+            });
         }
         let finally = if self.is_keyword(Keyword::Finally) {
             self.bump();
@@ -846,7 +964,11 @@ impl Parser {
         } else {
             None
         };
-        Ok(Stmt::Try { body, catches, finally })
+        Ok(Stmt::Try {
+            body,
+            catches,
+            finally,
+        })
     }
 
     /// `match(subject) { pattern: value, ..., default: value }` — specs.md §
@@ -1007,7 +1129,11 @@ impl Parser {
         let then_branch = self.parse_expr()?;
         self.eat_punct(Punct::Colon)?;
         let else_branch = self.parse_ternary()?;
-        Ok(Expr::Ternary(Box::new(cond), Box::new(then_branch), Box::new(else_branch)))
+        Ok(Expr::Ternary(
+            Box::new(cond),
+            Box::new(then_branch),
+            Box::new(else_branch),
+        ))
     }
 
     fn parse_or(&mut self) -> Result<Expr, SyntaxError> {
@@ -1187,12 +1313,24 @@ impl Parser {
     /// parenthesized value of exactly that shape, so e.g. `(byte) -1` is
     /// unambiguous.
     fn can_start_cast_operand(&self, ty: &Type) -> bool {
-        let allow_leading_minus = matches!(ty, Type::Int | Type::Float | Type::Byte | Type::Bool | Type::StringT);
+        let allow_leading_minus = matches!(
+            ty,
+            Type::Int | Type::Float | Type::Byte | Type::Bool | Type::StringT
+        );
         match &self.peek().kind {
-            TokenKind::Ident(_) | TokenKind::IntLiteral(_) | TokenKind::FloatLiteral(_) | TokenKind::StringLiteral(_) => true,
-            TokenKind::Keyword(Keyword::True | Keyword::False | Keyword::Null | Keyword::This | Keyword::Super | Keyword::New | Keyword::Match) => {
-                true
-            }
+            TokenKind::Ident(_)
+            | TokenKind::IntLiteral(_)
+            | TokenKind::FloatLiteral(_)
+            | TokenKind::StringLiteral(_) => true,
+            TokenKind::Keyword(
+                Keyword::True
+                | Keyword::False
+                | Keyword::Null
+                | Keyword::This
+                | Keyword::Super
+                | Keyword::New
+                | Keyword::Match,
+            ) => true,
             TokenKind::Punct(Punct::LParen | Punct::Not) => true,
             TokenKind::Punct(Punct::Minus) => allow_leading_minus,
             _ => false,
@@ -1279,9 +1417,12 @@ impl Parser {
         }
     }
 
-    /// `new ClassName(args)`, `new T[size]` or `new T[]{ e0, e1, ... }` —
-    /// specs.md § Arrays / § Basic class. Multi-dimensional forms are not
-    /// yet supported.
+    /// `new ClassName(args)`, `new T[n1][n2]...` or `new T[]{ e0, e1, ... }`
+    /// — specs.md § Arrays / § Basic class. The initializer-list form is
+    /// only recognized as a single dimension (immediately `[]{`); any other
+    /// shape falls into the general multi-dimensional case, where each
+    /// `[]` records an omitted size (`None`) — compiler.md §
+    /// Multidimensional array creation.
     fn parse_new_expr(&mut self) -> Result<Expr, SyntaxError> {
         self.eat_keyword(Keyword::New)?;
         let base_ty = self.parse_new_base_type()?;
@@ -1289,22 +1430,29 @@ impl Parser {
             self.bump();
             if self.is_punct(Punct::RBracket) {
                 self.bump();
-                self.eat_punct(Punct::LBrace)?;
-                let mut elements = Vec::new();
-                while !self.is_punct(Punct::RBrace) {
-                    elements.push(self.parse_expr()?);
-                    if self.is_punct(Punct::Comma) {
-                        self.bump();
-                    } else {
-                        break;
+                if self.is_punct(Punct::LBrace) {
+                    self.bump();
+                    let mut elements = Vec::new();
+                    while !self.is_punct(Punct::RBrace) {
+                        elements.push(self.parse_expr()?);
+                        if self.is_punct(Punct::Comma) {
+                            self.bump();
+                        } else {
+                            break;
+                        }
                     }
+                    self.eat_punct(Punct::RBrace)?;
+                    return Ok(Expr::NewArrayInit(Box::new(base_ty), elements));
                 }
-                self.eat_punct(Punct::RBrace)?;
-                return Ok(Expr::NewArrayInit(Box::new(base_ty), elements));
+                let mut dims = vec![None];
+                self.parse_extra_array_dims(&mut dims)?;
+                return Ok(Expr::NewArray(Box::new(base_ty), dims));
             }
             let size = self.parse_expr()?;
             self.eat_punct(Punct::RBracket)?;
-            Ok(Expr::NewArray(Box::new(base_ty), Box::new(size)))
+            let mut dims = vec![Some(size)];
+            self.parse_extra_array_dims(&mut dims)?;
+            Ok(Expr::NewArray(Box::new(base_ty), dims))
         } else if self.is_punct(Punct::LParen) {
             let (class_name, type_args) = match base_ty {
                 Type::Named(name) => (name, Vec::new()),
@@ -1326,6 +1474,23 @@ impl Parser {
                 self.line(),
             ))
         }
+    }
+
+    /// Consumes any further `[size]`/`[]` groups after the first dimension
+    /// of a `new T[...]` expression, appending one entry per group.
+    fn parse_extra_array_dims(&mut self, dims: &mut Vec<Option<Expr>>) -> Result<(), SyntaxError> {
+        while self.is_punct(Punct::LBracket) {
+            self.bump();
+            if self.is_punct(Punct::RBracket) {
+                self.bump();
+                dims.push(None);
+            } else {
+                let size = self.parse_expr()?;
+                self.eat_punct(Punct::RBracket)?;
+                dims.push(Some(size));
+            }
+        }
+        Ok(())
     }
 
     /// Attempts `(params) => body` at the current position, restoring
@@ -1372,7 +1537,16 @@ impl Parser {
             };
             let ty = self.parse_type()?;
             let name = self.eat_ident()?;
-            params.push(Param { name, ty, is_const });
+            let default = self.parse_param_default()?;
+            // `ref` closure parameters aren't supported (see PLAN.md) —
+            // `is_ref` is always `false` here.
+            params.push(Param {
+                name,
+                ty,
+                is_const,
+                default,
+                is_ref: false,
+            });
             if self.is_punct(Punct::Comma) {
                 self.bump();
             } else {
@@ -1394,7 +1568,12 @@ impl Parser {
         } else {
             ClosureBody::Expr(Box::new(self.parse_expr()?))
         };
-        Ok(Expr::Closure { params, return_type, throws, body })
+        Ok(Expr::Closure {
+            params,
+            return_type,
+            throws,
+            body,
+        })
     }
 
     /// Whether the current token could start a primitive/`void` return type
@@ -1403,7 +1582,9 @@ impl Parser {
     fn peek_is_primitive_return_type(&self) -> bool {
         let is_primitive = match &self.peek().kind {
             TokenKind::Keyword(Keyword::Void) => true,
-            TokenKind::Ident(name) => matches!(name.as_str(), "int" | "float" | "bool" | "byte" | "string"),
+            TokenKind::Ident(name) => {
+                matches!(name.as_str(), "int" | "float" | "bool" | "byte" | "string")
+            }
             _ => false,
         };
         is_primitive && matches!(self.peek_at(1), Some(TokenKind::Punct(Punct::LBrace)))
@@ -1415,6 +1596,9 @@ fn to_lvalue(expr: Expr, line: u32) -> Result<LValue, SyntaxError> {
         Expr::Ident(name) => Ok(LValue::Local(name)),
         Expr::FieldAccess(target, name) => Ok(LValue::Field(target, name)),
         Expr::Index(target, index) => Ok(LValue::Index(target, index)),
-        _ => Err(SyntaxError::Parse("invalid assignment target".to_string(), line)),
+        _ => Err(SyntaxError::Parse(
+            "invalid assignment target".to_string(),
+            line,
+        )),
     }
 }

@@ -12,8 +12,8 @@
 use std::collections::{HashMap, HashSet};
 
 use nl_syntax::ast::{
-    BinOp, Block, CatchClause, ClassDecl, Expr, LValue, MatchArm, MethodDecl, MethodKind, SourceFile, SourceItem,
-    Stmt, Type, UnOp,
+    Arg, BinOp, Block, CatchClause, ClassDecl, Expr, LValue, MatchArm, MethodDecl, MethodKind,
+    Param, SourceFile, SourceItem, Stmt, Type, UnOp,
 };
 
 use crate::class_table::{self, ClassTable};
@@ -21,10 +21,17 @@ use crate::error::SemaError;
 use crate::types;
 
 /// A method's signature, as seen from call sites within the same class
-/// (bare, unqualified calls — always static, as before this phase).
-type MethodSig = (Vec<Type>, Type, Vec<Type>);
+/// (bare, unqualified calls — always static, as before this phase). Keeps
+/// the original `Param` list (not just resolved types) so bare calls can
+/// bind named/optional arguments (compiler.md § Named and optional
+/// parameter rules) the same way cross-class calls do via `class_table`.
+type MethodSig = (Vec<Param>, Type, Vec<Type>);
 
-pub fn check_source_file(file: &SourceFile, all_files: &[SourceFile], classes: &ClassTable) -> Result<(), SemaError> {
+pub fn check_source_file(
+    file: &SourceFile,
+    all_files: &[SourceFile],
+    classes: &ClassTable,
+) -> Result<(), SemaError> {
     let SourceItem::Class(class) = &file.item else {
         // Interfaces declare signatures only — nothing to flow-check yet.
         return Ok(());
@@ -43,15 +50,15 @@ pub fn check_source_file(file: &SourceFile, all_files: &[SourceFile], classes: &
     let mut sigs: HashMap<String, MethodSig> = HashMap::new();
     for m in &class.methods {
         if m.is_static && m.kind == MethodKind::Normal {
-            let param_types: Vec<Type> = m.params.iter().map(|p| class_table::resolve_type(&p.ty, &imports)).collect();
             let return_ty = class_table::resolve_type(&m.return_type, &imports);
             let throws = resolve_throws(m, &imports);
-            sigs.insert(m.name.clone(), (param_types, return_ty, throws));
+            sigs.insert(m.name.clone(), (m.params.clone(), return_ty, throws));
         }
     }
 
     for method in &class.methods {
-        check_method(method, &sigs, classes, &imports, &this_fqcn).map_err(|e| relabel_template_operator_error(e, &this_fqcn))?;
+        check_method(method, &sigs, classes, &imports, &this_fqcn)
+            .map_err(|e| relabel_template_operator_error(e, &this_fqcn))?;
         // compiler.md § Exception inheritance rules — E016/E017. Only
         // meaningful for instance methods (static methods hide, not
         // override) that actually override an ancestor's method.
@@ -78,16 +85,25 @@ fn relabel_template_operator_error(err: SemaError, this_fqcn: &str) -> SemaError
     };
     match err {
         SemaError::BadBinaryOperator(op, t1, t2) => {
-            let ty = if types::is_primitive_display(&t1) { t2 } else { t1 };
+            let ty = if types::is_primitive_display(&t1) {
+                t2
+            } else {
+                t1
+            };
             SemaError::TemplateOperatorUnsupported(ty, op, template_name)
         }
-        SemaError::BadUnaryOperator(op, t) => SemaError::TemplateOperatorUnsupported(t, op, template_name),
+        SemaError::BadUnaryOperator(op, t) => {
+            SemaError::TemplateOperatorUnsupported(t, op, template_name)
+        }
         other => other,
     }
 }
 
 fn resolve_throws(m: &MethodDecl, imports: &HashMap<String, String>) -> Vec<Type> {
-    m.throws.iter().map(|n| Type::Named(imports.get(n).cloned().unwrap_or_else(|| n.clone()))).collect()
+    m.throws
+        .iter()
+        .map(|n| Type::Named(imports.get(n).cloned().unwrap_or_else(|| n.clone())))
+        .collect()
 }
 
 /// compiler.md § Exception inheritance rules — E016/E017. Compares the
@@ -103,8 +119,13 @@ fn check_exception_override(
     let Some(super_fqcn) = classes.get(this_fqcn).and_then(|c| c.extends.clone()) else {
         return Ok(());
     };
-    let params: Vec<Type> = method.params.iter().map(|p| class_table::resolve_type(&p.ty, imports)).collect();
-    let Some(parent) = class_table::find_method_exact(classes, &super_fqcn, &method.name, &params) else {
+    let params: Vec<Type> = method
+        .params
+        .iter()
+        .map(|p| class_table::resolve_type(&p.ty, imports))
+        .collect();
+    let Some(parent) = class_table::find_method_exact(classes, &super_fqcn, &method.name, &params)
+    else {
         return Ok(());
     };
     if parent.is_static {
@@ -113,7 +134,8 @@ fn check_exception_override(
     let child_throws = resolve_throws(method, imports);
     let is_checked = |t: &Type| {
         let Type::Named(fqcn) = t else { return false };
-        class_table::is_subclass_or_same(classes, fqcn, "Exception") && !class_table::is_subclass_or_same(classes, fqcn, "RuntimeException")
+        class_table::is_subclass_or_same(classes, fqcn, "Exception")
+            && !class_table::is_subclass_or_same(classes, fqcn, "RuntimeException")
     };
     // "child throws type C covers parent throws type P" iff C is P or a
     // subclass of P — the single relation both E016 and E017 check, just
@@ -123,19 +145,34 @@ fn check_exception_override(
     // E016: every checked exception the parent declares must be covered by
     // some type the child declares.
     for parent_exc in parent.throws.iter().filter(|t| is_checked(t)) {
-        let Type::Named(parent_fqcn) = parent_exc else { continue };
-        let handled = child_throws.iter().any(|c| matches!(c, Type::Named(child_fqcn) if covers(child_fqcn, parent_fqcn)));
+        let Type::Named(parent_fqcn) = parent_exc else {
+            continue;
+        };
+        let handled = child_throws
+            .iter()
+            .any(|c| matches!(c, Type::Named(child_fqcn) if covers(child_fqcn, parent_fqcn)));
         if !handled {
-            return Err(SemaError::MissingThrowsInOverride(method.name.clone(), parent_fqcn.clone()));
+            return Err(SemaError::MissingThrowsInOverride(
+                method.name.clone(),
+                parent_fqcn.clone(),
+            ));
         }
     }
     // E017: every checked exception the child declares must itself be
     // covered by something the parent already declares.
     for child_exc in child_throws.iter().filter(|t| is_checked(t)) {
-        let Type::Named(child_fqcn) = child_exc else { continue };
-        let handled = parent.throws.iter().any(|p| matches!(p, Type::Named(parent_fqcn) if covers(child_fqcn, parent_fqcn)));
+        let Type::Named(child_fqcn) = child_exc else {
+            continue;
+        };
+        let handled = parent
+            .throws
+            .iter()
+            .any(|p| matches!(p, Type::Named(parent_fqcn) if covers(child_fqcn, parent_fqcn)));
         if !handled {
-            return Err(SemaError::ExtraThrowsInOverride(method.name.clone(), child_fqcn.clone()));
+            return Err(SemaError::ExtraThrowsInOverride(
+                method.name.clone(),
+                child_fqcn.clone(),
+            ));
         }
     }
     Ok(())
@@ -155,7 +192,10 @@ fn check_duplicate_methods(class: &ClassDecl) -> Result<(), SemaError> {
             let a_params: Vec<&Type> = a.params.iter().map(|p| &p.ty).collect();
             let b_params: Vec<&Type> = b.params.iter().map(|p| &p.ty).collect();
             if a_params == b_params {
-                return Err(SemaError::DuplicateMethod(a.name.clone(), class.name.clone()));
+                return Err(SemaError::DuplicateMethod(
+                    a.name.clone(),
+                    class.name.clone(),
+                ));
             }
         }
     }
@@ -184,8 +224,15 @@ fn check_visibility_modifiers(class: &ClassDecl) -> Result<(), SemaError> {
 /// property with no initializer must be assigned on every path of every
 /// `construct` overload. Scalars/`string`/nullable references all have a
 /// valid default and are exempt (see the table there).
-fn check_property_initialization(class: &ClassDecl, imports: &HashMap<String, String>) -> Result<(), SemaError> {
-    let ctors: Vec<&MethodDecl> = class.methods.iter().filter(|m| m.kind == MethodKind::Constructor).collect();
+fn check_property_initialization(
+    class: &ClassDecl,
+    imports: &HashMap<String, String>,
+) -> Result<(), SemaError> {
+    let ctors: Vec<&MethodDecl> = class
+        .methods
+        .iter()
+        .filter(|m| m.kind == MethodKind::Constructor)
+        .collect();
     for field in &class.fields {
         if field.init.is_some() {
             continue;
@@ -195,7 +242,10 @@ fn check_property_initialization(class: &ClassDecl, imports: &HashMap<String, St
             continue;
         }
         if ctors.is_empty() {
-            return Err(SemaError::PropertyNotInitialized(field.name.clone(), types::display(&resolved)));
+            return Err(SemaError::PropertyNotInitialized(
+                field.name.clone(),
+                types::display(&resolved),
+            ));
         }
         for ctor in &ctors {
             check_ctor_property_init(&ctors, ctor, &field.name, &resolved)?;
@@ -210,18 +260,32 @@ fn check_property_initialization(class: &ClassDecl, imports: &HashMap<String, St
 /// independently checked on its own turn in `check_property_initialization`'s
 /// loop, so no recursion is needed here (compiler.md § Constructor
 /// delegation, "Definite assignment").
-fn check_ctor_property_init(ctors: &[&MethodDecl], ctor: &MethodDecl, field_name: &str, field_ty: &Type) -> Result<(), SemaError> {
+fn check_ctor_property_init(
+    ctors: &[&MethodDecl],
+    ctor: &MethodDecl,
+    field_name: &str,
+    field_ty: &Type,
+) -> Result<(), SemaError> {
     let (start_assigned, rest): (bool, &[Stmt]) = match ctor.body.first() {
         Some(Stmt::ThisCall(args)) => {
             let argc = args.len();
-            let credited = ctors.iter().any(|c| c.params.len() == argc);
+            let credited = ctors.iter().any(|c| {
+                class_table::arity_in_range(
+                    class_table::required_count(&c.params),
+                    c.params.len(),
+                    argc,
+                )
+            });
             (credited, &ctor.body[1..])
         }
         _ => (false, &ctor.body[..]),
     };
     let (assigned, terminated) = field_assigned_after(rest, field_name, field_ty, start_assigned)?;
     if !terminated && !assigned {
-        return Err(SemaError::PropertyNotInitialized(field_name.to_string(), types::display(field_ty)));
+        return Err(SemaError::PropertyNotInitialized(
+            field_name.to_string(),
+            types::display(field_ty),
+        ));
     }
     Ok(())
 }
@@ -233,7 +297,12 @@ fn check_ctor_property_init(ctors: &[&MethodDecl], ctor: &MethodDecl, field_name
 /// requires the field already assigned *at that point* (checked eagerly,
 /// below) — unlike `throw`, which discards the half-constructed object
 /// entirely, so a path that only ever throws imposes no requirement.
-fn field_assigned_after(stmts: &[Stmt], field_name: &str, field_ty: &Type, assigned: bool) -> Result<(bool, bool), SemaError> {
+fn field_assigned_after(
+    stmts: &[Stmt],
+    field_name: &str,
+    field_ty: &Type,
+    assigned: bool,
+) -> Result<(bool, bool), SemaError> {
     let mut assigned = assigned;
     let mut terminated = false;
     for stmt in stmts {
@@ -247,20 +316,35 @@ fn field_assigned_after(stmts: &[Stmt], field_name: &str, field_ty: &Type, assig
     Ok((assigned, terminated))
 }
 
-fn field_assigned_stmt(stmt: &Stmt, field_name: &str, field_ty: &Type, assigned: bool) -> Result<(bool, bool), SemaError> {
+fn field_assigned_stmt(
+    stmt: &Stmt,
+    field_name: &str,
+    field_ty: &Type,
+    assigned: bool,
+) -> Result<(bool, bool), SemaError> {
     match stmt {
         Stmt::Return(_) => {
             if !assigned {
-                return Err(SemaError::PropertyNotInitialized(field_name.to_string(), types::display(field_ty)));
+                return Err(SemaError::PropertyNotInitialized(
+                    field_name.to_string(),
+                    types::display(field_ty),
+                ));
             }
             Ok((assigned, true))
         }
         Stmt::Throw(_) => Ok((assigned, true)),
-        Stmt::Expr(Expr::Assign(LValue::Field(target, name), _)) if matches!(**target, Expr::This) && name == field_name => {
+        Stmt::Expr(Expr::Assign(LValue::Field(target, name), _))
+            if matches!(**target, Expr::This) && name == field_name =>
+        {
             Ok((true, false))
         }
-        Stmt::If { then_branch, else_branch, .. } => {
-            let (then_assigned, then_term) = field_assigned_after(then_branch, field_name, field_ty, assigned)?;
+        Stmt::If {
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            let (then_assigned, then_term) =
+                field_assigned_after(then_branch, field_name, field_ty, assigned)?;
             let (else_assigned, else_term) = match else_branch {
                 Some(b) => field_assigned_after(b, field_name, field_ty, assigned)?,
                 None => (assigned, false),
@@ -293,7 +377,11 @@ fn field_assigned_stmt(stmt: &Stmt, field_name: &str, field_ty: &Type, assigned:
         // `try` in the general E001 analysis (PLAN.md Phase 5): an exception
         // may strike at any point in `body`, so nothing it assigns is
         // guaranteed; only `finally` (which always runs) is.
-        Stmt::Try { body, catches, finally } => {
+        Stmt::Try {
+            body,
+            catches,
+            finally,
+        } => {
             field_assigned_after(body, field_name, field_ty, assigned)?;
             for c in catches {
                 field_assigned_after(&c.body, field_name, field_ty, assigned)?;
@@ -311,7 +399,11 @@ fn field_assigned_stmt(stmt: &Stmt, field_name: &str, field_ty: &Type, assigned:
 /// implements an interface method declared `const` must itself be `const`
 /// (matched by name + arity, same best-effort resolution as everywhere else
 /// in this checker — see `check_duplicate_methods`).
-fn check_const_interface_impl(class: &ClassDecl, classes: &ClassTable, this_fqcn: &str) -> Result<(), SemaError> {
+fn check_const_interface_impl(
+    class: &ClassDecl,
+    classes: &ClassTable,
+    this_fqcn: &str,
+) -> Result<(), SemaError> {
     let Some(info) = classes.get(this_fqcn) else {
         return Ok(());
     };
@@ -323,15 +415,18 @@ fn check_const_interface_impl(class: &ClassDecl, classes: &ClassTable, this_fqcn
             if !iface_method.is_const {
                 continue;
             }
-            let Some(impl_method) = class
-                .methods
-                .iter()
-                .find(|m| m.kind == MethodKind::Normal && m.name == iface_method.name && m.params.len() == iface_method.params.len())
-            else {
+            let Some(impl_method) = class.methods.iter().find(|m| {
+                m.kind == MethodKind::Normal
+                    && m.name == iface_method.name
+                    && m.params.len() == iface_method.params.len()
+            }) else {
                 continue;
             };
             if !impl_method.is_const {
-                return Err(SemaError::MethodMustBeConst(impl_method.name.clone(), iface_fqcn.clone()));
+                return Err(SemaError::MethodMustBeConst(
+                    impl_method.name.clone(),
+                    iface_fqcn.clone(),
+                ));
             }
         }
     }
@@ -345,7 +440,12 @@ fn check_const_interface_impl(class: &ClassDecl, classes: &ClassTable, this_fqcn
 /// `abstract`/`final` on the same class or method), and E033 (a concrete
 /// class that still has an unimplemented abstract method somewhere in its
 /// `extends` chain, including one it declares directly itself).
-fn check_abstract_final(class: &ClassDecl, classes: &ClassTable, imports: &HashMap<String, String>, this_fqcn: &str) -> Result<(), SemaError> {
+fn check_abstract_final(
+    class: &ClassDecl,
+    classes: &ClassTable,
+    imports: &HashMap<String, String>,
+    this_fqcn: &str,
+) -> Result<(), SemaError> {
     if class.is_abstract && class.is_final {
         return Err(SemaError::ConflictingModifiers(class.name.clone()));
     }
@@ -366,8 +466,14 @@ fn check_abstract_final(class: &ClassDecl, classes: &ClassTable, imports: &HashM
             if m.kind != MethodKind::Normal {
                 continue;
             }
-            let params: Vec<Type> = m.params.iter().map(|p| class_table::resolve_type(&p.ty, imports)).collect();
-            if class_table::find_method_exact(classes, &parent_fqcn, &m.name, &params).is_some_and(|parent| parent.is_final) {
+            let params: Vec<Type> = m
+                .params
+                .iter()
+                .map(|p| class_table::resolve_type(&p.ty, imports))
+                .collect();
+            if class_table::find_method_exact(classes, &parent_fqcn, &m.name, &params)
+                .is_some_and(|parent| parent.is_final)
+            {
                 return Err(SemaError::OverrideFinalMethod(m.name.clone()));
             }
         }
@@ -376,12 +482,19 @@ fn check_abstract_final(class: &ClassDecl, classes: &ClassTable, imports: &HashM
     if !class.is_abstract {
         let mut current = this_fqcn.to_string();
         loop {
-            let Some(info) = classes.get(&current) else { break };
+            let Some(info) = classes.get(&current) else {
+                break;
+            };
             for m in &info.methods {
                 if m.is_abstract {
-                    if let Some(nearest) = class_table::find_method_exact(classes, this_fqcn, &m.name, &m.params) {
+                    if let Some(nearest) =
+                        class_table::find_method_exact(classes, this_fqcn, &m.name, &m.params)
+                    {
                         if nearest.is_abstract {
-                            return Err(SemaError::ClassMustBeAbstract(class.name.clone(), m.name.clone()));
+                            return Err(SemaError::ClassMustBeAbstract(
+                                class.name.clone(),
+                                m.name.clone(),
+                            ));
                         }
                     }
                 }
@@ -425,7 +538,13 @@ fn check_constructor_delegation(class: &ClassDecl) -> Result<(), SemaError> {
                 break;
             };
             let argc = args.len();
-            let Some(next) = ctors.iter().position(|c| c.params.len() == argc) else {
+            let Some(next) = ctors.iter().position(|c| {
+                class_table::arity_in_range(
+                    class_table::required_count(&c.params),
+                    c.params.len(),
+                    argc,
+                )
+            }) else {
                 break;
             };
             current = next;
@@ -466,7 +585,13 @@ fn check_method(
         skip_return_check: false,
         method_throws: resolve_throws(method, imports)
             .into_iter()
-            .filter_map(|t| if let Type::Named(fqcn) = t { Some(fqcn) } else { None })
+            .filter_map(|t| {
+                if let Type::Named(fqcn) = t {
+                    Some(fqcn)
+                } else {
+                    None
+                }
+            })
             .collect(),
         catch_stack: Vec::new(),
         const_vars: HashSet::new(),
@@ -478,6 +603,17 @@ fn check_method(
         let id = checker.declare(&param.name, class_table::resolve_type(&param.ty, imports));
         if param.is_const {
             checker.const_vars.insert(id);
+        }
+        // compiler.md § Named and optional parameter rules — E026.
+        if let Some(default) = &param.default {
+            if !is_const_expr(default) {
+                return Err(SemaError::DefaultNotConstant(param.name.clone()));
+            }
+        }
+        // compiler.md § Ref parameter rules — E022: an optional parameter
+        // can't also be `ref` (the caller must always supply a variable).
+        if param.is_ref && param.default.is_some() {
+            return Err(SemaError::OptionalCannotBeRef);
         }
         assigned.insert(id);
     }
@@ -583,7 +719,10 @@ impl<'a> MethodChecker<'a> {
     }
 
     fn class_fqcn(&self, name: &str) -> String {
-        self.imports.get(name).cloned().unwrap_or_else(|| name.to_string())
+        self.imports
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| name.to_string())
     }
 
     /// Walks `fqcn`'s `extends` chain, so a field/method declared on an
@@ -609,7 +748,52 @@ impl<'a> MethodChecker<'a> {
             return Ok(());
         };
         if !class_table::is_accessible(self.classes, field.visibility, &owner, &self.this_fqcn) {
-            return Err(SemaError::MemberNotAccessible(name.to_string(), self.this_fqcn.clone(), visibility_str(field.visibility)));
+            return Err(SemaError::MemberNotAccessible(
+                name.to_string(),
+                self.this_fqcn.clone(),
+                visibility_str(field.visibility),
+            ));
+        }
+        Ok(())
+    }
+
+    /// compiler.md § Ref parameter rules — E020/E021, checked for `arg` once
+    /// it's known to bind to a parameter declared `ref` (`param_name` is
+    /// only used in the error message). The call site must use the `ref`
+    /// keyword (E021), and the argument must be a plain, non-const variable
+    /// (E020) — not a literal, a field/index expression, or an expression
+    /// result.
+    fn check_ref_arg(&self, param_name: &str, arg: &Arg) -> Result<(), SemaError> {
+        if !arg.is_ref {
+            return Err(SemaError::MissingRefKeyword(param_name.to_string()));
+        }
+        let Expr::Ident(var_name) = &arg.value else {
+            return Err(SemaError::RefArgNotVariable(param_name.to_string()));
+        };
+        if let Some((id, _)) = self.resolve(var_name) {
+            if self.const_vars.contains(&id) || self.readonly_loop_vars.contains(&id) {
+                return Err(SemaError::RefArgNotVariable(param_name.to_string()));
+            }
+        }
+        Ok(())
+    }
+
+    /// `check_ref_arg`, applied to every `ref` parameter in a `bind_call_args`
+    /// binding — shared by `Expr::New`/`Stmt::ThisCall`/`Stmt::SuperCall`,
+    /// which all resolve against a `class_table::CtorInfo`.
+    fn check_ref_args(
+        &self,
+        param_names: &[String],
+        is_ref: &[bool],
+        binding: &[Option<usize>],
+        args: &[Arg],
+    ) -> Result<(), SemaError> {
+        for ((name, r), bound) in param_names.iter().zip(is_ref).zip(binding) {
+            if *r {
+                if let Some(arg_idx) = bound {
+                    self.check_ref_arg(name, &args[*arg_idx])?;
+                }
+            }
         }
         Ok(())
     }
@@ -618,11 +802,16 @@ impl<'a> MethodChecker<'a> {
     /// arity (matching the rest of this checker's best-effort overload
     /// resolution).
     fn check_method_access(&self, fqcn: &str, name: &str, argc: usize) -> Result<(), SemaError> {
-        let Some((owner, method)) = class_table::find_method_owner(self.classes, fqcn, name, argc) else {
+        let Some((owner, method)) = class_table::find_method_owner(self.classes, fqcn, name, argc)
+        else {
             return Ok(());
         };
         if !class_table::is_accessible(self.classes, method.visibility, &owner, &self.this_fqcn) {
-            return Err(SemaError::MemberNotAccessible(name.to_string(), self.this_fqcn.clone(), visibility_str(method.visibility)));
+            return Err(SemaError::MemberNotAccessible(
+                name.to_string(),
+                self.this_fqcn.clone(),
+                visibility_str(method.visibility),
+            ));
         }
         Ok(())
     }
@@ -637,16 +826,24 @@ impl<'a> MethodChecker<'a> {
         let Some((owner, field)) = class_table::find_field_owner(self.classes, fqcn, name) else {
             return Ok(());
         };
-        let class_is_readonly = self.classes.get(&owner).is_some_and(|info| info.is_readonly);
+        let class_is_readonly = self
+            .classes
+            .get(&owner)
+            .is_some_and(|info| info.is_readonly);
         if !class_is_readonly && !field.readonly {
             return Ok(());
         }
-        let exempt = self.is_current_constructor && self.this_fqcn == owner && matches!(target_expr, Expr::This);
+        let exempt = self.is_current_constructor
+            && self.this_fqcn == owner
+            && matches!(target_expr, Expr::This);
         if exempt {
             return Ok(());
         }
         if class_is_readonly {
-            Err(SemaError::ReadonlyClassModification(name.to_string(), owner))
+            Err(SemaError::ReadonlyClassModification(
+                name.to_string(),
+                owner,
+            ))
         } else {
             Err(SemaError::ReadonlyPropertyModification(name.to_string()))
         }
@@ -663,8 +860,14 @@ impl<'a> MethodChecker<'a> {
         {
             return Ok(());
         }
-        let covers = |declared: &str| class_table::is_subclass_or_same(self.classes, exc_fqcn, declared);
-        if self.catch_stack.iter().rev().any(|catches| catches.iter().any(|c| covers(c))) {
+        let covers =
+            |declared: &str| class_table::is_subclass_or_same(self.classes, exc_fqcn, declared);
+        if self
+            .catch_stack
+            .iter()
+            .rev()
+            .any(|catches| catches.iter().any(|c| covers(c)))
+        {
             return Ok(());
         }
         if self.method_throws.iter().any(|t| covers(t)) {
@@ -677,7 +880,10 @@ impl<'a> MethodChecker<'a> {
         let mut current = fqcn;
         loop {
             let info = self.classes.get(current)?;
-            if let Some(m) = info.methods.iter().find(|m| m.name == name && m.params.len() == argc) {
+            if let Some(m) = info.methods.iter().find(|m| {
+                m.name == name
+                    && class_table::arity_in_range(m.required_count, m.params.len(), argc)
+            }) {
                 return Some(m.return_ty.clone());
             }
             current = info.extends.as_deref()?;
@@ -687,11 +893,18 @@ impl<'a> MethodChecker<'a> {
     fn method_throws(&self, fqcn: &str, name: &str, argc: usize) -> Vec<Type> {
         let mut current = fqcn;
         loop {
-            let Some(info) = self.classes.get(current) else { return Vec::new() };
-            if let Some(m) = info.methods.iter().find(|m| m.name == name && m.params.len() == argc) {
+            let Some(info) = self.classes.get(current) else {
+                return Vec::new();
+            };
+            if let Some(m) = info.methods.iter().find(|m| {
+                m.name == name
+                    && class_table::arity_in_range(m.required_count, m.params.len(), argc)
+            }) {
                 return m.throws.clone();
             }
-            let Some(parent) = info.extends.as_deref() else { return Vec::new() };
+            let Some(parent) = info.extends.as_deref() else {
+                return Vec::new();
+            };
             current = parent;
         }
     }
@@ -700,14 +913,22 @@ impl<'a> MethodChecker<'a> {
     /// definitely assigned after it, and whether it unconditionally
     /// terminates the enclosing control-flow path (compiler.md § Definite
     /// assignment analysis, "Terminal statements").
-    fn check_block(&mut self, block: &[Stmt], assigned: HashSet<u32>) -> Result<(HashSet<u32>, bool), SemaError> {
+    fn check_block(
+        &mut self,
+        block: &[Stmt],
+        assigned: HashSet<u32>,
+    ) -> Result<(HashSet<u32>, bool), SemaError> {
         self.push_scope();
         let result = self.check_stmts(block, assigned);
         self.pop_scope();
         result
     }
 
-    fn check_stmts(&mut self, stmts: &[Stmt], mut assigned: HashSet<u32>) -> Result<(HashSet<u32>, bool), SemaError> {
+    fn check_stmts(
+        &mut self,
+        stmts: &[Stmt],
+        mut assigned: HashSet<u32>,
+    ) -> Result<(HashSet<u32>, bool), SemaError> {
         let mut terminated = false;
         for stmt in stmts {
             if terminated {
@@ -720,7 +941,11 @@ impl<'a> MethodChecker<'a> {
         Ok((assigned, terminated))
     }
 
-    fn check_stmt(&mut self, stmt: &Stmt, mut assigned: HashSet<u32>) -> Result<(HashSet<u32>, bool), SemaError> {
+    fn check_stmt(
+        &mut self,
+        stmt: &Stmt,
+        mut assigned: HashSet<u32>,
+    ) -> Result<(HashSet<u32>, bool), SemaError> {
         match stmt {
             Stmt::Return(Some(expr)) => {
                 let ty = self.check_expr(expr, &mut assigned)?;
@@ -744,15 +969,36 @@ impl<'a> MethodChecker<'a> {
                 // void-returning stdlib call.
                 let terminates = match expr {
                     Expr::MethodCall(target, name, _) if name == "exit" => {
-                        dotted_path(target).as_deref() == Some("system.ps.Process") && self.resolve("system").is_none()
+                        dotted_path(target).as_deref() == Some("system.ps.Process")
+                            && self.resolve("system").is_none()
                     }
                     _ => false,
                 };
                 Ok((assigned, terminates))
             }
-            Stmt::ThisCall(args) | Stmt::SuperCall(args) => {
+            Stmt::ThisCall(args) => {
                 for a in args {
-                    self.check_expr(a, &mut assigned)?;
+                    self.check_expr(&a.value, &mut assigned)?;
+                }
+                if let Some(ctor) =
+                    class_table::find_ctor(self.classes, &self.this_fqcn, args.len())
+                {
+                    let binding = bind_call_args(&ctor.param_names, ctor.required_count, args)?;
+                    self.check_ref_args(&ctor.param_names, &ctor.is_ref, &binding, args)?;
+                }
+                Ok((assigned, false))
+            }
+            Stmt::SuperCall(args) => {
+                for a in args {
+                    self.check_expr(&a.value, &mut assigned)?;
+                }
+                if let Some(Type::Named(super_fqcn)) = self.super_ty.clone() {
+                    if let Some(ctor) =
+                        class_table::find_ctor(self.classes, &super_fqcn, args.len())
+                    {
+                        let binding = bind_call_args(&ctor.param_names, ctor.required_count, args)?;
+                        self.check_ref_args(&ctor.param_names, &ctor.is_ref, &binding, args)?;
+                    }
                 }
                 Ok((assigned, false))
             }
@@ -763,8 +1009,17 @@ impl<'a> MethodChecker<'a> {
                 }
                 Ok((assigned, true))
             }
-            Stmt::Try { body, catches, finally } => self.check_try(body, catches, finally, assigned),
-            Stmt::VarDecl { ty, name, init, is_const } => {
+            Stmt::Try {
+                body,
+                catches,
+                finally,
+            } => self.check_try(body, catches, finally, assigned),
+            Stmt::VarDecl {
+                ty,
+                name,
+                init,
+                is_const,
+            } => {
                 let value_ty = match init {
                     Some(e) => Some(self.check_expr(e, &mut assigned)?),
                     None => None,
@@ -786,7 +1041,11 @@ impl<'a> MethodChecker<'a> {
                 }
                 Ok((assigned, false))
             }
-            Stmt::If { cond, then_branch, else_branch } => {
+            Stmt::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
                 self.check_expr(cond, &mut assigned)?;
                 let (then_assigned, then_term) = self.check_block(then_branch, assigned.clone())?;
                 let (else_assigned, else_term) = match else_branch {
@@ -797,7 +1056,13 @@ impl<'a> MethodChecker<'a> {
                     (true, true) => (then_assigned.union(&else_assigned).cloned().collect(), true),
                     (true, false) => (else_assigned, false),
                     (false, true) => (then_assigned, false),
-                    (false, false) => (then_assigned.intersection(&else_assigned).cloned().collect(), false),
+                    (false, false) => (
+                        then_assigned
+                            .intersection(&else_assigned)
+                            .cloned()
+                            .collect(),
+                        false,
+                    ),
                 })
             }
             Stmt::While { cond, body } => {
@@ -807,7 +1072,12 @@ impl<'a> MethodChecker<'a> {
                 self.check_block(body, assigned.clone())?;
                 Ok((assigned, false))
             }
-            Stmt::ForEach { ty, var, iterable, body } => {
+            Stmt::ForEach {
+                ty,
+                var,
+                iterable,
+                body,
+            } => {
                 let iterable_ty = self.check_expr(iterable, &mut assigned)?;
                 // Element type: `T` for a `T[]`, `T` for `system.List<T>`,
                 // `MapEntry<K, V>` for `system.Map<K, V>` (iteration
@@ -817,7 +1087,9 @@ impl<'a> MethodChecker<'a> {
                 // of labor as unknown classes/methods.
                 let elem_ty = match &iterable_ty {
                     Type::Array(elem) => (**elem).clone(),
-                    Type::Named(fqcn) => crate::native_generics::foreach_element_ty(fqcn).unwrap_or(Type::Void),
+                    Type::Named(fqcn) => {
+                        crate::native_generics::foreach_element_ty(fqcn).unwrap_or(Type::Void)
+                    }
                     _ => Type::Void,
                 };
                 self.push_scope();
@@ -837,8 +1109,12 @@ impl<'a> MethodChecker<'a> {
                 // `this.<field>` inside a `const` method, or a const/const
                 // `ref` parameter.
                 let is_readonly_collection = match iterable {
-                    Expr::FieldAccess(target, _) => self.is_const_method && matches!(**target, Expr::This),
-                    Expr::Ident(name) => self.resolve(name).is_some_and(|(id, _)| self.const_vars.contains(&id)),
+                    Expr::FieldAccess(target, _) => {
+                        self.is_const_method && matches!(**target, Expr::This)
+                    }
+                    Expr::Ident(name) => self
+                        .resolve(name)
+                        .is_some_and(|(id, _)| self.const_vars.contains(&id)),
                     _ => false,
                 };
                 if is_readonly_collection {
@@ -851,7 +1127,12 @@ impl<'a> MethodChecker<'a> {
                 // Zero iterations possible — same rule as `while`.
                 Ok((assigned, false))
             }
-            Stmt::For { init, cond, step, body } => {
+            Stmt::For {
+                init,
+                cond,
+                step,
+                body,
+            } => {
                 self.push_scope();
                 let mut inner = assigned.clone();
                 for s in init {
@@ -896,7 +1177,10 @@ impl<'a> MethodChecker<'a> {
             return Ok(());
         }
         if !types::is_assignable(value_ty, target_ty) {
-            return Err(SemaError::NotAssignable(types::display(value_ty), types::display(target_ty)));
+            return Err(SemaError::NotAssignable(
+                types::display(value_ty),
+                types::display(target_ty),
+            ));
         }
         Ok(())
     }
@@ -912,7 +1196,10 @@ impl<'a> MethodChecker<'a> {
             return false;
         };
         class_table::is_subclass_or_same(self.classes, from, to)
-            || self.classes.get(from).is_some_and(|info| info.implements.iter().any(|i| i == to))
+            || self
+                .classes
+                .get(from)
+                .is_some_and(|info| info.implements.iter().any(|i| i == to))
     }
 
     /// `(T) expr` cast validation — compiler.md § Cast validation / E007.
@@ -957,8 +1244,14 @@ impl<'a> MethodChecker<'a> {
             if f == t
                 || class_table::is_subclass_or_same(self.classes, f, t)
                 || class_table::is_subclass_or_same(self.classes, t, f)
-                || self.classes.get(f).is_some_and(|info| info.implements.iter().any(|i| i == t))
-                || self.classes.get(t).is_some_and(|info| info.implements.iter().any(|i| i == f))
+                || self
+                    .classes
+                    .get(f)
+                    .is_some_and(|info| info.implements.iter().any(|i| i == t))
+                || self
+                    .classes
+                    .get(t)
+                    .is_some_and(|info| info.implements.iter().any(|i| i == f))
             {
                 return Ok(());
             }
@@ -1012,15 +1305,22 @@ impl<'a> MethodChecker<'a> {
             Expr::Call(name, args) => {
                 let mut arg_types = Vec::with_capacity(args.len());
                 for a in args {
-                    arg_types.push(self.check_expr(a, assigned)?);
+                    arg_types.push(self.check_expr(&a.value, assigned)?);
                 }
                 // Unresolved calls: no dedicated E-code, deferred to nl-codegen.
-                let Some((param_types, return_ty, throws)) = self.sigs.get(name).cloned() else {
+                let Some((params, return_ty, throws)) = self.sigs.get(name).cloned() else {
                     return Ok(Type::Void);
                 };
-                if arg_types.len() == param_types.len() {
-                    for (actual, expected) in arg_types.iter().zip(&param_types) {
-                        self.check_assignable(actual, expected)?;
+                let names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
+                let required = class_table::required_count(&params);
+                let binding = bind_call_args(&names, required, args)?;
+                for (p, bound) in params.iter().zip(&binding) {
+                    if let Some(arg_idx) = bound {
+                        if p.is_ref {
+                            self.check_ref_arg(&p.name, &args[*arg_idx])?;
+                        }
+                        let expected = self.resolve_ty(&p.ty);
+                        self.check_assignable(&arg_types[*arg_idx], &expected)?;
                     }
                 }
                 for t in &throws {
@@ -1032,7 +1332,7 @@ impl<'a> MethodChecker<'a> {
             }
             Expr::New(class_name, _type_args, args) => {
                 for a in args {
-                    self.check_expr(a, assigned)?;
+                    self.check_expr(&a.value, assigned)?;
                 }
                 let fqcn = self.class_fqcn(class_name);
                 // compiler.md § Abstract classes and methods — E032.
@@ -1043,13 +1343,20 @@ impl<'a> MethodChecker<'a> {
                     // Constructors are never inherited (each class declares
                     // its own), so the declaring class is always `fqcn`
                     // itself — no `find_ctor`-with-owner needed here.
-                    if !class_table::is_accessible(self.classes, ctor.visibility, &fqcn, &self.this_fqcn) {
+                    if !class_table::is_accessible(
+                        self.classes,
+                        ctor.visibility,
+                        &fqcn,
+                        &self.this_fqcn,
+                    ) {
                         return Err(SemaError::MemberNotAccessible(
                             "<construct>".to_string(),
                             self.this_fqcn.clone(),
                             visibility_str(ctor.visibility),
                         ));
                     }
+                    let binding = bind_call_args(&ctor.param_names, ctor.required_count, args)?;
+                    self.check_ref_args(&ctor.param_names, &ctor.is_ref, &binding, args)?;
                     for t in ctor.throws.clone() {
                         if let Type::Named(exc_fqcn) = t {
                             self.require_handled(&exc_fqcn)?;
@@ -1058,22 +1365,40 @@ impl<'a> MethodChecker<'a> {
                 }
                 Ok(Type::Named(fqcn))
             }
-            Expr::NewArray(elem_ty, size) => {
-                let size_ty = self.check_expr(size, assigned)?;
-                if !types::is_numeric(&size_ty) {
-                    // No dedicated E-code for a non-int array size yet;
-                    // nl-codegen rejects it precisely.
+            Expr::NewArray(elem_ty, dims) => {
+                for size in dims.iter().flatten() {
+                    let size_ty = self.check_expr(size, assigned)?;
+                    if !types::is_numeric(&size_ty) {
+                        // No dedicated E-code for a non-int array size yet;
+                        // nl-codegen rejects it precisely.
+                    }
+                }
+                // compiler.md § Multidimensional array creation — E038:
+                // omitted sizes (`[]`) may only form a contiguous suffix
+                // from the right. `m` = how many leading dimensions are
+                // provided; anything from there on must stay omitted.
+                let m = dims.iter().take_while(|d| d.is_some()).count();
+                if dims[m..].iter().any(|d| d.is_some()) {
+                    return Err(SemaError::NonContiguousArrayDimensionOmission(
+                        new_array_source(elem_ty, dims),
+                    ));
                 }
                 let resolved = self.resolve_ty(elem_ty);
                 // compiler.md § Default values, "Array creation with fixed
                 // size" — E031: a non-nullable class/interface element type
-                // has no default value, so `new T[n]` is rejected. Scalars,
-                // `string`, and nullable references all have a valid default
-                // (see the table there) and are exempt.
-                if matches!(&resolved, Type::Named(_)) {
-                    return Err(SemaError::NonNullableArrayFixedSize(types::display(&resolved)));
+                // has no default value, so `new T[n]` is rejected. Only
+                // applies when every dimension is actually provided — an
+                // omitted trailing dimension makes the containing level's
+                // element type an array (always nullable as an element), so
+                // the missing-default problem never arises there. Scalars,
+                // `string`, and nullable references all have a valid
+                // default (see the table there) and are exempt regardless.
+                if dims.len() == m && matches!(&resolved, Type::Named(_)) {
+                    return Err(SemaError::NonNullableArrayFixedSize(types::display(
+                        &resolved,
+                    )));
                 }
-                Ok(Type::Array(Box::new(resolved)))
+                Ok(build_new_array_type(&resolved, dims.len(), m))
             }
             Expr::NewArrayInit(elem_ty, elements) => {
                 for e in elements {
@@ -1134,7 +1459,7 @@ impl<'a> MethodChecker<'a> {
                 let target_ty = self.check_expr(target, assigned)?;
                 let mut arg_types = Vec::with_capacity(args.len());
                 for a in args {
-                    arg_types.push(self.check_expr(a, assigned)?);
+                    arg_types.push(self.check_expr(&a.value, assigned)?);
                 }
                 // `system.Out.print(...)` and friends: the receiver is a
                 // dotted namespace/class path, not a value, so it never
@@ -1143,7 +1468,9 @@ impl<'a> MethodChecker<'a> {
                 if let Some(path) = dotted_path(target) {
                     let leading = path.split('.').next().expect("dotted_path is never empty");
                     if self.resolve(leading).is_none() {
-                        if let Some((param_types, return_ty)) = crate::stdlib::lookup(&path, name, args.len()) {
+                        if let Some((param_types, return_ty)) =
+                            crate::stdlib::lookup(&path, name, args.len())
+                        {
                             for (actual, expected) in arg_types.iter().zip(&param_types) {
                                 self.check_assignable(actual, expected)?;
                             }
@@ -1240,11 +1567,28 @@ impl<'a> MethodChecker<'a> {
                     }
                     Type::Named(fqcn) => {
                         self.check_method_access(fqcn, name, args.len())?;
+                        // compiler.md § Named and optional parameter rules —
+                        // E023-E025. Unresolved (unknown method) is left
+                        // lenient, like the rest of this branch.
+                        if let Some((_, method)) =
+                            class_table::find_method_owner(self.classes, fqcn, name, args.len())
+                        {
+                            let binding =
+                                bind_call_args(&method.param_names, method.required_count, args)?;
+                            self.check_ref_args(
+                                &method.param_names,
+                                &method.is_ref,
+                                &binding,
+                                args,
+                            )?;
+                        }
                         // compiler.md § Const methods — E011: a non-`const`
                         // method cannot be called on `this` from inside a
                         // `const` method.
                         if self.is_const_method && matches!(**target, Expr::This) {
-                            if let Some((_, method)) = class_table::find_method_owner(self.classes, fqcn, name, args.len()) {
+                            if let Some((_, method)) =
+                                class_table::find_method_owner(self.classes, fqcn, name, args.len())
+                            {
                                 if !method.is_const {
                                     return Err(SemaError::ConstMethodNonConstCall(name.clone()));
                                 }
@@ -1258,10 +1602,17 @@ impl<'a> MethodChecker<'a> {
                                 let is_readonly_loop_var = self.readonly_loop_vars.contains(&id);
                                 let is_const_var = self.const_vars.contains(&id);
                                 if is_readonly_loop_var || is_const_var {
-                                    if let Some((_, method)) = class_table::find_method_owner(self.classes, fqcn, name, args.len()) {
+                                    if let Some((_, method)) = class_table::find_method_owner(
+                                        self.classes,
+                                        fqcn,
+                                        name,
+                                        args.len(),
+                                    ) {
                                         if !method.is_const {
                                             return Err(if is_readonly_loop_var {
-                                                SemaError::ConstLoopVariableModification(var_name.clone())
+                                                SemaError::ConstLoopVariableModification(
+                                                    var_name.clone(),
+                                                )
                                             } else {
                                                 SemaError::ConstModification(var_name.clone())
                                             });
@@ -1275,7 +1626,9 @@ impl<'a> MethodChecker<'a> {
                                 self.require_handled(&exc_fqcn)?;
                             }
                         }
-                        Ok(self.method_return_ty(fqcn, name, args.len()).unwrap_or(Type::Void))
+                        Ok(self
+                            .method_return_ty(fqcn, name, args.len())
+                            .unwrap_or(Type::Void))
                     }
                     _ => Ok(Type::Void),
                 }
@@ -1318,9 +1671,15 @@ impl<'a> MethodChecker<'a> {
                 let ty = self.check_expr(inner, assigned)?;
                 match op {
                     UnOp::Neg if types::is_numeric(&ty) => Ok(ty),
-                    UnOp::Neg => Err(SemaError::BadUnaryOperator("-".to_string(), types::display(&ty))),
+                    UnOp::Neg => Err(SemaError::BadUnaryOperator(
+                        "-".to_string(),
+                        types::display(&ty),
+                    )),
                     UnOp::Not if matches!(ty, Type::Bool) => Ok(Type::Bool),
-                    UnOp::Not => Err(SemaError::BadUnaryOperator("!".to_string(), types::display(&ty))),
+                    UnOp::Not => Err(SemaError::BadUnaryOperator(
+                        "!".to_string(),
+                        types::display(&ty),
+                    )),
                 }
             }
             Expr::Binary(op, lhs, rhs) => self.check_binary(*op, lhs, rhs, assigned),
@@ -1328,7 +1687,10 @@ impl<'a> MethodChecker<'a> {
             Expr::Ternary(cond, then_e, else_e) => {
                 let cond_ty = self.check_expr(cond, assigned)?;
                 if !matches!(cond_ty, Type::Bool) {
-                    return Err(SemaError::BadUnaryOperator("?:".to_string(), types::display(&cond_ty)));
+                    return Err(SemaError::BadUnaryOperator(
+                        "?:".to_string(),
+                        types::display(&cond_ty),
+                    ));
                 }
                 let then_ty = self.check_expr(then_e, assigned)?;
                 // Lenient about mismatched branch types, same as `match`
@@ -1345,7 +1707,12 @@ impl<'a> MethodChecker<'a> {
             // to report (no `Type::Function` this phase — see PLAN.md's
             // closures gap), so `Type::Void`, same leniency `check_assignable`
             // already gives every other not-yet-modeled expression form.
-            Expr::Closure { params, body, return_type, .. } => {
+            Expr::Closure {
+                params,
+                body,
+                return_type,
+                ..
+            } => {
                 self.push_scope();
                 let mut inner_assigned = assigned.clone();
                 for p in params {
@@ -1353,6 +1720,11 @@ impl<'a> MethodChecker<'a> {
                     let id = self.declare(&p.name, ty);
                     if p.is_const {
                         self.const_vars.insert(id);
+                    }
+                    if let Some(default) = &p.default {
+                        if !is_const_expr(default) {
+                            return Err(SemaError::DefaultNotConstant(p.name.clone()));
+                        }
                     }
                     inner_assigned.insert(id);
                 }
@@ -1369,8 +1741,12 @@ impl<'a> MethodChecker<'a> {
                     None => self.skip_return_check = true,
                 }
                 let body_result = match body {
-                    nl_syntax::ast::ClosureBody::Block(block) => self.check_stmts(block, inner_assigned).map(|_| ()),
-                    nl_syntax::ast::ClosureBody::Expr(e) => self.check_expr(e, &mut inner_assigned).map(|_| ()),
+                    nl_syntax::ast::ClosureBody::Block(block) => {
+                        self.check_stmts(block, inner_assigned).map(|_| ())
+                    }
+                    nl_syntax::ast::ClosureBody::Expr(e) => {
+                        self.check_expr(e, &mut inner_assigned).map(|_| ())
+                    }
                 };
                 self.return_ty = saved_return_ty;
                 self.skip_return_check = saved_skip;
@@ -1386,7 +1762,12 @@ impl<'a> MethodChecker<'a> {
     /// `true` and `false` present); everything else requires `default`.
     /// Two arms with the same constant literal are also E047 (the second
     /// would be unreachable).
-    fn check_match(&mut self, subject: &Expr, arms: &[MatchArm], assigned: &mut HashSet<u32>) -> Result<Type, SemaError> {
+    fn check_match(
+        &mut self,
+        subject: &Expr,
+        arms: &[MatchArm],
+        assigned: &mut HashSet<u32>,
+    ) -> Result<Type, SemaError> {
         let subject_ty = self.check_expr(subject, assigned)?;
         let mut seen: Vec<&Expr> = Vec::new();
         let mut has_default = false;
@@ -1398,7 +1779,9 @@ impl<'a> MethodChecker<'a> {
                 None => has_default = true,
                 Some(pat) => {
                     if seen.iter().any(|s| literal_eq(s, pat)) {
-                        return Err(SemaError::MatchNotExhaustive("unreachable duplicate arm".to_string()));
+                        return Err(SemaError::MatchNotExhaustive(
+                            "unreachable duplicate arm".to_string(),
+                        ));
                     }
                     seen.push(pat);
                     match pat {
@@ -1434,7 +1817,10 @@ impl<'a> MethodChecker<'a> {
             for earlier in &catches[..j] {
                 let ty_i = self.class_fqcn(&earlier.ty);
                 if class_table::is_subclass_or_same(self.classes, &ty_j, &ty_i) {
-                    return Err(SemaError::UnreachableCatch(catches[j].ty.clone(), earlier.ty.clone()));
+                    return Err(SemaError::UnreachableCatch(
+                        catches[j].ty.clone(),
+                        earlier.ty.clone(),
+                    ));
                 }
             }
         }
@@ -1469,7 +1855,12 @@ impl<'a> MethodChecker<'a> {
         }
     }
 
-    fn check_assign(&mut self, target: &LValue, value: &Expr, assigned: &mut HashSet<u32>) -> Result<Type, SemaError> {
+    fn check_assign(
+        &mut self,
+        target: &LValue,
+        value: &Expr,
+        assigned: &mut HashSet<u32>,
+    ) -> Result<Type, SemaError> {
         match target {
             LValue::Local(name) => {
                 let value_ty = self.check_expr(value, assigned)?;
@@ -1524,15 +1915,27 @@ impl<'a> MethodChecker<'a> {
         }
     }
 
-    fn check_binary(&mut self, op: BinOp, lhs: &Expr, rhs: &Expr, assigned: &mut HashSet<u32>) -> Result<Type, SemaError> {
+    fn check_binary(
+        &mut self,
+        op: BinOp,
+        lhs: &Expr,
+        rhs: &Expr,
+        assigned: &mut HashSet<u32>,
+    ) -> Result<Type, SemaError> {
         if matches!(op, BinOp::And | BinOp::Or) {
             let lty = self.check_expr(lhs, assigned)?;
             if !matches!(lty, Type::Bool) {
-                return Err(SemaError::BadUnaryOperator(op_symbol(op), types::display(&lty)));
+                return Err(SemaError::BadUnaryOperator(
+                    op_symbol(op),
+                    types::display(&lty),
+                ));
             }
             let rty = self.check_expr(rhs, assigned)?;
             if !matches!(rty, Type::Bool) {
-                return Err(SemaError::BadUnaryOperator(op_symbol(op), types::display(&rty)));
+                return Err(SemaError::BadUnaryOperator(
+                    op_symbol(op),
+                    types::display(&rty),
+                ));
             }
             return Ok(Type::Bool);
         }
@@ -1556,30 +1959,63 @@ impl<'a> MethodChecker<'a> {
 
     fn check_numeric_or_eq(&self, op: BinOp, lty: &Type, rty: &Type) -> Result<Type, SemaError> {
         match op {
-            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => types::widen_numeric(lty, rty)
-                // vm.md § Integer arithmetic: there is no byte-typed
-                // arithmetic opcode — `byte` operands are always widened to
-                // `int` before IADD/ISUB/etc, even when both sides are
-                // `byte` (widen_numeric's identical-type passthrough would
-                // otherwise keep the result as `byte`, which the VM never
-                // actually produces).
-                .map(|widened| if matches!(widened, Type::Byte) { Type::Int } else { widened })
-                .ok_or_else(|| SemaError::BadBinaryOperator(op_symbol(op), types::display(lty), types::display(rty))),
+            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
+                types::widen_numeric(lty, rty)
+                    // vm.md § Integer arithmetic: there is no byte-typed
+                    // arithmetic opcode — `byte` operands are always widened to
+                    // `int` before IADD/ISUB/etc, even when both sides are
+                    // `byte` (widen_numeric's identical-type passthrough would
+                    // otherwise keep the result as `byte`, which the VM never
+                    // actually produces).
+                    .map(|widened| {
+                        if matches!(widened, Type::Byte) {
+                            Type::Int
+                        } else {
+                            widened
+                        }
+                    })
+                    .ok_or_else(|| {
+                        SemaError::BadBinaryOperator(
+                            op_symbol(op),
+                            types::display(lty),
+                            types::display(rty),
+                        )
+                    })
+            }
             BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => types::widen_numeric(lty, rty)
                 .map(|_| Type::Bool)
-                .ok_or_else(|| SemaError::BadBinaryOperator(op_symbol(op), types::display(lty), types::display(rty))),
+                .ok_or_else(|| {
+                    SemaError::BadBinaryOperator(
+                        op_symbol(op),
+                        types::display(lty),
+                        types::display(rty),
+                    )
+                }),
             // specs.md § Comparison operators — `<=>` always yields `int`
             // (-1/0/1), never the widened operand type itself.
             BinOp::Cmp3 => types::widen_numeric(lty, rty)
                 .map(|_| Type::Int)
-                .ok_or_else(|| SemaError::BadBinaryOperator(op_symbol(op), types::display(lty), types::display(rty))),
+                .ok_or_else(|| {
+                    SemaError::BadBinaryOperator(
+                        op_symbol(op),
+                        types::display(lty),
+                        types::display(rty),
+                    )
+                }),
             BinOp::Eq | BinOp::Ne => {
                 if matches!(lty, Type::NullT) || matches!(rty, Type::NullT) {
                     let other = if matches!(lty, Type::NullT) { rty } else { lty };
-                    if matches!(other, Type::NullT) || types::is_nullable(other) || matches!(other, Type::Named(_) | Type::Array(_)) {
+                    if matches!(other, Type::NullT)
+                        || types::is_nullable(other)
+                        || matches!(other, Type::Named(_) | Type::Array(_))
+                    {
                         return Ok(Type::Bool);
                     }
-                    return Err(SemaError::BadBinaryOperator(op_symbol(op), types::display(lty), types::display(rty)));
+                    return Err(SemaError::BadBinaryOperator(
+                        op_symbol(op),
+                        types::display(lty),
+                        types::display(rty),
+                    ));
                 }
                 if types::widen_numeric(lty, rty).is_some()
                     || types::is_assignable(lty, rty)
@@ -1587,11 +2023,120 @@ impl<'a> MethodChecker<'a> {
                 {
                     return Ok(Type::Bool);
                 }
-                Err(SemaError::BadBinaryOperator(op_symbol(op), types::display(lty), types::display(rty)))
+                Err(SemaError::BadBinaryOperator(
+                    op_symbol(op),
+                    types::display(lty),
+                    types::display(rty),
+                ))
             }
             BinOp::And | BinOp::Or => unreachable!("handled in check_binary"),
         }
     }
+}
+
+/// compiler.md § Named and optional parameter rules — E026: a default
+/// value must be a compile-time constant. This codebase has no general
+/// constant-folding evaluator (out of scope), so "compile-time constant"
+/// is recognized structurally: a literal, or a unary minus directly on a
+/// numeric literal (`-1`, `-2.5`) — covers every default value shown in
+/// specs.md's own examples.
+fn is_const_expr(expr: &Expr) -> bool {
+    match expr {
+        Expr::IntLit(_)
+        | Expr::FloatLit(_)
+        | Expr::BoolLit(_)
+        | Expr::StringLit(_)
+        | Expr::NullLit => true,
+        Expr::Unary(UnOp::Neg, inner) => matches!(**inner, Expr::IntLit(_) | Expr::FloatLit(_)),
+        _ => false,
+    }
+}
+
+/// compiler.md § Named and optional parameter rules (E023-E026). Binds
+/// call-site `args` (source order) against a callee's parameters —
+/// `names[i]` is parameter `i`'s name, `required` is how many leading
+/// parameters have no default. Returns one `Option<usize>` per parameter:
+/// the index into `args` supplying it, or `None` if its default is used.
+/// Positional arguments must precede all named ones (E024); a parameter
+/// can't be supplied twice (E025, whether positional+named or named
+/// twice); every required parameter must end up bound (E023). An unknown
+/// named argument or a positional argument beyond the last parameter has
+/// no dedicated E-code — deferred to nl-codegen, like every other
+/// unresolved reference in this checker.
+fn bind_call_args(
+    names: &[String],
+    required: usize,
+    args: &[Arg],
+) -> Result<Vec<Option<usize>>, SemaError> {
+    let mut binding: Vec<Option<usize>> = vec![None; names.len()];
+    let mut seen_named = false;
+    for (i, arg) in args.iter().enumerate() {
+        match &arg.name {
+            None => {
+                if seen_named {
+                    return Err(SemaError::PositionalArgAfterNamed);
+                }
+                if i < binding.len() {
+                    binding[i] = Some(i);
+                }
+            }
+            Some(name) => {
+                seen_named = true;
+                let Some(p_idx) = names.iter().position(|n| n == name) else {
+                    continue;
+                };
+                if binding[p_idx].is_some() {
+                    return Err(SemaError::ParamProvidedTwice(name.clone()));
+                }
+                binding[p_idx] = Some(i);
+            }
+        }
+    }
+    for (p_idx, name) in names.iter().enumerate().take(required) {
+        if binding[p_idx].is_none() {
+            return Err(SemaError::RequiredParamNotProvided(name.clone()));
+        }
+    }
+    Ok(binding)
+}
+
+/// The static type of `new T[n1]...[nk]`, given the resolved base type `T`,
+/// the total dimension count `k`, and `m` (how many leading dimensions are
+/// actually provided) — compiler.md § Multidimensional array creation.
+/// When every dimension is provided (`m == k`) this is just `T` wrapped in
+/// `k` plain arrays. Otherwise the first omitted level's element type
+/// becomes nullable exactly once (not at every level below it — vm.md's
+/// `NEW_ARRAY` already defaults unallocated reference-typed elements to
+/// `null` on its own), then that nullable type is wrapped in the `m`
+/// allocated array layers. `m == 0` means nothing is ever allocated, so the
+/// whole expression is itself nullable.
+fn build_new_array_type(resolved_elem: &Type, k: usize, m: usize) -> Type {
+    fn plain_array(base: &Type, depth: usize) -> Type {
+        let mut ty = base.clone();
+        for _ in 0..depth {
+            ty = Type::Array(Box::new(ty));
+        }
+        ty
+    }
+    if m == k {
+        return plain_array(resolved_elem, k);
+    }
+    let unallocated = plain_array(resolved_elem, k - m);
+    let nullable = Type::Union(vec![unallocated, Type::NullT]);
+    plain_array(&nullable, m)
+}
+
+/// Reconstructs `new T[n1][n2]...` (or `[]` for an omitted size) as source
+/// text for the E038 error message.
+fn new_array_source(elem_ty: &Type, dims: &[Option<Expr>]) -> String {
+    let mut s = format!("new {}", types::display(elem_ty));
+    for d in dims {
+        match d {
+            Some(_) => s.push_str("[n]"),
+            None => s.push_str("[]"),
+        }
+    }
+    s
 }
 
 /// Reconstructs a dotted path (`"system.Out"`) from a chain of
@@ -1619,7 +2164,10 @@ fn literal_eq(a: &Expr, b: &Expr) -> bool {
 }
 
 fn is_concat_operand(ty: &Type) -> bool {
-    matches!(ty, Type::Int | Type::Float | Type::Bool | Type::Byte | Type::StringT)
+    matches!(
+        ty,
+        Type::Int | Type::Float | Type::Bool | Type::Byte | Type::StringT
+    )
 }
 
 fn visibility_str(v: nl_syntax::ast::Visibility) -> String {

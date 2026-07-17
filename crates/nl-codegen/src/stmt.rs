@@ -30,7 +30,12 @@ impl<'a> Emitter<'a> {
             Stmt::Expr(expr) => {
                 self.compile_expr_stmt(expr)?;
             }
-            Stmt::VarDecl { ty, name, init: Some(init), is_const: _ } => {
+            Stmt::VarDecl {
+                ty,
+                name,
+                init: Some(init),
+                is_const: _,
+            } => {
                 let init_ty = self.compile_expr(init)?;
                 let declared_ty = match ty {
                     Some(t) => expr_ty_of(&resolve_type(t, self.imports)),
@@ -40,7 +45,12 @@ impl<'a> Emitter<'a> {
                 let index = self.declare_local(name.clone(), declared_ty);
                 self.emit_store(index);
             }
-            Stmt::VarDecl { ty, name, init: None, is_const: _ } => {
+            Stmt::VarDecl {
+                ty,
+                name,
+                init: None,
+                is_const: _,
+            } => {
                 // `auto` without an initializer is rejected by nl-sema
                 // (E005); reaching this point implies `ty` is present. The
                 // slot is reserved but left unwritten — nl-sema's definite
@@ -62,7 +72,11 @@ impl<'a> Emitter<'a> {
                 self.compile_expr(expr)?;
                 self.op(Opcode::Throw, -1);
             }
-            Stmt::Try { body, catches, finally } => self.compile_try(body, catches, finally)?,
+            Stmt::Try {
+                body,
+                catches,
+                finally,
+            } => self.compile_try(body, catches, finally)?,
             Stmt::If {
                 cond,
                 then_branch,
@@ -75,10 +89,17 @@ impl<'a> Emitter<'a> {
                 step,
                 body,
             } => self.compile_for(init, cond.as_ref(), step, body)?,
-            Stmt::ForEach { ty, var, iterable, body } => self.compile_foreach(ty.as_ref(), var, iterable, body)?,
+            Stmt::ForEach {
+                ty,
+                var,
+                iterable,
+                body,
+            } => self.compile_foreach(ty.as_ref(), var, iterable, body)?,
             Stmt::Break => {
                 if self.loops.is_empty() {
-                    return Err(CodegenError::Unsupported("'break' outside a loop".to_string()));
+                    return Err(CodegenError::Unsupported(
+                        "'break' outside a loop".to_string(),
+                    ));
                 }
                 self.replay_finally_blocks(self.loops.last().unwrap().finally_depth)?;
                 let patch = self.branch(Opcode::Goto, 0);
@@ -86,7 +107,9 @@ impl<'a> Emitter<'a> {
             }
             Stmt::Continue => {
                 if self.loops.is_empty() {
-                    return Err(CodegenError::Unsupported("'continue' outside a loop".to_string()));
+                    return Err(CodegenError::Unsupported(
+                        "'continue' outside a loop".to_string(),
+                    ));
                 }
                 self.replay_finally_blocks(self.loops.last().unwrap().finally_depth)?;
                 let patch = self.branch(Opcode::Goto, 0);
@@ -110,7 +133,12 @@ impl<'a> Emitter<'a> {
     /// pushed here and popped before `finally`'s own code is emitted, so a
     /// `finally` block's own exits don't re-trigger it but still trigger
     /// any *outer* enclosing `finally`).
-    fn compile_try(&mut self, body: &Block, catches: &[CatchClause], finally: &Option<Block>) -> Result<(), CodegenError> {
+    fn compile_try(
+        &mut self,
+        body: &Block,
+        catches: &[CatchClause],
+        finally: &Option<Block>,
+    ) -> Result<(), CodegenError> {
         if let Some(finally_body) = finally {
             self.finally_stack.push(finally_body.clone());
         }
@@ -146,7 +174,8 @@ impl<'a> Emitter<'a> {
 
         let finally_handler_pc = if let Some(finally_body) = finally {
             let handler_pc = self.code.len();
-            let exc_local = self.declare_scratch_local(expr_ty_of(&Type::Named("Exception".to_string())));
+            let exc_local =
+                self.declare_scratch_local(expr_ty_of(&Type::Named("Exception".to_string())));
             self.emit_store(exc_local);
             self.compile_block(finally_body)?;
             self.op_u16(Opcode::Load, exc_local, 1);
@@ -186,7 +215,12 @@ impl<'a> Emitter<'a> {
         Ok(())
     }
 
-    fn compile_if(&mut self, cond: &nl_syntax::ast::Expr, then_branch: &Block, else_branch: Option<&[Stmt]>) -> Result<(), CodegenError> {
+    fn compile_if(
+        &mut self,
+        cond: &nl_syntax::ast::Expr,
+        then_branch: &Block,
+        else_branch: Option<&[Stmt]>,
+    ) -> Result<(), CodegenError> {
         self.compile_expr_bool(cond)?;
         let false_patch = self.branch(Opcode::IfFalse, -1);
         self.compile_block(then_branch)?;
@@ -207,7 +241,11 @@ impl<'a> Emitter<'a> {
         Ok(())
     }
 
-    fn compile_while(&mut self, cond: &nl_syntax::ast::Expr, body: &Block) -> Result<(), CodegenError> {
+    fn compile_while(
+        &mut self,
+        cond: &nl_syntax::ast::Expr,
+        body: &Block,
+    ) -> Result<(), CodegenError> {
         let cond_pc = self.code.len();
         self.compile_expr_bool(cond)?;
         let exit_patch = self.branch(Opcode::IfFalse, -1);
@@ -378,17 +416,35 @@ impl<'a> Emitter<'a> {
     /// One `INVOKE_INSTANCE` against a native generic class (the arguments
     /// and receiver must already be on the stack) — same method-ref shape
     /// `compile_method_call` emits for an explicit `list.get(i)` call.
-    fn emit_native_instance_call(&mut self, fqcn: &str, name: &str, argc: usize) -> Result<(), CodegenError> {
-        let (params, ret) = crate::native_generics::method_signature(fqcn, name, argc).ok_or_else(|| {
-            CodegenError::Unsupported(format!("unknown method '{name}' on '{fqcn}' with {argc} argument(s)"))
-        })?;
+    fn emit_native_instance_call(
+        &mut self,
+        fqcn: &str,
+        name: &str,
+        argc: usize,
+    ) -> Result<(), CodegenError> {
+        let (params, ret) =
+            crate::native_generics::method_signature(fqcn, name, argc).ok_or_else(|| {
+                CodegenError::Unsupported(format!(
+                    "unknown method '{name}' on '{fqcn}' with {argc} argument(s)"
+                ))
+            })?;
         let descriptor = crate::type_desc::method_descriptor(&params, &ret);
         let name_index = self.cp.add_utf8(name.to_string());
         let descriptor_index = self.cp.add_type_desc(&descriptor);
         let class_index = self.cp.add_class(fqcn);
-        let method_ref = self.cp.add_method_ref(class_index, name_index, descriptor_index);
-        let result_delta = if expr_ty_of(&ret) == ExprTy::Void { 0 } else { 1 };
-        self.op_u16(Opcode::InvokeInstance, method_ref, result_delta - argc as i32 - 1);
+        let method_ref = self
+            .cp
+            .add_method_ref(class_index, name_index, descriptor_index);
+        let result_delta = if expr_ty_of(&ret) == ExprTy::Void {
+            0
+        } else {
+            1
+        };
+        self.op_u16(
+            Opcode::InvokeInstance,
+            method_ref,
+            result_delta - argc as i32 - 1,
+        );
         Ok(())
     }
 }

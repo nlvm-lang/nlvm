@@ -83,7 +83,14 @@ pub fn enum_const_ty(fqcn: &str, name: &str) -> Option<Type> {
 
 /// Shared with `nl_codegen::stdlib::enum_const_value`, which assigns the
 /// matching int tag by position in this same list — keep both in sync.
-pub const FILE_MODES: [&str; 6] = ["Read", "Write", "Append", "ReadWrite", "ReadWriteTruncate", "ReadWriteAppend"];
+pub const FILE_MODES: [&str; 6] = [
+    "Read",
+    "Write",
+    "Append",
+    "ReadWrite",
+    "ReadWriteTruncate",
+    "ReadWriteAppend",
+];
 
 /// `(param_types, return_type)` for `fqcn.name(argc args)`, or `None` if
 /// unknown (falls back to the caller's existing lenient handling).
@@ -106,8 +113,12 @@ pub fn lookup(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>, Type)> 
     let string_array = Type::Array(Box::new(Type::StringT));
     let byte_array = Type::Array(Box::new(Type::Byte));
     match (fqcn, name, argc) {
-        ("system.Out", "print", 1) | ("system.Out", "println", 1) => Some((vec![printable], Type::Void)),
-        ("system.Err", "print", 1) | ("system.Err", "println", 1) => Some((vec![printable], Type::Void)),
+        ("system.Out", "print", 1) | ("system.Out", "println", 1) => {
+            Some((vec![printable], Type::Void))
+        }
+        ("system.Err", "print", 1) | ("system.Err", "println", 1) => {
+            Some((vec![printable], Type::Void))
+        }
         ("system.In", "readLine", 0) => Some((vec![], nullable(Type::StringT))),
         ("system.Int", "parse", 1) => Some((vec![Type::StringT], Type::Int)),
         ("system.Int", "tryParse", 1) => Some((vec![Type::StringT], nullable(Type::Int))),
@@ -121,14 +132,23 @@ pub fn lookup(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>, Type)> 
         ("system.String", "length", 1) => Some((vec![Type::StringT], Type::Int)),
         ("system.String", "charAt", 2) => Some((vec![Type::StringT, Type::Int], Type::StringT)),
         ("system.String", "substring", 2) => Some((vec![Type::StringT, Type::Int], Type::StringT)),
-        ("system.String", "substring", 3) => Some((vec![Type::StringT, Type::Int, Type::Int], Type::StringT)),
+        ("system.String", "substring", 3) => {
+            Some((vec![Type::StringT, Type::Int, Type::Int], Type::StringT))
+        }
         ("system.String", "indexOf", 2) => Some((vec![Type::StringT, Type::StringT], Type::Int)),
-        ("system.String", "indexOf", 3) => Some((vec![Type::StringT, Type::StringT, Type::Int], Type::Int)),
+        ("system.String", "indexOf", 3) => {
+            Some((vec![Type::StringT, Type::StringT, Type::Int], Type::Int))
+        }
         ("system.String", "contains", 2) => Some((vec![Type::StringT, Type::StringT], Type::Bool)),
         ("system.String", "toUpperCase", 1) => Some((vec![Type::StringT], Type::StringT)),
         ("system.String", "toLowerCase", 1) => Some((vec![Type::StringT], Type::StringT)),
-        ("system.String", "replace", 3) => Some((vec![Type::StringT, Type::StringT, Type::StringT], Type::StringT)),
-        ("system.String", "startsWith", 2) => Some((vec![Type::StringT, Type::StringT], Type::Bool)),
+        ("system.String", "replace", 3) => Some((
+            vec![Type::StringT, Type::StringT, Type::StringT],
+            Type::StringT,
+        )),
+        ("system.String", "startsWith", 2) => {
+            Some((vec![Type::StringT, Type::StringT], Type::Bool))
+        }
         ("system.String", "endsWith", 2) => Some((vec![Type::StringT, Type::StringT], Type::Bool)),
         ("system.String", "trim", 1) => Some((vec![Type::StringT], Type::StringT)),
         ("system.String", "split", 2) => Some((vec![Type::StringT, Type::StringT], string_array)),
@@ -136,7 +156,9 @@ pub fn lookup(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>, Type)> 
         ("system.io.File", "open", 1) => Some((vec![Type::StringT], file_handle())),
         ("system.io.File", "open", 2) => Some((vec![Type::StringT, file_mode()], file_handle())),
         ("system.io.File", "readAllText", 1) => Some((vec![Type::StringT], Type::StringT)),
-        ("system.io.File", "writeAllText", 2) => Some((vec![Type::StringT, Type::StringT], Type::Void)),
+        ("system.io.File", "writeAllText", 2) => {
+            Some((vec![Type::StringT, Type::StringT], Type::Void))
+        }
         ("system.io.File", "glob", 2) => Some((vec![Type::StringT, Type::StringT], string_array)),
         ("system.io.Directory", "list", 1) => Some((vec![Type::StringT], string_array)),
         ("system.io.Directory", "create", 1) => Some((vec![Type::StringT], Type::Void)),
@@ -150,12 +172,14 @@ pub fn lookup(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>, Type)> 
         // stdlib.md § system.io.Grep — the two `search` overloads differ in
         // arity (file path vs dirPath+recursive), so unlike
         // `system.ps.Process.run` above they need no union-type trick.
-        ("system.io.Grep", "search", 2) => {
-            Some((vec![Type::StringT, Type::StringT], Type::Array(Box::new(grep_match()))))
-        }
-        ("system.io.Grep", "search", 3) => {
-            Some((vec![Type::StringT, Type::StringT, Type::Bool], Type::Array(Box::new(grep_match()))))
-        }
+        ("system.io.Grep", "search", 2) => Some((
+            vec![Type::StringT, Type::StringT],
+            Type::Array(Box::new(grep_match())),
+        )),
+        ("system.io.Grep", "search", 3) => Some((
+            vec![Type::StringT, Type::StringT, Type::Bool],
+            Type::Array(Box::new(grep_match())),
+        )),
         ("system.SecureRandom", "nextBytes", 1) => Some((vec![byte_array], Type::Void)),
         ("system.SecureRandom", "nextInt", 0) => Some((vec![], Type::Int)),
         ("system.SecureRandom", "nextInt", 1) => Some((vec![Type::Int], Type::Int)),
@@ -169,9 +193,13 @@ pub fn lookup(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>, Type)> 
         // stdlib.md § system.net.TcpStream/Http — `connect`/`get`/`post`
         // are the only *static* network methods (everything else on these
         // classes is instance dispatch, see `instance_lookup`).
-        ("system.net.TcpStream", "connect", 2) => Some((vec![Type::StringT, Type::Int], tcp_stream())),
+        ("system.net.TcpStream", "connect", 2) => {
+            Some((vec![Type::StringT, Type::Int], tcp_stream()))
+        }
         ("system.net.Http", "get", 1) => Some((vec![Type::StringT], http_response())),
-        ("system.net.Http", "post", 2) => Some((vec![Type::StringT, Type::StringT], http_response())),
+        ("system.net.Http", "post", 2) => {
+            Some((vec![Type::StringT, Type::StringT], http_response()))
+        }
         // `system.thread.Thread.sleep` is the one *static* method on an
         // otherwise instance-dispatch class (`is_native_instance` below) —
         // same shape as `system.net.TcpStream.connect`.
@@ -186,11 +214,14 @@ pub fn lookup(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>, Type)> 
         // its own generic `signature` table (a union collapses to its first
         // member for codegen purposes, which would wrongly reject the
         // `string[]` overload — see `nl_codegen::expr::compile_stdlib_call`).
-        ("system.ps.Process", "run", 1) => {
-            Some((vec![Type::Union(vec![Type::StringT, string_array.clone()])], process_result()))
-        }
+        ("system.ps.Process", "run", 1) => Some((
+            vec![Type::Union(vec![Type::StringT, string_array.clone()])],
+            process_result(),
+        )),
         ("system.ps.Process", "list", 0) => Some((vec![], Type::Array(Box::new(process_info())))),
-        ("system.ps.Process", "list", 1) => Some((vec![Type::Int], Type::Array(Box::new(process_info())))),
+        ("system.ps.Process", "list", 1) => {
+            Some((vec![Type::Int], Type::Array(Box::new(process_info()))))
+        }
         ("system.ps.Process", "pid", 0) => Some((vec![], Type::Int)),
         // `exit` never actually returns (stdlib.md: "Terminal statement:
         // does not return"); `nl-sema::checker::check_stmt` special-cases
@@ -204,14 +235,21 @@ pub fn lookup(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>, Type)> 
         ("system.ps.Process", "setCwd", 1) => Some((vec![Type::StringT], Type::Void)),
         // stdlib.md § system.text.Regex/system.text.Encoding.
         ("system.text.Regex", "match", 2) => Some((vec![Type::StringT, Type::StringT], Type::Bool)),
-        ("system.text.Regex", "matchFirst", 2) => Some((vec![Type::StringT, Type::StringT], nullable(regex_match()))),
-        ("system.text.Regex", "replace", 3) => {
-            Some((vec![Type::StringT, Type::StringT, Type::StringT], Type::StringT))
+        ("system.text.Regex", "matchFirst", 2) => {
+            Some((vec![Type::StringT, Type::StringT], nullable(regex_match())))
         }
-        ("system.text.Regex", "split", 2) => Some((vec![Type::StringT, Type::StringT], string_array)),
+        ("system.text.Regex", "replace", 3) => Some((
+            vec![Type::StringT, Type::StringT, Type::StringT],
+            Type::StringT,
+        )),
+        ("system.text.Regex", "split", 2) => {
+            Some((vec![Type::StringT, Type::StringT], string_array))
+        }
         ("system.text.Regex", "escape", 1) => Some((vec![Type::StringT], Type::StringT)),
         ("system.text.Encoding", "encodeUtf8", 1) => Some((vec![Type::StringT], byte_array)),
-        ("system.text.Encoding", "decodeUtf8", 1) => Some((vec![byte_array.clone()], Type::StringT)),
+        ("system.text.Encoding", "decodeUtf8", 1) => {
+            Some((vec![byte_array.clone()], Type::StringT))
+        }
         ("system.text.Encoding", "base64Encode", 1) => Some((vec![byte_array], Type::StringT)),
         ("system.text.Encoding", "base64Decode", 1) => {
             Some((vec![Type::StringT], Type::Array(Box::new(Type::Byte))))
@@ -237,7 +275,9 @@ pub fn result_field_ty(fqcn: &str, name: &str) -> Option<Type> {
     match (fqcn, name) {
         ("system.net.HttpResponse", "statusCode") => Some(Type::Int),
         ("system.net.HttpResponse", "body") => Some(Type::StringT),
-        ("system.net.HttpResponse", "headers") => Some(nullable(Type::Array(Box::new(Type::StringT)))),
+        ("system.net.HttpResponse", "headers") => {
+            Some(nullable(Type::Array(Box::new(Type::StringT))))
+        }
         // stdlib.md § Result types — `system.ps.ProcessInfo` (one entry of
         // `Process.list()`) and `system.ps.ProcessResult` (`Process.run()`'s
         // outcome), same non-generic native result shape as `HttpResponse`.
@@ -290,24 +330,35 @@ pub fn instance_lookup(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>
     let byte_array = Type::Array(Box::new(Type::Byte));
     match (fqcn, name, argc) {
         ("system.io.FileHandle", "close", 0) => Some((vec![], Type::Void)),
-        ("system.io.FileHandle", "read", 3) => Some((vec![byte_array, Type::Int, Type::Int], Type::Int)),
+        ("system.io.FileHandle", "read", 3) => {
+            Some((vec![byte_array, Type::Int, Type::Int], Type::Int))
+        }
         ("system.io.FileHandle", "readLine", 0) => Some((vec![], nullable(Type::StringT))),
         ("system.io.FileHandle", "write", 1) => Some((vec![Type::StringT], Type::Void)),
-        ("system.io.FileHandle", "write", 3) => Some((vec![byte_array, Type::Int, Type::Int], Type::Void)),
+        ("system.io.FileHandle", "write", 3) => {
+            Some((vec![byte_array, Type::Int, Type::Int], Type::Void))
+        }
         ("system.io.FileHandle", "flush", 0) => Some((vec![], Type::Void)),
         ("system.Random", "nextInt", 0) => Some((vec![], Type::Int)),
         ("system.Random", "nextInt", 1) => Some((vec![Type::Int], Type::Int)),
         ("system.Random", "nextFloat", 0) => Some((vec![], Type::Float)),
         ("system.net.TcpListener", "accept", 0) => Some((vec![], tcp_stream())),
         ("system.net.TcpListener", "close", 0) => Some((vec![], Type::Void)),
-        ("system.net.TcpStream", "read", 3) => Some((vec![byte_array.clone(), Type::Int, Type::Int], Type::Int)),
-        ("system.net.TcpStream", "write", 3) => Some((vec![byte_array, Type::Int, Type::Int], Type::Void)),
+        ("system.net.TcpStream", "read", 3) => {
+            Some((vec![byte_array.clone(), Type::Int, Type::Int], Type::Int))
+        }
+        ("system.net.TcpStream", "write", 3) => {
+            Some((vec![byte_array, Type::Int, Type::Int], Type::Void))
+        }
         ("system.net.TcpStream", "close", 0) => Some((vec![], Type::Void)),
         ("system.net.UdpSocket", "bind", 2) => Some((vec![Type::StringT, Type::Int], Type::Void)),
-        ("system.net.UdpSocket", "send", 3) => {
-            Some((vec![Type::StringT, Type::Int, Type::Array(Box::new(Type::Byte))], Type::Void))
+        ("system.net.UdpSocket", "send", 3) => Some((
+            vec![Type::StringT, Type::Int, Type::Array(Box::new(Type::Byte))],
+            Type::Void,
+        )),
+        ("system.net.UdpSocket", "receive", 1) => {
+            Some((vec![Type::Array(Box::new(Type::Byte))], Type::Int))
         }
-        ("system.net.UdpSocket", "receive", 1) => Some((vec![Type::Array(Box::new(Type::Byte))], Type::Int)),
         ("system.net.UdpSocket", "close", 0) => Some((vec![], Type::Void)),
         ("system.thread.Thread", "start", 0) => Some((vec![], Type::Void)),
         ("system.thread.Thread", "join", 0) => Some((vec![], Type::Void)),

@@ -1,0 +1,30 @@
+---
+title: "Ref parameters — real by-reference swap (specs.md Utils.swap example)"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "10,20 20,10"
+---
+
+#NLFILE phase7/ref_params/Utils.nl
+namespace phase7.ref_params;
+class Utils {
+	public static void swap(ref int a, ref int b) {
+		int temp = a;
+		a = b;
+		b = temp;
+	}
+}
+
+#NLFILE phase7/ref_params/Main.nl
+namespace phase7.ref_params;
+class Main {
+	public static int main(string[] args) {
+		int x = 10;
+		int y = 20;
+		system.Out.print(system.Int.toString(x) + "," + system.Int.toString(y));
+		system.Out.print(" ");
+		Utils.swap(ref x, ref y);
+		system.Out.print(system.Int.toString(x) + "," + system.Int.toString(y));
+		return 0;
+	}
+}

@@ -1,0 +1,17 @@
+---
+title: "Compile E024 — positional argument after named argument"
+file_separator: "#NLFILE"
+expected_compile_error: "E024"
+---
+
+#NLFILE phase7/e024/Main.nl
+namespace phase7.e024;
+class Main {
+	public static int add(int a, int b) {
+		return a + b;
+	}
+
+	public static int main(string[] args) {
+		return add(a: 1, 2);
+	}
+}

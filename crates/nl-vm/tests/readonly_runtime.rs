@@ -7,7 +7,10 @@
 //! got bypassed" scenario the safety net exists for.
 
 fn compile(sources: &[&str]) -> Vec<nl_bytecode::Module> {
-    let files: Vec<_> = sources.iter().map(|src| nl_syntax::parse_source_file(src).expect("parse")).collect();
+    let files: Vec<_> = sources
+        .iter()
+        .map(|src| nl_syntax::parse_source_file(src).expect("parse"))
+        .collect();
     nl_codegen::compile_program(&files).expect("codegen")
 }
 
@@ -35,8 +38,16 @@ class Main {
 "#;
     let modules = compile(&[money, main]);
     let outcome = nl_vm::run_program(&modules, &[]);
-    assert_eq!(outcome.exit_code, 1, "stdout={:?} stderr={:?}", outcome.stdout, outcome.stderr);
-    assert!(outcome.stderr.contains("readonly"), "stderr={:?}", outcome.stderr);
+    assert_eq!(
+        outcome.exit_code, 1,
+        "stdout={:?} stderr={:?}",
+        outcome.stdout, outcome.stderr
+    );
+    assert!(
+        outcome.stderr.contains("readonly"),
+        "stderr={:?}",
+        outcome.stderr
+    );
 }
 
 #[test]
@@ -62,5 +73,9 @@ class Main {
 "#;
     let modules = compile(&[money, main]);
     let outcome = nl_vm::run_program(&modules, &[]);
-    assert_eq!(outcome.exit_code, 100, "stdout={:?} stderr={:?}", outcome.stdout, outcome.stderr);
+    assert_eq!(
+        outcome.exit_code, 100,
+        "stdout={:?} stderr={:?}",
+        outcome.stdout, outcome.stderr
+    );
 }
