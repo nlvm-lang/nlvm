@@ -9,7 +9,14 @@ use std::collections::{HashMap, HashSet};
 
 use nl_syntax::ast::{SourceFile, SourceItem, Type, Visibility};
 
-pub use error::SemaError;
+pub use error::{LocatedError, SemaError};
+
+fn decl_line_of(file: &SourceFile) -> u32 {
+    match &file.item {
+        SourceItem::Class(c) => c.decl_line,
+        SourceItem::Interface(i) => i.decl_line,
+    }
+}
 
 /// General semantic checks that apply to every program (compile-only or
 /// run): definite assignment (E001), null safety (E003/E004), `auto`
@@ -19,7 +26,7 @@ pub use error::SemaError;
 /// (objects, `new`, arrays, interfaces — milestone 5) are checked leniently:
 /// an unresolved class/field/method defers to nl-codegen's harder error,
 /// same as unresolved calls already did before this phase.
-pub fn check_compile(files: &[SourceFile]) -> Result<(), SemaError> {
+pub fn check_compile(files: &[SourceFile]) -> Result<(), LocatedError> {
     // Built-in exception classes (nl_syntax::prelude) are implicitly part of
     // every program — see class_table::import_map, which seeds their simple
     // names so user code can reference them without a `use`. Prepended
@@ -57,7 +64,7 @@ pub fn check_compile(files: &[SourceFile]) -> Result<(), SemaError> {
 fn check_template_bounds(
     files: &[SourceFile],
     classes: &class_table::ClassTable,
-) -> Result<(), SemaError> {
+) -> Result<(), LocatedError> {
     let instantiations = nl_syntax::monomorphize::collect_instantiations(files);
     for (template_fqcn, args) in instantiations.values() {
         let Some(template_file) = files
@@ -86,23 +93,31 @@ fn check_template_bounds(
                 continue;
             };
             if !class_table::satisfies_bound(classes, arg_fqcn, &bound_fqcn) {
-                return Err(SemaError::TemplateBoundNotSatisfied(
-                    arg_fqcn.clone(),
-                    bound_fqcn,
-                    template_fqcn.clone(),
-                ));
+                return Err(LocatedError {
+                    file: template_file.path.clone(),
+                    line: template_class.decl_line,
+                    error: SemaError::TemplateBoundNotSatisfied(
+                        arg_fqcn.clone(),
+                        bound_fqcn,
+                        template_fqcn.clone(),
+                    ),
+                });
             }
         }
     }
     Ok(())
 }
 
-fn check_duplicate_classes(files: &[SourceFile]) -> Result<(), SemaError> {
+fn check_duplicate_classes(files: &[SourceFile]) -> Result<(), LocatedError> {
     let mut seen = HashSet::new();
     for file in files {
         let fqcn = class_table::fqcn_of(file);
         if !seen.insert(fqcn.clone()) {
-            return Err(SemaError::DuplicateClass(fqcn));
+            return Err(LocatedError {
+                file: file.path.clone(),
+                line: decl_line_of(file),
+                error: SemaError::DuplicateClass(fqcn),
+            });
         }
     }
     Ok(())
@@ -120,7 +135,15 @@ fn check_duplicate_classes(files: &[SourceFile]) -> Result<(), SemaError> {
 /// FQCN under an already-bound name is. An alias never collides with the
 /// unaliased simple name of its own target (only with *other* bindings), so
 /// `use x.Y as Y;` is just a redundant, harmless spelling.
-fn check_duplicate_imports(file: &SourceFile, all_files: &[SourceFile]) -> Result<(), SemaError> {
+fn check_duplicate_imports(
+    file: &SourceFile,
+    all_files: &[SourceFile],
+) -> Result<(), LocatedError> {
+    let locate = |error: SemaError| LocatedError {
+        file: file.path.clone(),
+        line: decl_line_of(file),
+        error,
+    };
     let own_fqcn = class_table::fqcn_of(file);
     let own_simple = match &file.item {
         SourceItem::Class(c) => c.name.as_str(),
@@ -145,16 +168,22 @@ fn check_duplicate_imports(file: &SourceFile, all_files: &[SourceFile]) -> Resul
             .as_deref()
             .unwrap_or_else(|| u.path.rsplit('.').next().expect("use path is never empty"));
         if bound_name == own_simple && u.path != own_fqcn {
-            return Err(SemaError::DuplicateImportSymbol(bound_name.to_string()));
+            return Err(locate(SemaError::DuplicateImportSymbol(
+                bound_name.to_string(),
+            )));
         }
         if let Some(existing_fqcn) = same_namespace.get(bound_name) {
             if existing_fqcn != &u.path {
-                return Err(SemaError::DuplicateImportSymbol(bound_name.to_string()));
+                return Err(locate(SemaError::DuplicateImportSymbol(
+                    bound_name.to_string(),
+                )));
             }
         }
         match imported.get(bound_name) {
             Some(existing) if *existing != u.path => {
-                return Err(SemaError::DuplicateImportSymbol(bound_name.to_string()))
+                return Err(locate(SemaError::DuplicateImportSymbol(
+                    bound_name.to_string(),
+                )))
             }
             _ => {
                 imported.insert(bound_name, &u.path);
@@ -166,7 +195,7 @@ fn check_duplicate_imports(file: &SourceFile, all_files: &[SourceFile]) -> Resul
 
 /// Entry point validation — compiler.md § Entry point validation (E027–E029).
 /// Only required for "run" programs, not library/compile-only projects.
-pub fn check_entry_point(files: &[SourceFile]) -> Result<(), SemaError> {
+pub fn check_entry_point(files: &[SourceFile]) -> Result<(), LocatedError> {
     let mut candidates = Vec::new();
     for file in files {
         let SourceItem::Class(class) = &file.item else {
@@ -174,15 +203,21 @@ pub fn check_entry_point(files: &[SourceFile]) -> Result<(), SemaError> {
         };
         for method in &class.methods {
             if method.name == "main" {
-                candidates.push(method);
+                candidates.push((file, method));
             }
         }
     }
 
     match candidates.len() {
-        0 => Err(SemaError::NoMainMethod),
+        // No candidate anywhere in the program — there's no single method
+        // declaration to blame, so this one error carries no location.
+        0 => Err(LocatedError {
+            file: String::new(),
+            line: 0,
+            error: SemaError::NoMainMethod,
+        }),
         1 => {
-            let m = candidates[0];
+            let (file, m) = candidates[0];
             let is_valid_signature = m.is_static
                 && m.visibility == Visibility::Public
                 && m.return_type == Type::Int
@@ -191,9 +226,17 @@ pub fn check_entry_point(files: &[SourceFile]) -> Result<(), SemaError> {
             if is_valid_signature {
                 Ok(())
             } else {
-                Err(SemaError::BadMainSignature)
+                Err(LocatedError {
+                    file: file.path.clone(),
+                    line: m.decl_line,
+                    error: SemaError::BadMainSignature,
+                })
             }
         }
-        _ => Err(SemaError::MultipleMainMethods),
+        _ => Err(LocatedError {
+            file: candidates[0].0.path.clone(),
+            line: candidates[0].1.decl_line,
+            error: SemaError::MultipleMainMethods,
+        }),
     }
 }

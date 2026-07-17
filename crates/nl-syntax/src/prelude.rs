@@ -14,8 +14,14 @@
 
 use crate::ast::{
     Arg, Block, ClassDecl, Expr, FieldDecl, InterfaceDecl, LValue, MethodDecl, MethodKind,
-    MethodSig, Param, SourceFile, SourceItem, Stmt, Type, TypeParam, Visibility,
+    MethodSig, Param, SourceFile, SourceItem, Stmt, StmtKind, Type, TypeParam, Visibility,
 };
+
+/// Synthetic origin path stamped on every prelude `SourceFile` — these are
+/// generated in Rust, not parsed from a `.nl` file, so `nlc -l`/diagnostics
+/// attribute anything (in practice, nothing — the prelude is hand-verified)
+/// that traces back here to this marker rather than a real path.
+const PRELUDE_PATH: &str = "<prelude>";
 
 /// `(name, parent)` pairs describing the built-in hierarchy — specs.md §
 /// Exception class hierarchy. `Exception` itself is the only root.
@@ -56,17 +62,20 @@ pub fn files() -> Vec<SourceFile> {
             namespace: Vec::new(),
             uses: Vec::new(),
             item: SourceItem::Class(exception_class(name, *parent)),
+            path: PRELUDE_PATH.to_string(),
         })
         .collect();
     files.push(SourceFile {
         namespace: Vec::new(),
         uses: Vec::new(),
         item: SourceItem::Interface(stringable()),
+        path: PRELUDE_PATH.to_string(),
     });
     files.push(SourceFile {
         namespace: Vec::new(),
         uses: Vec::new(),
         item: SourceItem::Class(box_class()),
+        path: PRELUDE_PATH.to_string(),
     });
     files
 }
@@ -108,10 +117,14 @@ fn box_class() -> ClassDecl {
         return_type: Type::Void,
         params: vec![param],
         throws: Vec::new(),
-        body: vec![Stmt::Expr(Expr::Assign(
-            LValue::Field(Box::new(Expr::This), "value".to_string()),
-            Box::new(Expr::Ident("value".to_string())),
-        ))],
+        body: vec![Stmt {
+            kind: StmtKind::Expr(Expr::Assign(
+                LValue::Field(Box::new(Expr::This), "value".to_string()),
+                Box::new(Expr::Ident("value".to_string())),
+            )),
+            line: 0,
+        }],
+        decl_line: 0,
     };
     ClassDecl {
         name: "Box".to_string(),
@@ -126,6 +139,7 @@ fn box_class() -> ClassDecl {
         is_readonly: false,
         is_abstract: false,
         is_final: false,
+        decl_line: 0,
     }
 }
 
@@ -144,6 +158,7 @@ fn stringable() -> InterfaceDecl {
             params: Vec::new(),
             is_const: true,
         }],
+        decl_line: 0,
     }
 }
 
@@ -158,16 +173,22 @@ fn exception_class(name: &str, parent: Option<&str>) -> ClassDecl {
     let ctor_body: Block = match parent {
         // The root `Exception` class owns the `message` field and sets it
         // directly from its constructor argument.
-        None => vec![Stmt::Expr(Expr::Assign(
-            LValue::Field(Box::new(Expr::This), "message".to_string()),
-            Box::new(Expr::Ident("what".to_string())),
-        ))],
+        None => vec![Stmt {
+            kind: StmtKind::Expr(Expr::Assign(
+                LValue::Field(Box::new(Expr::This), "message".to_string()),
+                Box::new(Expr::Ident("what".to_string())),
+            )),
+            line: 0,
+        }],
         // Every other class in the hierarchy just forwards to its parent.
-        Some(_) => vec![Stmt::SuperCall(vec![Arg {
-            name: None,
-            is_ref: false,
-            value: Expr::Ident("what".to_string()),
-        }])],
+        Some(_) => vec![Stmt {
+            kind: StmtKind::SuperCall(vec![Arg {
+                name: None,
+                is_ref: false,
+                value: Expr::Ident("what".to_string()),
+            }]),
+            line: 0,
+        }],
     };
     let ctor = MethodDecl {
         name: "<construct>".to_string(),
@@ -182,6 +203,7 @@ fn exception_class(name: &str, parent: Option<&str>) -> ClassDecl {
         params: vec![param],
         throws: Vec::new(),
         body: ctor_body,
+        decl_line: 0,
     };
     let fields = if parent.is_none() {
         vec![FieldDecl {
@@ -211,5 +233,6 @@ fn exception_class(name: &str, parent: Option<&str>) -> ClassDecl {
         is_readonly: true,
         is_abstract: false,
         is_final: false,
+        decl_line: 0,
     }
 }

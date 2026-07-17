@@ -11,7 +11,7 @@ pub enum Outcome {
 pub fn run_test(test: &TestFile) -> Outcome {
     let mut files = Vec::new();
     for block in &test.blocks {
-        match nl_syntax::parse_source_file(&block.content) {
+        match nl_syntax::parse_source_file(&block.content, block.path.clone()) {
             Ok(f) => files.push(f),
             Err(e) => return Outcome::Fail(format!("parse error in {}: {e}", block.path)),
         }

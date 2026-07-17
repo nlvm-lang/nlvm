@@ -13,11 +13,11 @@ use std::collections::{HashMap, HashSet};
 
 use nl_syntax::ast::{
     Arg, BinOp, Block, CatchClause, ClassDecl, Expr, LValue, MatchArm, MethodDecl, MethodKind,
-    Param, SourceFile, SourceItem, Stmt, Type, UnOp,
+    Param, SourceFile, SourceItem, Stmt, StmtKind, Type, UnOp,
 };
 
 use crate::class_table::{self, ClassTable};
-use crate::error::SemaError;
+use crate::error::{LocatedError, SemaError};
 use crate::types;
 
 /// A method's signature, as seen from call sites within the same class
@@ -27,46 +27,77 @@ use crate::types;
 /// parameter rules) the same way cross-class calls do via `class_table`.
 type MethodSig = (Vec<Param>, Type, Vec<Type>);
 
+/// A `SemaError` tagged with the line it was raised at, but not yet the
+/// file — used internally while a check is still inside `MethodChecker`/the
+/// free-function checks below, which don't have `SourceFile::path` in scope.
+/// `check_source_file` is the single point that turns this into a
+/// `LocatedError` by attaching `file.path`.
+type Located = (u32, SemaError);
+
+fn locate<T>(line: u32, r: Result<T, SemaError>) -> Result<T, Located> {
+    r.map_err(|e| (line, e))
+}
+
 pub fn check_source_file(
     file: &SourceFile,
     all_files: &[SourceFile],
     classes: &ClassTable,
-) -> Result<(), SemaError> {
+) -> Result<(), LocatedError> {
     let SourceItem::Class(class) = &file.item else {
         // Interfaces declare signatures only — nothing to flow-check yet.
         return Ok(());
     };
 
-    check_duplicate_methods(class)?;
-    check_constructor_delegation(class)?;
-    check_visibility_modifiers(class)?;
+    let result: Result<(), Located> = (|| {
+        locate(class.decl_line, check_duplicate_methods(class))?;
+        locate(class.decl_line, check_constructor_delegation(class))?;
+        locate(class.decl_line, check_visibility_modifiers(class))?;
 
-    let imports = class_table::import_map(file, all_files);
-    let this_fqcn = class_table::fqcn_of(file);
-    check_property_initialization(class, &imports)?;
-    check_const_interface_impl(class, classes, &this_fqcn)?;
-    check_abstract_final(class, classes, &imports, &this_fqcn)?;
+        let imports = class_table::import_map(file, all_files);
+        let this_fqcn = class_table::fqcn_of(file);
+        locate(
+            class.decl_line,
+            check_property_initialization(class, &imports),
+        )?;
+        locate(
+            class.decl_line,
+            check_const_interface_impl(class, classes, &this_fqcn),
+        )?;
+        locate(
+            class.decl_line,
+            check_abstract_final(class, classes, &imports, &this_fqcn),
+        )?;
 
-    let mut sigs: HashMap<String, MethodSig> = HashMap::new();
-    for m in &class.methods {
-        if m.is_static && m.kind == MethodKind::Normal {
-            let return_ty = class_table::resolve_type(&m.return_type, &imports);
-            let throws = resolve_throws(m, &imports);
-            sigs.insert(m.name.clone(), (m.params.clone(), return_ty, throws));
+        let mut sigs: HashMap<String, MethodSig> = HashMap::new();
+        for m in &class.methods {
+            if m.is_static && m.kind == MethodKind::Normal {
+                let return_ty = class_table::resolve_type(&m.return_type, &imports);
+                let throws = resolve_throws(m, &imports);
+                sigs.insert(m.name.clone(), (m.params.clone(), return_ty, throws));
+            }
         }
-    }
 
-    for method in &class.methods {
-        check_method(method, &sigs, classes, &imports, &this_fqcn)
-            .map_err(|e| relabel_template_operator_error(e, &this_fqcn))?;
-        // compiler.md § Exception inheritance rules — E016/E017. Only
-        // meaningful for instance methods (static methods hide, not
-        // override) that actually override an ancestor's method.
-        if !method.is_static && method.kind == MethodKind::Normal {
-            check_exception_override(method, classes, &imports, &this_fqcn)?;
+        for method in &class.methods {
+            check_method(method, &sigs, classes, &imports, &this_fqcn)
+                .map_err(|(line, e)| (line, relabel_template_operator_error(e, &this_fqcn)))?;
+            // compiler.md § Exception inheritance rules — E016/E017. Only
+            // meaningful for instance methods (static methods hide, not
+            // override) that actually override an ancestor's method.
+            if !method.is_static && method.kind == MethodKind::Normal {
+                locate(
+                    method.decl_line,
+                    check_exception_override(method, classes, &imports, &this_fqcn),
+                )?;
+            }
         }
-    }
-    Ok(())
+        Ok(())
+    })();
+
+    result.map_err(|(line, error)| LocatedError {
+        file: file.path.clone(),
+        line,
+        error,
+    })
 }
 
 /// compiler.md § Template instantiation — E006. This codebase has no
@@ -266,8 +297,8 @@ fn check_ctor_property_init(
     field_name: &str,
     field_ty: &Type,
 ) -> Result<(), SemaError> {
-    let (start_assigned, rest): (bool, &[Stmt]) = match ctor.body.first() {
-        Some(Stmt::ThisCall(args)) => {
+    let (start_assigned, rest): (bool, &[Stmt]) = match ctor.body.first().map(|s| &s.kind) {
+        Some(StmtKind::ThisCall(args)) => {
             let argc = args.len();
             let credited = ctors.iter().any(|c| {
                 class_table::arity_in_range(
@@ -322,8 +353,8 @@ fn field_assigned_stmt(
     field_ty: &Type,
     assigned: bool,
 ) -> Result<(bool, bool), SemaError> {
-    match stmt {
-        Stmt::Return(_) => {
+    match &stmt.kind {
+        StmtKind::Return(_) => {
             if !assigned {
                 return Err(SemaError::PropertyNotInitialized(
                     field_name.to_string(),
@@ -332,13 +363,13 @@ fn field_assigned_stmt(
             }
             Ok((assigned, true))
         }
-        Stmt::Throw(_) => Ok((assigned, true)),
-        Stmt::Expr(Expr::Assign(LValue::Field(target, name), _))
+        StmtKind::Throw(_) => Ok((assigned, true)),
+        StmtKind::Expr(Expr::Assign(LValue::Field(target, name), _))
             if matches!(**target, Expr::This) && name == field_name =>
         {
             Ok((true, false))
         }
-        Stmt::If {
+        StmtKind::If {
             then_branch,
             else_branch,
             ..
@@ -359,25 +390,25 @@ fn field_assigned_stmt(
         // A loop body may execute zero times, so nothing it assigns is
         // guaranteed — but its own internal `return`s must still be
         // eagerly validated, hence the recursive call.
-        Stmt::While { body, .. } => {
+        StmtKind::While { body, .. } => {
             field_assigned_after(body, field_name, field_ty, assigned)?;
             Ok((assigned, false))
         }
-        Stmt::For { init, body, .. } => {
+        StmtKind::For { init, body, .. } => {
             let (after_init, _) = field_assigned_after(init, field_name, field_ty, assigned)?;
             field_assigned_after(body, field_name, field_ty, after_init)?;
             Ok((after_init, false))
         }
-        Stmt::ForEach { body, .. } => {
+        StmtKind::ForEach { body, .. } => {
             field_assigned_after(body, field_name, field_ty, assigned)?;
             Ok((assigned, false))
         }
-        Stmt::Block(b) => field_assigned_after(b, field_name, field_ty, assigned),
+        StmtKind::Block(b) => field_assigned_after(b, field_name, field_ty, assigned),
         // Conservative, matching this codebase's existing documented gap for
         // `try` in the general E001 analysis (PLAN.md Phase 5): an exception
         // may strike at any point in `body`, so nothing it assigns is
         // guaranteed; only `finally` (which always runs) is.
-        Stmt::Try {
+        StmtKind::Try {
             body,
             catches,
             finally,
@@ -521,7 +552,7 @@ fn check_constructor_delegation(class: &ClassDecl) -> Result<(), SemaError> {
 
     for ctor in &ctors {
         for (i, stmt) in ctor.body.iter().enumerate() {
-            if matches!(stmt, Stmt::ThisCall(_) | Stmt::SuperCall(_)) && i != 0 {
+            if matches!(&stmt.kind, StmtKind::ThisCall(_) | StmtKind::SuperCall(_)) && i != 0 {
                 return Err(SemaError::ThisCallNotFirst);
             }
         }
@@ -534,7 +565,8 @@ fn check_constructor_delegation(class: &ClassDecl) -> Result<(), SemaError> {
             if !visited.insert(current) {
                 return Err(SemaError::DelegationCycle(class.name.clone()));
             }
-            let Some(Stmt::ThisCall(args)) = ctors[current].body.first() else {
+            let Some(StmtKind::ThisCall(args)) = ctors[current].body.first().map(|s| &s.kind)
+            else {
                 break;
             };
             let argc = args.len();
@@ -559,7 +591,7 @@ fn check_method(
     classes: &ClassTable,
     imports: &HashMap<String, String>,
     this_fqcn: &str,
-) -> Result<(), SemaError> {
+) -> Result<(), Located> {
     let this_ty = if method.is_static {
         None
     } else {
@@ -596,6 +628,7 @@ fn check_method(
         catch_stack: Vec::new(),
         const_vars: HashSet::new(),
         readonly_loop_vars: HashSet::new(),
+        current_line: method.decl_line,
     };
     checker.push_scope();
     let mut assigned = HashSet::new();
@@ -607,17 +640,19 @@ fn check_method(
         // compiler.md § Named and optional parameter rules — E026.
         if let Some(default) = &param.default {
             if !is_const_expr(default) {
-                return Err(SemaError::DefaultNotConstant(param.name.clone()));
+                return Err((method.decl_line, SemaError::DefaultNotConstant(param.name.clone())));
             }
         }
         // compiler.md § Ref parameter rules — E022: an optional parameter
         // can't also be `ref` (the caller must always supply a variable).
         if param.is_ref && param.default.is_some() {
-            return Err(SemaError::OptionalCannotBeRef);
+            return Err((method.decl_line, SemaError::OptionalCannotBeRef));
         }
         assigned.insert(id);
     }
-    checker.check_stmts(&method.body, assigned)?;
+    checker
+        .check_stmts(&method.body, assigned)
+        .map_err(|e| (checker.current_line, e))?;
     checker.pop_scope();
     Ok(())
 }
@@ -684,6 +719,14 @@ struct MethodChecker<'a> {
     /// Resolved (FQCN) catch types of every `try` currently enclosing the
     /// code being checked, innermost last — pushed/popped in `check_try`.
     catch_stack: Vec<Vec<String>>,
+    /// Line of the innermost statement currently being checked — set at the
+    /// top of every `check_stmt` call (including nested/recursive ones, so
+    /// it's always the most specific line active when an error is raised).
+    /// `check_method` reads this after `check_stmts` fails to attach a
+    /// location to the resulting `LocatedError`; initialized to the method's
+    /// own `decl_line` for errors raised before any statement is checked
+    /// (see the param-validation checks in `check_method`).
+    current_line: u32,
 }
 
 impl<'a> MethodChecker<'a> {
@@ -946,16 +989,17 @@ impl<'a> MethodChecker<'a> {
         stmt: &Stmt,
         mut assigned: HashSet<u32>,
     ) -> Result<(HashSet<u32>, bool), SemaError> {
-        match stmt {
-            Stmt::Return(Some(expr)) => {
+        self.current_line = stmt.line;
+        match &stmt.kind {
+            StmtKind::Return(Some(expr)) => {
                 let ty = self.check_expr(expr, &mut assigned)?;
                 if !self.skip_return_check {
                     self.check_assignable(&ty, &self.return_ty.clone())?;
                 }
                 Ok((assigned, true))
             }
-            Stmt::Return(None) => Ok((assigned, true)),
-            Stmt::Expr(expr) => {
+            StmtKind::Return(None) => Ok((assigned, true)),
+            StmtKind::Expr(expr) => {
                 self.check_expr(expr, &mut assigned)?;
                 // `system.ps.Process.exit(...)` (stdlib.md: "Terminal
                 // statement: does not return") — treated as terminating the
@@ -976,7 +1020,7 @@ impl<'a> MethodChecker<'a> {
                 };
                 Ok((assigned, terminates))
             }
-            Stmt::ThisCall(args) => {
+            StmtKind::ThisCall(args) => {
                 for a in args {
                     self.check_expr(&a.value, &mut assigned)?;
                 }
@@ -988,7 +1032,7 @@ impl<'a> MethodChecker<'a> {
                 }
                 Ok((assigned, false))
             }
-            Stmt::SuperCall(args) => {
+            StmtKind::SuperCall(args) => {
                 for a in args {
                     self.check_expr(&a.value, &mut assigned)?;
                 }
@@ -1002,19 +1046,19 @@ impl<'a> MethodChecker<'a> {
                 }
                 Ok((assigned, false))
             }
-            Stmt::Throw(expr) => {
+            StmtKind::Throw(expr) => {
                 let ty = self.check_expr(expr, &mut assigned)?;
                 if let Type::Named(fqcn) = &ty {
                     self.require_handled(fqcn)?;
                 }
                 Ok((assigned, true))
             }
-            Stmt::Try {
+            StmtKind::Try {
                 body,
                 catches,
                 finally,
             } => self.check_try(body, catches, finally, assigned),
-            Stmt::VarDecl {
+            StmtKind::VarDecl {
                 ty,
                 name,
                 init,
@@ -1041,7 +1085,7 @@ impl<'a> MethodChecker<'a> {
                 }
                 Ok((assigned, false))
             }
-            Stmt::If {
+            StmtKind::If {
                 cond,
                 then_branch,
                 else_branch,
@@ -1065,14 +1109,14 @@ impl<'a> MethodChecker<'a> {
                     ),
                 })
             }
-            Stmt::While { cond, body } => {
+            StmtKind::While { cond, body } => {
                 self.check_expr(cond, &mut assigned)?;
                 // The body may execute zero times: its assignments don't
                 // make anything definitely assigned after the loop.
                 self.check_block(body, assigned.clone())?;
                 Ok((assigned, false))
             }
-            Stmt::ForEach {
+            StmtKind::ForEach {
                 ty,
                 var,
                 iterable,
@@ -1127,7 +1171,7 @@ impl<'a> MethodChecker<'a> {
                 // Zero iterations possible — same rule as `while`.
                 Ok((assigned, false))
             }
-            Stmt::For {
+            StmtKind::For {
                 init,
                 cond,
                 step,
@@ -1154,8 +1198,8 @@ impl<'a> MethodChecker<'a> {
             // but code following `break`/`continue` in the same block is
             // equally unreachable on that path, so definite-assignment
             // merges (e.g. in an enclosing `if`) must treat them as such.
-            Stmt::Break | Stmt::Continue => Ok((assigned, true)),
-            Stmt::Block(block) => self.check_block(block, assigned),
+            StmtKind::Break | StmtKind::Continue => Ok((assigned, true)),
+            StmtKind::Block(block) => self.check_block(block, assigned),
         }
     }
 

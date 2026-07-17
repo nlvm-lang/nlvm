@@ -10,6 +10,10 @@ pub struct SourceFile {
     /// Alias];` clauses, in source order.
     pub uses: Vec<UseDecl>,
     pub item: SourceItem,
+    /// Origin path for diagnostics (`nlc -l`/linter output, `file:line: ...`)
+    /// — the path passed to `parse_source_file`, or a synthetic marker like
+    /// `"<prelude>"` for built-in files (see `nl_syntax::prelude`).
+    pub path: String,
 }
 
 /// A single `use` clause. `path` is the dotted FQCN (e.g.
@@ -58,6 +62,10 @@ pub struct ClassDecl {
     /// `final class Name` — specs.md § Final classes and methods. Cannot be
     /// `extends`-ed (E035). Mutually exclusive with `is_abstract` (E049).
     pub is_final: bool,
+    /// Source line of the `class`/`template` keyword — used to locate
+    /// declaration-granularity diagnostics (duplicate class, abstract/final
+    /// consistency, etc.) that have no more specific statement to point at.
+    pub decl_line: u32,
 }
 
 /// One `type T [extends Bound]` template parameter — specs.md § Bounded type
@@ -89,6 +97,8 @@ pub struct FieldDecl {
 pub struct InterfaceDecl {
     pub name: String,
     pub methods: Vec<MethodSig>,
+    /// See `ClassDecl::decl_line`.
+    pub decl_line: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -134,6 +144,8 @@ pub struct MethodDecl {
     /// is future work; see PLAN.md Phase 5).
     pub throws: Vec<String>,
     pub body: Block,
+    /// See `ClassDecl::decl_line`, same idea at method granularity.
+    pub decl_line: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -203,8 +215,16 @@ pub enum LValue {
     Index(Box<Expr>, Box<Expr>),
 }
 
+/// A statement plus the source line it starts on — used for
+/// declaration/statement-granularity diagnostics (see `nl_sema::LocatedError`).
 #[derive(Debug, Clone, PartialEq)]
-pub enum Stmt {
+pub struct Stmt {
+    pub kind: StmtKind,
+    pub line: u32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum StmtKind {
     Return(Option<Expr>),
     Expr(Expr),
     VarDecl {

@@ -5,6 +5,7 @@ pub struct Lexer<'a> {
     src: &'a [u8],
     pos: usize,
     line: u32,
+    col: u32,
 }
 
 impl<'a> Lexer<'a> {
@@ -13,6 +14,7 @@ impl<'a> Lexer<'a> {
             src: src.as_bytes(),
             pos: 0,
             line: 1,
+            col: 1,
         }
     }
 
@@ -42,6 +44,9 @@ impl<'a> Lexer<'a> {
         self.pos += 1;
         if c == b'\n' {
             self.line += 1;
+            self.col = 1;
+        } else {
+            self.col += 1;
         }
         Some(c)
     }
@@ -80,10 +85,12 @@ impl<'a> Lexer<'a> {
     fn next_token(&mut self) -> Result<Token, SyntaxError> {
         self.skip_trivia();
         let line = self.line;
+        let col = self.col;
         let Some(c) = self.peek() else {
             return Ok(Token {
                 kind: TokenKind::Eof,
                 line,
+                col,
             });
         };
 
@@ -91,22 +98,25 @@ impl<'a> Lexer<'a> {
             return Ok(Token {
                 kind: self.lex_ident_or_keyword(),
                 line,
+                col,
             });
         }
         if c.is_ascii_digit() {
             return Ok(Token {
                 kind: self.lex_number()?,
                 line,
+                col,
             });
         }
         if c == b'"' {
             return Ok(Token {
                 kind: self.lex_string()?,
                 line,
+                col,
             });
         }
 
-        self.lex_punct(line)
+        self.lex_punct(line, col)
     }
 
     fn lex_ident_or_keyword(&mut self) -> TokenKind {
@@ -143,12 +153,12 @@ impl<'a> Lexer<'a> {
         let text = std::str::from_utf8(&self.src[start..self.pos]).unwrap();
         if is_float {
             let v: f64 = text.parse().map_err(|_| {
-                SyntaxError::Lex(format!("invalid float literal '{text}'"), self.line)
+                SyntaxError::Lex(format!("invalid float literal '{text}'"), self.line, self.col)
             })?;
             Ok(TokenKind::FloatLiteral(v))
         } else {
             let v: i64 = text.parse().map_err(|_| {
-                SyntaxError::Lex(format!("invalid int literal '{text}'"), self.line)
+                SyntaxError::Lex(format!("invalid int literal '{text}'"), self.line, self.col)
             })?;
             Ok(TokenKind::IntLiteral(v))
         }
@@ -166,16 +176,28 @@ impl<'a> Lexer<'a> {
                     Some(b'"') => s.push('"'),
                     Some(b'\\') => s.push('\\'),
                     Some(other) => s.push(other as char),
-                    None => return Err(SyntaxError::Lex("unterminated string".into(), self.line)),
+                    None => {
+                        return Err(SyntaxError::Lex(
+                            "unterminated string".into(),
+                            self.line,
+                            self.col,
+                        ))
+                    }
                 },
                 Some(c) => s.push(c as char),
-                None => return Err(SyntaxError::Lex("unterminated string".into(), self.line)),
+                None => {
+                    return Err(SyntaxError::Lex(
+                        "unterminated string".into(),
+                        self.line,
+                        self.col,
+                    ))
+                }
             }
         }
         Ok(TokenKind::StringLiteral(s))
     }
 
-    fn lex_punct(&mut self, line: u32) -> Result<Token, SyntaxError> {
+    fn lex_punct(&mut self, line: u32, col: u32) -> Result<Token, SyntaxError> {
         macro_rules! two {
             ($p:expr) => {{
                 self.bump();
@@ -183,6 +205,7 @@ impl<'a> Lexer<'a> {
                 Ok(Token {
                     kind: TokenKind::Punct($p),
                     line,
+                    col,
                 })
             }};
         }
@@ -192,6 +215,7 @@ impl<'a> Lexer<'a> {
                 Ok(Token {
                     kind: TokenKind::Punct($p),
                     line,
+                    col,
                 })
             }};
         }
@@ -234,6 +258,7 @@ impl<'a> Lexer<'a> {
                 Ok(Token {
                     kind: TokenKind::Punct(Punct::Spaceship),
                     line,
+                    col,
                 })
             }
             (b'<', Some(b'=')) => two!(Punct::Le),
@@ -250,6 +275,7 @@ impl<'a> Lexer<'a> {
             (other, _) => Err(SyntaxError::Lex(
                 format!("unexpected character '{}'", other as char),
                 line,
+                col,
             )),
         }
     }

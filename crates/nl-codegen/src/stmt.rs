@@ -1,5 +1,5 @@
 use nl_bytecode::{ExceptionTableEntry, Opcode};
-use nl_syntax::ast::{Block, CatchClause, Stmt, Type};
+use nl_syntax::ast::{Block, CatchClause, Stmt, StmtKind, Type};
 
 use crate::class_table::resolve_type;
 use crate::error::CodegenError;
@@ -16,21 +16,21 @@ impl<'a> Emitter<'a> {
     }
 
     pub fn compile_stmt(&mut self, stmt: &Stmt) -> Result<(), CodegenError> {
-        match stmt {
-            Stmt::Return(Some(expr)) => {
+        match &stmt.kind {
+            StmtKind::Return(Some(expr)) => {
                 let ty = self.compile_expr(expr)?;
                 self.inferred_return_ty = Some(ty);
                 self.replay_finally_blocks(0)?;
                 self.code.push(Opcode::ReturnValue as u8);
             }
-            Stmt::Return(None) => {
+            StmtKind::Return(None) => {
                 self.replay_finally_blocks(0)?;
                 self.code.push(Opcode::Return as u8);
             }
-            Stmt::Expr(expr) => {
+            StmtKind::Expr(expr) => {
                 self.compile_expr_stmt(expr)?;
             }
-            Stmt::VarDecl {
+            StmtKind::VarDecl {
                 ty,
                 name,
                 init: Some(init),
@@ -45,7 +45,7 @@ impl<'a> Emitter<'a> {
                 let index = self.declare_local(name.clone(), declared_ty);
                 self.emit_store(index);
             }
-            Stmt::VarDecl {
+            StmtKind::VarDecl {
                 ty,
                 name,
                 init: None,
@@ -62,40 +62,40 @@ impl<'a> Emitter<'a> {
                 ));
                 self.declare_local(name.clone(), declared_ty);
             }
-            Stmt::ThisCall(args) => {
+            StmtKind::ThisCall(args) => {
                 self.compile_this_call(args)?;
             }
-            Stmt::SuperCall(args) => {
+            StmtKind::SuperCall(args) => {
                 self.compile_super_call(args)?;
             }
-            Stmt::Throw(expr) => {
+            StmtKind::Throw(expr) => {
                 self.compile_expr(expr)?;
                 self.op(Opcode::Throw, -1);
             }
-            Stmt::Try {
+            StmtKind::Try {
                 body,
                 catches,
                 finally,
             } => self.compile_try(body, catches, finally)?,
-            Stmt::If {
+            StmtKind::If {
                 cond,
                 then_branch,
                 else_branch,
             } => self.compile_if(cond, then_branch, else_branch.as_deref())?,
-            Stmt::While { cond, body } => self.compile_while(cond, body)?,
-            Stmt::For {
+            StmtKind::While { cond, body } => self.compile_while(cond, body)?,
+            StmtKind::For {
                 init,
                 cond,
                 step,
                 body,
             } => self.compile_for(init, cond.as_ref(), step, body)?,
-            Stmt::ForEach {
+            StmtKind::ForEach {
                 ty,
                 var,
                 iterable,
                 body,
             } => self.compile_foreach(ty.as_ref(), var, iterable, body)?,
-            Stmt::Break => {
+            StmtKind::Break => {
                 if self.loops.is_empty() {
                     return Err(CodegenError::Unsupported(
                         "'break' outside a loop".to_string(),
@@ -105,7 +105,7 @@ impl<'a> Emitter<'a> {
                 let patch = self.branch(Opcode::Goto, 0);
                 self.loops.last_mut().unwrap().break_patches.push(patch);
             }
-            Stmt::Continue => {
+            StmtKind::Continue => {
                 if self.loops.is_empty() {
                     return Err(CodegenError::Unsupported(
                         "'continue' outside a loop".to_string(),
@@ -115,7 +115,7 @@ impl<'a> Emitter<'a> {
                 let patch = self.branch(Opcode::Goto, 0);
                 self.loops.last_mut().unwrap().continue_patches.push(patch);
             }
-            Stmt::Block(block) => self.compile_block(block)?,
+            StmtKind::Block(block) => self.compile_block(block)?,
         }
         Ok(())
     }

@@ -22,10 +22,24 @@ fn collect_nl_sources(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     Ok(())
 }
 
+/// `path:line:col: message` — mirrors `LocatedError`'s `file:line: code —
+/// message` format for semantic errors, but built by hand since
+/// `SyntaxError` has no file (it's parsed before `nlc` knows which source it
+/// came from) and its own `Display` already spells out "lex/parse error at
+/// line X, col Y" rather than the compact `path:line:col:` linter idiom.
+fn format_syntax_error(path: &Path, e: &nl_syntax::SyntaxError) -> String {
+    let msg = match e {
+        nl_syntax::SyntaxError::Lex(m, _, _) => m,
+        nl_syntax::SyntaxError::Parse(m, _, _) => m,
+    };
+    format!("{}:{}:{}: {msg}", path.display(), e.line(), e.col())
+}
+
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut output_dir = PathBuf::from(".");
     let mut sources = Vec::new();
+    let mut lint = false;
 
     let mut i = 0;
     while i < args.len() {
@@ -37,6 +51,9 @@ fn main() -> Result<()> {
             }
             "--entry" => {
                 i += 1; // accepted, not yet used to pick the entry module
+            }
+            "-l" | "--lint" => {
+                lint = true;
             }
             other => {
                 let path = PathBuf::from(other);
@@ -54,9 +71,6 @@ fn main() -> Result<()> {
         bail!("usage: nlc [options] <sources...>");
     }
 
-    std::fs::create_dir_all(&output_dir)
-        .with_context(|| format!("creating output directory {}", output_dir.display()))?;
-
     // Every source is compiled together as one program so classes/interfaces
     // defined in different files can reference each other (`new`, field
     // access, instance method calls) — see nl_codegen::compile_program.
@@ -64,12 +78,34 @@ fn main() -> Result<()> {
     for source_path in &sources {
         let src = std::fs::read_to_string(source_path)
             .with_context(|| format!("reading {}", source_path.display()))?;
-        let file = nl_syntax::parse_source_file(&src)
-            .map_err(|e| anyhow::anyhow!("{}: {e}", source_path.display()))?;
+        let file = match nl_syntax::parse_source_file(&src, source_path.display().to_string()) {
+            Ok(f) => f,
+            Err(e) if lint => {
+                eprintln!("{}", format_syntax_error(source_path, &e));
+                std::process::exit(1);
+            }
+            Err(e) => return Err(anyhow::anyhow!("{}: {e}", source_path.display())),
+        };
         files.push(file);
     }
 
-    nl_sema::check_compile(&files).map_err(|e| anyhow::anyhow!("{e} ({})", e.code()))?;
+    if let Err(e) = nl_sema::check_compile(&files) {
+        if lint {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+        return Err(anyhow::anyhow!("{e} ({})", e.code()));
+    }
+
+    // `-l`/`--lint`: parse + semantic checks only, no codegen and no output
+    // files — see compiler.md § Compiler invocation for the option table
+    // this extends.
+    if lint {
+        return Ok(());
+    }
+
+    std::fs::create_dir_all(&output_dir)
+        .with_context(|| format!("creating output directory {}", output_dir.display()))?;
 
     // Also includes the built-in exception hierarchy's modules (see
     // nl_syntax::prelude) — written out alongside the caller's own classes

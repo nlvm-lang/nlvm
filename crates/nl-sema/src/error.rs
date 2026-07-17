@@ -165,3 +165,38 @@ impl SemaError {
         }
     }
 }
+
+/// A `SemaError` with the source location it was raised at — `nlc -l`/other
+/// diagnostics consumers use this instead of the bare `SemaError` to report
+/// `file:line: E0XX — message`. Line is statement granularity inside a
+/// method body, declaration granularity (class/method) for structural
+/// checks that have no single enclosing statement — see
+/// `checker::check_source_file`, the only place this is constructed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocatedError {
+    pub file: String,
+    pub line: u32,
+    pub error: SemaError,
+}
+
+impl LocatedError {
+    pub fn code(&self) -> &'static str {
+        self.error.code()
+    }
+}
+
+impl std::fmt::Display for LocatedError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.file.is_empty() {
+            write!(f, "{}", self.error)
+        } else {
+            write!(f, "{}:{}: {}", self.file, self.line, self.error)
+        }
+    }
+}
+
+impl std::error::Error for LocatedError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}

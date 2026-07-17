@@ -239,4 +239,5 @@ pub enum TokenKind {
 pub struct Token {
     pub kind: TokenKind,
     pub line: u32,
+    pub col: u32,
 }

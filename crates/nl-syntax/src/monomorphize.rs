@@ -41,12 +41,13 @@ use std::collections::HashMap;
 
 use crate::ast::{
     Arg, Block, ClassDecl, ClosureBody, Expr, FieldDecl, LValue, MethodDecl, SourceFile,
-    SourceItem, Stmt, Type,
+    SourceItem, Stmt, StmtKind, Type,
 };
 
 struct TemplateInfo {
     namespace: Vec<String>,
     decl: ClassDecl,
+    path: String,
 }
 
 /// Every distinct `(template class, concrete type arguments)` combination
@@ -65,6 +66,7 @@ pub fn collect_instantiations(files: &[SourceFile]) -> HashMap<String, (String, 
                     TemplateInfo {
                         namespace: file.namespace.clone(),
                         decl: class.clone(),
+                        path: file.path.clone(),
                     },
                 );
             }
@@ -88,6 +90,7 @@ pub fn expand(files: Vec<SourceFile>) -> Vec<SourceFile> {
                     TemplateInfo {
                         namespace: file.namespace.clone(),
                         decl: class.clone(),
+                        path: file.path.clone(),
                     },
                 );
             }
@@ -183,6 +186,7 @@ fn generate_instantiation(
         namespace: template.namespace.clone(),
         uses: Vec::new(),
         item: SourceItem::Class(decl),
+        path: template.path.clone(),
     }
 }
 
@@ -396,11 +400,11 @@ fn collect_stmt(
     templates: &HashMap<String, TemplateInfo>,
     out: &mut HashMap<String, (String, Vec<Type>)>,
 ) {
-    match stmt {
-        Stmt::Return(Some(e)) | Stmt::Throw(e) => collect_expr(e, imports, templates, out),
-        Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
-        Stmt::Expr(e) => collect_expr(e, imports, templates, out),
-        Stmt::VarDecl { ty, init, .. } => {
+    match &stmt.kind {
+        StmtKind::Return(Some(e)) | StmtKind::Throw(e) => collect_expr(e, imports, templates, out),
+        StmtKind::Return(None) | StmtKind::Break | StmtKind::Continue => {}
+        StmtKind::Expr(e) => collect_expr(e, imports, templates, out),
+        StmtKind::VarDecl { ty, init, .. } => {
             if let Some(t) = ty {
                 collect_type(t, imports, templates, out);
             }
@@ -408,7 +412,7 @@ fn collect_stmt(
                 collect_expr(e, imports, templates, out);
             }
         }
-        Stmt::If {
+        StmtKind::If {
             cond,
             then_branch,
             else_branch,
@@ -419,11 +423,11 @@ fn collect_stmt(
                 collect_block(b, imports, templates, out);
             }
         }
-        Stmt::While { cond, body } => {
+        StmtKind::While { cond, body } => {
             collect_expr(cond, imports, templates, out);
             collect_block(body, imports, templates, out);
         }
-        Stmt::ForEach {
+        StmtKind::ForEach {
             ty, iterable, body, ..
         } => {
             if let Some(t) = ty {
@@ -432,7 +436,7 @@ fn collect_stmt(
             collect_expr(iterable, imports, templates, out);
             collect_block(body, imports, templates, out);
         }
-        Stmt::For {
+        StmtKind::For {
             init,
             cond,
             step,
@@ -449,13 +453,13 @@ fn collect_stmt(
             }
             collect_block(body, imports, templates, out);
         }
-        Stmt::Block(b) => collect_block(b, imports, templates, out),
-        Stmt::ThisCall(args) | Stmt::SuperCall(args) => {
+        StmtKind::Block(b) => collect_block(b, imports, templates, out),
+        StmtKind::ThisCall(args) | StmtKind::SuperCall(args) => {
             for a in args {
                 collect_expr(&a.value, imports, templates, out);
             }
         }
-        Stmt::Try {
+        StmtKind::Try {
             body,
             catches,
             finally,
@@ -625,6 +629,7 @@ fn rewrite_file(
         namespace: file.namespace.clone(),
         uses: file.uses.clone(),
         item,
+        path: file.path.clone(),
     }
 }
 
@@ -656,6 +661,7 @@ fn rewrite_class(
         is_readonly: class.is_readonly,
         is_abstract: class.is_abstract,
         is_final: class.is_final,
+        decl_line: class.decl_line,
     }
 }
 
@@ -741,52 +747,54 @@ fn rewrite_stmt(
     imports: &HashMap<String, String>,
     templates: &HashMap<String, TemplateInfo>,
 ) -> Stmt {
-    match stmt {
-        Stmt::Return(e) => Stmt::Return(e.as_ref().map(|e| rewrite_expr(e, imports, templates))),
-        Stmt::Expr(e) => Stmt::Expr(rewrite_expr(e, imports, templates)),
-        Stmt::VarDecl {
+    let kind = match &stmt.kind {
+        StmtKind::Return(e) => {
+            StmtKind::Return(e.as_ref().map(|e| rewrite_expr(e, imports, templates)))
+        }
+        StmtKind::Expr(e) => StmtKind::Expr(rewrite_expr(e, imports, templates)),
+        StmtKind::VarDecl {
             ty,
             name,
             init,
             is_const,
-        } => Stmt::VarDecl {
+        } => StmtKind::VarDecl {
             ty: ty.as_ref().map(|t| rewrite_type(t, imports, templates)),
             name: name.clone(),
             init: init.as_ref().map(|e| rewrite_expr(e, imports, templates)),
             is_const: *is_const,
         },
-        Stmt::If {
+        StmtKind::If {
             cond,
             then_branch,
             else_branch,
-        } => Stmt::If {
+        } => StmtKind::If {
             cond: rewrite_expr(cond, imports, templates),
             then_branch: rewrite_block(then_branch, imports, templates),
             else_branch: else_branch
                 .as_ref()
                 .map(|b| rewrite_block(b, imports, templates)),
         },
-        Stmt::While { cond, body } => Stmt::While {
+        StmtKind::While { cond, body } => StmtKind::While {
             cond: rewrite_expr(cond, imports, templates),
             body: rewrite_block(body, imports, templates),
         },
-        Stmt::ForEach {
+        StmtKind::ForEach {
             ty,
             var,
             iterable,
             body,
-        } => Stmt::ForEach {
+        } => StmtKind::ForEach {
             ty: ty.as_ref().map(|t| rewrite_type(t, imports, templates)),
             var: var.clone(),
             iterable: rewrite_expr(iterable, imports, templates),
             body: rewrite_block(body, imports, templates),
         },
-        Stmt::For {
+        StmtKind::For {
             init,
             cond,
             step,
             body,
-        } => Stmt::For {
+        } => StmtKind::For {
             init: init
                 .iter()
                 .map(|s| rewrite_stmt(s, imports, templates))
@@ -798,25 +806,25 @@ fn rewrite_stmt(
                 .collect(),
             body: rewrite_block(body, imports, templates),
         },
-        Stmt::Break => Stmt::Break,
-        Stmt::Continue => Stmt::Continue,
-        Stmt::Block(b) => Stmt::Block(rewrite_block(b, imports, templates)),
-        Stmt::ThisCall(args) => Stmt::ThisCall(
+        StmtKind::Break => StmtKind::Break,
+        StmtKind::Continue => StmtKind::Continue,
+        StmtKind::Block(b) => StmtKind::Block(rewrite_block(b, imports, templates)),
+        StmtKind::ThisCall(args) => StmtKind::ThisCall(
             args.iter()
                 .map(|a| rewrite_arg(a, imports, templates))
                 .collect(),
         ),
-        Stmt::SuperCall(args) => Stmt::SuperCall(
+        StmtKind::SuperCall(args) => StmtKind::SuperCall(
             args.iter()
                 .map(|a| rewrite_arg(a, imports, templates))
                 .collect(),
         ),
-        Stmt::Throw(e) => Stmt::Throw(rewrite_expr(e, imports, templates)),
-        Stmt::Try {
+        StmtKind::Throw(e) => StmtKind::Throw(rewrite_expr(e, imports, templates)),
+        StmtKind::Try {
             body,
             catches,
             finally,
-        } => Stmt::Try {
+        } => StmtKind::Try {
             body: rewrite_block(body, imports, templates),
             catches: catches
                 .iter()
@@ -830,6 +838,10 @@ fn rewrite_stmt(
                 .as_ref()
                 .map(|b| rewrite_block(b, imports, templates)),
         },
+    };
+    Stmt {
+        kind,
+        line: stmt.line,
     }
 }
 
@@ -1048,6 +1060,7 @@ fn subst_class(class: &ClassDecl, subst: &HashMap<String, Type>) -> ClassDecl {
         is_readonly: class.is_readonly,
         is_abstract: class.is_abstract,
         is_final: class.is_final,
+        decl_line: class.decl_line,
     }
 }
 
@@ -1088,68 +1101,70 @@ fn subst_block(block: &Block, subst: &HashMap<String, Type>) -> Block {
 }
 
 fn subst_stmt(stmt: &Stmt, subst: &HashMap<String, Type>) -> Stmt {
-    match stmt {
-        Stmt::Return(e) => Stmt::Return(e.as_ref().map(|e| subst_expr(e, subst))),
-        Stmt::Expr(e) => Stmt::Expr(subst_expr(e, subst)),
-        Stmt::VarDecl {
+    let kind = match &stmt.kind {
+        StmtKind::Return(e) => StmtKind::Return(e.as_ref().map(|e| subst_expr(e, subst))),
+        StmtKind::Expr(e) => StmtKind::Expr(subst_expr(e, subst)),
+        StmtKind::VarDecl {
             ty,
             name,
             init,
             is_const,
-        } => Stmt::VarDecl {
+        } => StmtKind::VarDecl {
             ty: ty.as_ref().map(|t| subst_type(t, subst)),
             name: name.clone(),
             init: init.as_ref().map(|e| subst_expr(e, subst)),
             is_const: *is_const,
         },
-        Stmt::If {
+        StmtKind::If {
             cond,
             then_branch,
             else_branch,
-        } => Stmt::If {
+        } => StmtKind::If {
             cond: subst_expr(cond, subst),
             then_branch: subst_block(then_branch, subst),
             else_branch: else_branch.as_ref().map(|b| subst_block(b, subst)),
         },
-        Stmt::While { cond, body } => Stmt::While {
+        StmtKind::While { cond, body } => StmtKind::While {
             cond: subst_expr(cond, subst),
             body: subst_block(body, subst),
         },
-        Stmt::ForEach {
+        StmtKind::ForEach {
             ty,
             var,
             iterable,
             body,
-        } => Stmt::ForEach {
+        } => StmtKind::ForEach {
             ty: ty.as_ref().map(|t| subst_type(t, subst)),
             var: var.clone(),
             iterable: subst_expr(iterable, subst),
             body: subst_block(body, subst),
         },
-        Stmt::For {
+        StmtKind::For {
             init,
             cond,
             step,
             body,
-        } => Stmt::For {
+        } => StmtKind::For {
             init: init.iter().map(|s| subst_stmt(s, subst)).collect(),
             cond: cond.as_ref().map(|c| subst_expr(c, subst)),
             step: step.iter().map(|e| subst_expr(e, subst)).collect(),
             body: subst_block(body, subst),
         },
-        Stmt::Break => Stmt::Break,
-        Stmt::Continue => Stmt::Continue,
-        Stmt::Block(b) => Stmt::Block(subst_block(b, subst)),
-        Stmt::ThisCall(args) => Stmt::ThisCall(args.iter().map(|a| subst_arg(a, subst)).collect()),
-        Stmt::SuperCall(args) => {
-            Stmt::SuperCall(args.iter().map(|a| subst_arg(a, subst)).collect())
+        StmtKind::Break => StmtKind::Break,
+        StmtKind::Continue => StmtKind::Continue,
+        StmtKind::Block(b) => StmtKind::Block(subst_block(b, subst)),
+        StmtKind::ThisCall(args) => {
+            StmtKind::ThisCall(args.iter().map(|a| subst_arg(a, subst)).collect())
         }
-        Stmt::Throw(e) => Stmt::Throw(subst_expr(e, subst)),
-        Stmt::Try {
+        StmtKind::SuperCall(args) => {
+            StmtKind::SuperCall(args.iter().map(|a| subst_arg(a, subst)).collect())
+        }
+        StmtKind::Throw(e) => StmtKind::Throw(subst_expr(e, subst)),
+        StmtKind::Try {
             body,
             catches,
             finally,
-        } => Stmt::Try {
+        } => StmtKind::Try {
             body: subst_block(body, subst),
             catches: catches
                 .iter()
@@ -1161,6 +1176,10 @@ fn subst_stmt(stmt: &Stmt, subst: &HashMap<String, Type>) -> Stmt {
                 .collect(),
             finally: finally.as_ref().map(|b| subst_block(b, subst)),
         },
+    };
+    Stmt {
+        kind,
+        line: stmt.line,
     }
 }
 

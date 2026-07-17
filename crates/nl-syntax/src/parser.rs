@@ -2,15 +2,20 @@ use crate::ast::*;
 use crate::error::SyntaxError;
 use crate::token::{Keyword, Punct, Token, TokenKind};
 
-pub fn parse_source_file(src: &str) -> Result<SourceFile, SyntaxError> {
+pub fn parse_source_file(src: &str, path: impl Into<String>) -> Result<SourceFile, SyntaxError> {
     let tokens = crate::lexer::Lexer::new(src).tokenize()?;
-    let mut p = Parser { tokens, pos: 0 };
+    let mut p = Parser {
+        tokens,
+        pos: 0,
+        path: path.into(),
+    };
     p.parse_source_file()
 }
 
 struct Parser {
     tokens: Vec<Token>,
     pos: usize,
+    path: String,
 }
 
 impl Parser {
@@ -24,6 +29,10 @@ impl Parser {
 
     fn line(&self) -> u32 {
         self.peek().line
+    }
+
+    fn col(&self) -> u32 {
+        self.peek().col
     }
 
     fn bump(&mut self) -> Token {
@@ -50,6 +59,7 @@ impl Parser {
             Err(SyntaxError::Parse(
                 format!("expected {p:?}, found {:?}", self.peek().kind),
                 self.line(),
+                self.col(),
             ))
         }
     }
@@ -62,6 +72,7 @@ impl Parser {
             Err(SyntaxError::Parse(
                 format!("expected {k:?}, found {:?}", self.peek().kind),
                 self.line(),
+                self.col(),
             ))
         }
     }
@@ -72,6 +83,7 @@ impl Parser {
             other => Err(SyntaxError::Parse(
                 format!("expected identifier, found {other:?}"),
                 self.line(),
+                self.col(),
             )),
         }
     }
@@ -89,6 +101,7 @@ impl Parser {
             other => Err(SyntaxError::Parse(
                 format!("expected identifier, found {other:?}"),
                 self.line(),
+                self.col(),
             )),
         }
     }
@@ -154,6 +167,7 @@ impl Parser {
             namespace,
             uses,
             item,
+            path: self.path.clone(),
         })
     }
 
@@ -200,6 +214,7 @@ impl Parser {
     }
 
     fn parse_interface_decl(&mut self) -> Result<InterfaceDecl, SyntaxError> {
+        let decl_line = self.line();
         self.eat_keyword(Keyword::Interface)?;
         let name = self.eat_ident()?;
         self.eat_punct(Punct::LBrace)?;
@@ -232,7 +247,11 @@ impl Parser {
             });
         }
         self.eat_punct(Punct::RBrace)?;
-        Ok(InterfaceDecl { name, methods })
+        Ok(InterfaceDecl {
+            name,
+            methods,
+            decl_line,
+        })
     }
 
     fn parse_class_decl(
@@ -241,6 +260,7 @@ impl Parser {
         is_abstract: bool,
         is_final: bool,
     ) -> Result<ClassDecl, SyntaxError> {
+        let decl_line = self.line();
         self.eat_keyword(Keyword::Class)?;
         // specs.md § Readonly, "Modifier order": `[abstract | final] class
         // [readonly] Name` — `readonly` follows `class`, before the name.
@@ -289,6 +309,7 @@ impl Parser {
             is_readonly,
             is_abstract,
             is_final,
+            decl_line,
         })
     }
 
@@ -333,6 +354,7 @@ impl Parser {
         fields: &mut Vec<FieldDecl>,
         methods: &mut Vec<MethodDecl>,
     ) -> Result<(), SyntaxError> {
+        let decl_line = self.line();
         let mut visibility = Visibility::Public;
         let mut visibility_explicit = false;
         let mut is_static = false;
@@ -389,6 +411,7 @@ impl Parser {
                 params,
                 throws,
                 body,
+                decl_line,
             });
             return Ok(());
         }
@@ -410,6 +433,7 @@ impl Parser {
                 params: Vec::new(),
                 throws: Vec::new(),
                 body,
+                decl_line,
             });
             return Ok(());
         }
@@ -450,6 +474,7 @@ impl Parser {
                 params,
                 throws,
                 body,
+                decl_line,
             });
         } else {
             let init = if self.is_punct(Punct::Assign) {
@@ -632,6 +657,7 @@ impl Parser {
                 return Err(SyntaxError::Parse(
                     format!("expected type, found {other:?}"),
                     self.line(),
+                self.col(),
                 ))
             }
         };
@@ -688,6 +714,7 @@ impl Parser {
             other => Err(SyntaxError::Parse(
                 format!("expected type after 'new', found {other:?}"),
                 self.line(),
+                self.col(),
             )),
         }
     }
@@ -703,6 +730,7 @@ impl Parser {
     }
 
     fn parse_stmt(&mut self) -> Result<Stmt, SyntaxError> {
+        let line = self.line();
         if self.is_keyword(Keyword::This)
             && matches!(self.peek_at(1), Some(TokenKind::Punct(Punct::LParen)))
         {
@@ -711,7 +739,10 @@ impl Parser {
             let args = self.parse_args()?;
             self.eat_punct(Punct::RParen)?;
             self.eat_punct(Punct::Semi)?;
-            return Ok(Stmt::ThisCall(args));
+            return Ok(Stmt {
+                kind: StmtKind::ThisCall(args),
+                line,
+            });
         }
         if self.is_keyword(Keyword::Super)
             && matches!(self.peek_at(1), Some(TokenKind::Punct(Punct::LParen)))
@@ -721,13 +752,19 @@ impl Parser {
             let args = self.parse_args()?;
             self.eat_punct(Punct::RParen)?;
             self.eat_punct(Punct::Semi)?;
-            return Ok(Stmt::SuperCall(args));
+            return Ok(Stmt {
+                kind: StmtKind::SuperCall(args),
+                line,
+            });
         }
         if self.is_keyword(Keyword::Throw) {
             self.bump();
             let expr = self.parse_expr()?;
             self.eat_punct(Punct::Semi)?;
-            return Ok(Stmt::Throw(expr));
+            return Ok(Stmt {
+                kind: StmtKind::Throw(expr),
+                line,
+            });
         }
         if self.is_keyword(Keyword::Try) {
             return self.parse_try_stmt();
@@ -736,11 +773,17 @@ impl Parser {
             self.bump();
             if self.is_punct(Punct::Semi) {
                 self.bump();
-                return Ok(Stmt::Return(None));
+                return Ok(Stmt {
+                    kind: StmtKind::Return(None),
+                    line,
+                });
             }
             let expr = self.parse_expr()?;
             self.eat_punct(Punct::Semi)?;
-            return Ok(Stmt::Return(Some(expr)));
+            return Ok(Stmt {
+                kind: StmtKind::Return(Some(expr)),
+                line,
+            });
         }
         if self.is_keyword(Keyword::If) {
             return self.parse_if_stmt();
@@ -754,29 +797,41 @@ impl Parser {
         if self.is_keyword(Keyword::Break) {
             self.bump();
             self.eat_punct(Punct::Semi)?;
-            return Ok(Stmt::Break);
+            return Ok(Stmt {
+                kind: StmtKind::Break,
+                line,
+            });
         }
         if self.is_keyword(Keyword::Continue) {
             self.bump();
             self.eat_punct(Punct::Semi)?;
-            return Ok(Stmt::Continue);
+            return Ok(Stmt {
+                kind: StmtKind::Continue,
+                line,
+            });
         }
         if self.is_punct(Punct::LBrace) {
-            return Ok(Stmt::Block(self.parse_block()?));
+            return Ok(Stmt {
+                kind: StmtKind::Block(self.parse_block()?),
+                line,
+            });
         }
         // `const T name = expr;` — compiler.md § Const local variables
         // (E012). A leading `const` in statement position is unambiguous:
         // it never starts any other statement form.
         if self.is_keyword(Keyword::Const) {
             self.bump();
-            return self.parse_var_decl(true);
+            return self.parse_var_decl(true, line);
         }
         if self.looks_like_var_decl() {
-            return self.parse_var_decl(false);
+            return self.parse_var_decl(false, line);
         }
         let expr = self.parse_expr()?;
         self.eat_punct(Punct::Semi)?;
-        Ok(Stmt::Expr(expr))
+        Ok(Stmt {
+            kind: StmtKind::Expr(expr),
+            line,
+        })
     }
 
     /// Local variable declarations start with `auto` or a type name (a
@@ -857,7 +912,7 @@ impl Parser {
         }
     }
 
-    fn parse_var_decl(&mut self, is_const: bool) -> Result<Stmt, SyntaxError> {
+    fn parse_var_decl(&mut self, is_const: bool, line: u32) -> Result<Stmt, SyntaxError> {
         let ty = if self.is_keyword(Keyword::Auto) {
             self.bump();
             None
@@ -872,15 +927,19 @@ impl Parser {
             None
         };
         self.eat_punct(Punct::Semi)?;
-        Ok(Stmt::VarDecl {
-            ty,
-            name,
-            init,
-            is_const,
+        Ok(Stmt {
+            kind: StmtKind::VarDecl {
+                ty,
+                name,
+                init,
+                is_const,
+            },
+            line,
         })
     }
 
     fn parse_if_stmt(&mut self) -> Result<Stmt, SyntaxError> {
+        let line = self.line();
         self.eat_keyword(Keyword::If)?;
         self.eat_punct(Punct::LParen)?;
         let cond = self.parse_expr()?;
@@ -896,10 +955,13 @@ impl Parser {
         } else {
             None
         };
-        Ok(Stmt::If {
-            cond,
-            then_branch,
-            else_branch,
+        Ok(Stmt {
+            kind: StmtKind::If {
+                cond,
+                then_branch,
+                else_branch,
+            },
+            line,
         })
     }
 
@@ -907,6 +969,7 @@ impl Parser {
     /// for-each, rewind and parse a C-style header" (the caller restores
     /// `self.pos`); anything after the committing `:` reports real errors.
     fn try_parse_foreach_header(&mut self) -> Result<Option<Stmt>, SyntaxError> {
+        let line = self.line();
         if self.is_keyword(Keyword::Const) {
             self.bump();
         }
@@ -929,11 +992,14 @@ impl Parser {
         let iterable = self.parse_expr()?;
         self.eat_punct(Punct::RParen)?;
         let body = self.parse_block()?;
-        Ok(Some(Stmt::ForEach {
-            ty,
-            var,
-            iterable,
-            body,
+        Ok(Some(Stmt {
+            kind: StmtKind::ForEach {
+                ty,
+                var,
+                iterable,
+                body,
+            },
+            line,
         }))
     }
 
@@ -942,6 +1008,7 @@ impl Parser {
     /// required (a bare `try {}` with neither is meaningless); the parser
     /// itself doesn't enforce that, it just produces empty vectors/`None`.
     fn parse_try_stmt(&mut self) -> Result<Stmt, SyntaxError> {
+        let line = self.line();
         self.eat_keyword(Keyword::Try)?;
         let body = self.parse_block()?;
         let mut catches = Vec::new();
@@ -964,10 +1031,13 @@ impl Parser {
         } else {
             None
         };
-        Ok(Stmt::Try {
-            body,
-            catches,
-            finally,
+        Ok(Stmt {
+            kind: StmtKind::Try {
+                body,
+                catches,
+                finally,
+            },
+            line,
         })
     }
 
@@ -1001,15 +1071,20 @@ impl Parser {
     }
 
     fn parse_while_stmt(&mut self) -> Result<Stmt, SyntaxError> {
+        let line = self.line();
         self.eat_keyword(Keyword::While)?;
         self.eat_punct(Punct::LParen)?;
         let cond = self.parse_expr()?;
         self.eat_punct(Punct::RParen)?;
         let body = self.parse_block()?;
-        Ok(Stmt::While { cond, body })
+        Ok(Stmt {
+            kind: StmtKind::While { cond, body },
+            line,
+        })
     }
 
     fn parse_for_stmt(&mut self) -> Result<Stmt, SyntaxError> {
+        let line = self.line();
         self.eat_keyword(Keyword::For)?;
         self.eat_punct(Punct::LParen)?;
 
@@ -1032,14 +1107,18 @@ impl Parser {
                 Some(self.parse_type()?)
             };
             loop {
+                let init_line = self.line();
                 let name = self.eat_ident()?;
                 self.eat_punct(Punct::Assign)?;
                 let expr = self.parse_expr()?;
-                init.push(Stmt::VarDecl {
-                    ty: ty.clone(),
-                    name,
-                    init: Some(expr),
-                    is_const: false,
+                init.push(Stmt {
+                    kind: StmtKind::VarDecl {
+                        ty: ty.clone(),
+                        name,
+                        init: Some(expr),
+                        is_const: false,
+                    },
+                    line: init_line,
                 });
                 if self.is_punct(Punct::Comma) {
                     self.bump();
@@ -1071,11 +1150,14 @@ impl Parser {
         self.eat_punct(Punct::RParen)?;
 
         let body = self.parse_block()?;
-        Ok(Stmt::For {
-            init,
-            cond,
-            step,
-            body,
+        Ok(Stmt {
+            kind: StmtKind::For {
+                init,
+                cond,
+                step,
+                body,
+            },
+            line,
         })
     }
 
@@ -1097,7 +1179,7 @@ impl Parser {
         let Some(op) = compound else {
             return Ok(lhs);
         };
-        let target = to_lvalue(lhs, self.line())?;
+        let target = to_lvalue(lhs, self.line(), self.col())?;
         self.bump();
         let rhs = self.parse_assignment()?;
         let value = match op {
@@ -1107,6 +1189,7 @@ impl Parser {
                     return Err(SyntaxError::Parse(
                         "compound assignment is only supported on local variables".to_string(),
                         self.line(),
+                self.col(),
                     ));
                 };
                 Expr::Binary(binop, Box::new(Expr::Ident(name.clone())), Box::new(rhs))
@@ -1413,6 +1496,7 @@ impl Parser {
             other => Err(SyntaxError::Parse(
                 format!("expected expression, found {other:?}"),
                 self.line(),
+                self.col(),
             )),
         }
     }
@@ -1461,6 +1545,7 @@ impl Parser {
                     return Err(SyntaxError::Parse(
                         "'new' on a primitive type requires array syntax 'new T[size]'".to_string(),
                         self.line(),
+                self.col(),
                     ))
                 }
             };
@@ -1472,6 +1557,7 @@ impl Parser {
             Err(SyntaxError::Parse(
                 "expected '(' or '[' after 'new <type>'".to_string(),
                 self.line(),
+                self.col(),
             ))
         }
     }
@@ -1591,7 +1677,7 @@ impl Parser {
     }
 }
 
-fn to_lvalue(expr: Expr, line: u32) -> Result<LValue, SyntaxError> {
+fn to_lvalue(expr: Expr, line: u32, col: u32) -> Result<LValue, SyntaxError> {
     match expr {
         Expr::Ident(name) => Ok(LValue::Local(name)),
         Expr::FieldAccess(target, name) => Ok(LValue::Field(target, name)),
@@ -1599,6 +1685,7 @@ fn to_lvalue(expr: Expr, line: u32) -> Result<LValue, SyntaxError> {
         _ => Err(SyntaxError::Parse(
             "invalid assignment target".to_string(),
             line,
+            col,
         )),
     }
 }

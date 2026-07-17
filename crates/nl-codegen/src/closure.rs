@@ -9,7 +9,7 @@
 
 use std::collections::HashSet;
 
-use nl_syntax::ast::{Block, ClosureBody, Expr, LValue, Stmt};
+use nl_syntax::ast::{Block, ClosureBody, Expr, LValue, Stmt, StmtKind};
 
 pub(crate) fn referenced_names(body: &ClosureBody) -> HashSet<String> {
     let mut names = HashSet::new();
@@ -27,16 +27,16 @@ fn collect_block(block: &Block, names: &mut HashSet<String>) {
 }
 
 fn collect_stmt(stmt: &Stmt, names: &mut HashSet<String>) {
-    match stmt {
-        Stmt::Return(Some(e)) | Stmt::Throw(e) => collect_expr(e, names),
-        Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
-        Stmt::Expr(e) => collect_expr(e, names),
-        Stmt::VarDecl { init, .. } => {
+    match &stmt.kind {
+        StmtKind::Return(Some(e)) | StmtKind::Throw(e) => collect_expr(e, names),
+        StmtKind::Return(None) | StmtKind::Break | StmtKind::Continue => {}
+        StmtKind::Expr(e) => collect_expr(e, names),
+        StmtKind::VarDecl { init, .. } => {
             if let Some(e) = init {
                 collect_expr(e, names);
             }
         }
-        Stmt::If {
+        StmtKind::If {
             cond,
             then_branch,
             else_branch,
@@ -47,15 +47,15 @@ fn collect_stmt(stmt: &Stmt, names: &mut HashSet<String>) {
                 collect_block(b, names);
             }
         }
-        Stmt::While { cond, body } => {
+        StmtKind::While { cond, body } => {
             collect_expr(cond, names);
             collect_block(body, names);
         }
-        Stmt::ForEach { iterable, body, .. } => {
+        StmtKind::ForEach { iterable, body, .. } => {
             collect_expr(iterable, names);
             collect_block(body, names);
         }
-        Stmt::For {
+        StmtKind::For {
             init,
             cond,
             step,
@@ -72,13 +72,13 @@ fn collect_stmt(stmt: &Stmt, names: &mut HashSet<String>) {
             }
             collect_block(body, names);
         }
-        Stmt::Block(b) => collect_block(b, names),
-        Stmt::ThisCall(args) | Stmt::SuperCall(args) => {
+        StmtKind::Block(b) => collect_block(b, names),
+        StmtKind::ThisCall(args) | StmtKind::SuperCall(args) => {
             for a in args {
                 collect_expr(&a.value, names);
             }
         }
-        Stmt::Try {
+        StmtKind::Try {
             body,
             catches,
             finally,

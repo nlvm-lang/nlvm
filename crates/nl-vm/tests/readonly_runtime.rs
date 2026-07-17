@@ -9,7 +9,7 @@
 fn compile(sources: &[&str]) -> Vec<nl_bytecode::Module> {
     let files: Vec<_> = sources
         .iter()
-        .map(|src| nl_syntax::parse_source_file(src).expect("parse"))
+        .map(|src| nl_syntax::parse_source_file(src, "test").expect("parse"))
         .collect();
     nl_codegen::compile_program(&files).expect("codegen")
 }
