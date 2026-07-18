@@ -77,6 +77,12 @@ fn run_frame(
         .utf8_at(method.name_index)
         .unwrap_or("")
         .to_string();
+    // "when `Exception.<construct>(string)` runs..., the VM natively walks
+    // the current call stack and assigns the resulting `ExecutionPoint[]` to
+    // the `stackTrace` field before the constructor returns" — checked once
+    // here (before `class_fqcn` moves into `push_frame`) since it never
+    // changes across this frame's instructions, same as `is_constructor`.
+    let is_exception_root_ctor = is_constructor && class_fqcn == "Exception";
     // vm.md § Call frame — a call that would exceed `MAX_CALL_DEPTH` throws
     // `StackOverflowException` as if the *caller's* invoke instruction threw
     // it (this frame is never entered: no shadow frame gets pushed, no code
@@ -94,6 +100,9 @@ fn run_frame(
 
     loop {
         if pc >= code.len() {
+            if is_exception_root_ctor {
+                maybe_capture_stack_trace(program, &locals);
+            }
             return Ok(None);
         }
         let opcode_pc = pc;
@@ -108,7 +117,12 @@ fn run_frame(
             &mut pc,
         ) {
             Ok(Step::Continue) => {}
-            Ok(Step::Return(v)) => return Ok(v),
+            Ok(Step::Return(v)) => {
+                if is_exception_root_ctor {
+                    maybe_capture_stack_trace(program, &locals);
+                }
+                return Ok(v);
+            }
             Err(VmError::Thrown(exc)) => {
                 match find_handler(program, module, method, opcode_pc, &exc) {
                     Some(handler_pc) => {
@@ -1015,15 +1029,87 @@ fn is_instance_of(program: &Arc<Program>, mut current: String, target_fqcn: &str
 /// Builds a native `Value::Object` for a VM-raised exception (division by
 /// zero, null dereference, out-of-bounds access, `throw null`) without going
 /// through the class's actual constructor — vm.md § Exception table lists
-/// these as VM-thrown directly. Only sets `message`; the full `Exception`
-/// hierarchy's other fields (e.g. a captured stack trace) are not populated
-/// this phase (see nl_syntax::prelude).
+/// these as VM-thrown directly. The current call stack *is* the fault site
+/// (there's no constructor chain to exclude, unlike `maybe_capture_stack_trace`),
+/// so its `stackTrace` is captured with nothing skipped.
 fn throw_native(class_name: &str, message: impl Into<String>) -> VmError {
     let mut fields = HashMap::new();
     fields.insert("message".to_string(), Value::Str(Arc::new(message.into())));
+    fields.insert("stackTrace".to_string(), build_stack_trace_array(0));
     VmError::Thrown(Value::Object(Arc::new(Mutex::new(Object::native(
         class_name, fields,
     )))))
+}
+
+/// vm.md § Stack trace construction: "when `Exception.<construct>(string)`
+/// runs ..., the VM natively walks the current call stack and assigns the
+/// resulting `ExecutionPoint[]` to the `stackTrace` field before the
+/// constructor returns." Called from `run_frame` right before an
+/// `Exception`-root-constructor frame returns. `locals[0]` is `this` (vm.md
+/// § Call frame and operand stack: "local 0 is the receiver"); its
+/// *runtime* class may be any subclass (every constructor in the chain
+/// bottoms out here via `super(...)`), so the frames belonging to that whole
+/// chain — still live on the shadow stack at this exact moment, each paused
+/// mid-`super(...)` call — are excluded by walking `extends` from the
+/// runtime class up to (and including) `Exception` itself.
+fn maybe_capture_stack_trace(program: &Arc<Program>, locals: &[Value]) {
+    let Value::Object(obj) = &locals[0] else {
+        return;
+    };
+    let runtime_class = lock(obj).class_name.clone();
+    let skip = exception_constructor_chain_depth(program, &runtime_class);
+    lock(obj)
+        .fields
+        .insert("stackTrace".to_string(), build_stack_trace_array(skip));
+}
+
+/// Number of frames belonging to `class_fqcn`'s own constructor chain up to
+/// and including the root `Exception` class (`class_fqcn` itself, its
+/// `extends` parent, ..., `Exception`) — see `maybe_capture_stack_trace`.
+fn exception_constructor_chain_depth(program: &Arc<Program>, class_fqcn: &str) -> usize {
+    let mut depth = 0;
+    let mut current = class_fqcn.to_string();
+    loop {
+        depth += 1;
+        if current == "Exception" {
+            return depth;
+        }
+        let Some(module) = program.get(&current) else {
+            return depth;
+        };
+        if module.super_class == 0 {
+            return depth;
+        }
+        match module.constant_pool.class_name_at(module.super_class) {
+            Some(parent) => current = parent.to_string(),
+            None => return depth,
+        }
+    }
+}
+
+/// Snapshots the current call stack (`skip` innermost frames dropped) into a
+/// NL `ExecutionPoint[]` `Value::Array` — vm.md § Stack trace construction:
+/// "file: the source file path (derived from the module's class name and
+/// namespace)". The bytecode format carries no separate source-file record
+/// (see `nl_bytecode::Module`), so this reconstructs one from each frame's
+/// fully qualified class name, matching the directory layout `nlc` itself
+/// expects (`namespace.Class` -> `namespace/Class.nl`, e.g.
+/// `phase9.coalesceprecedence.Main` -> `phase9/coalesceprecedence/Main.nl`).
+fn build_stack_trace_array(skip: usize) -> Value {
+    let points: Vec<Value> = crate::call_stack::snapshot(skip)
+        .into_iter()
+        .map(|(class_fqcn, _method_name, line)| {
+            let mut fields = HashMap::new();
+            let file = format!("{}.nl", class_fqcn.replace('.', "/"));
+            fields.insert("file".to_string(), Value::Str(Arc::new(file)));
+            fields.insert("line".to_string(), Value::Int(line as i64));
+            Value::Object(Arc::new(Mutex::new(Object::native(
+                "ExecutionPoint",
+                fields,
+            ))))
+        })
+        .collect();
+    Value::Array(Arc::new(Mutex::new(points)))
 }
 
 /// Searches `method`'s exception table for an entry whose protected range

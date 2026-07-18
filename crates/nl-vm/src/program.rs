@@ -366,16 +366,40 @@ fn append_line(buf: &mut String, line: &str) {
 }
 
 /// `vm.md § Throw and stack unwinding`, step 5: "the VM prints the
-/// exception message ... to stderr". Renders as `ClassName: message` (or
-/// bare `ClassName` if `message` is absent/not a string) — matches the
-/// implicit-exception wording already used by e.g. `IndexOutOfBoundsException`.
+/// exception message and stack trace to stderr". First line renders as
+/// `ClassName: message` (or bare `ClassName` if `message` is absent/not a
+/// string) — matches the implicit-exception wording already used by e.g.
+/// `IndexOutOfBoundsException`. Followed by one `\tat file:line` per
+/// `Exception.stackTrace` entry, if any (vm.md leaves the exact rendering
+/// "implementation-defined" — no canonical format is specified).
 pub(crate) fn describe_exception(exc: &Value) -> String {
     let Value::Object(obj) = exc else {
         return exc.to_display_string();
     };
     let obj = lock(obj);
-    match obj.fields.get("message") {
+    let header = match obj.fields.get("message") {
         Some(Value::Str(s)) if !s.is_empty() => format!("{}: {s}", obj.class_name),
         _ => obj.class_name.clone(),
+    };
+    let Some(Value::Array(frames)) = obj.fields.get("stackTrace") else {
+        return header;
+    };
+    let frames = lock(frames);
+    let mut out = header;
+    for frame in frames.iter() {
+        let Value::Object(point) = frame else {
+            continue;
+        };
+        let point = lock(point);
+        let file = match point.fields.get("file") {
+            Some(Value::Str(s)) => s.as_str(),
+            _ => "?",
+        };
+        let line = match point.fields.get("line") {
+            Some(Value::Int(n)) => *n,
+            _ => 0,
+        };
+        out.push_str(&format!("\n\tat {file}:{line}"));
     }
+    out
 }

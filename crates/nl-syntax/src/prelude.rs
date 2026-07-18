@@ -7,10 +7,16 @@
 //! these files declare an empty namespace — `fqcn_of` returns the bare class
 //! name when `namespace` is empty).
 //!
-//! Stack trace capture (vm.md § Stack trace construction) is not
-//! implemented: `Exception` has no `stackTrace` field this phase.
 //! Checked-exception declaration/propagation checking (E016/E017) is not
 //! enforced either — see PLAN.md Phase 5.
+//!
+//! Stack trace capture (vm.md § Stack trace construction): `Exception`
+//! declares `public ExecutionPoint[] stackTrace;`, but no NL source ever
+//! assigns it — `nl_vm::interpreter` sets it natively (bypassing bytecode
+//! entirely, the same way it builds VM-thrown exceptions like
+//! `NullPointerException` without going through a constructor at all) the
+//! moment `Exception.<construct>` is about to return. See
+//! `nl_vm::call_stack` and `interpreter::maybe_capture_stack_trace`.
 
 use crate::ast::{
     Arg, Block, ClassDecl, Expr, FieldDecl, InterfaceDecl, LValue, MethodDecl, MethodKind,
@@ -77,7 +83,103 @@ pub fn files() -> Vec<SourceFile> {
         item: SourceItem::Class(box_class()),
         path: PRELUDE_PATH.to_string(),
     });
+    files.push(SourceFile {
+        namespace: Vec::new(),
+        uses: Vec::new(),
+        item: SourceItem::Class(execution_point_class()),
+        path: PRELUDE_PATH.to_string(),
+    });
     files
+}
+
+/// vm.md § Stack trace construction — one entry of `Exception.stackTrace`.
+/// Never constructed from NL source (`nl_vm::interpreter` builds instances
+/// directly, bypassing this constructor, exactly like the VM-thrown
+/// built-in exceptions bypass `Exception`'s own); declared as a real class
+/// purely so `Exception.stackTrace: ExecutionPoint[]` is a type nl-sema and
+/// nl-codegen can resolve like any other object array.
+fn execution_point_class() -> ClassDecl {
+    let fields = vec![
+        FieldDecl {
+            name: "file".to_string(),
+            visibility: Visibility::Public,
+            visibility_explicit: true,
+            is_static: false,
+            readonly: false,
+            ty: Type::StringT,
+            init: None,
+        },
+        FieldDecl {
+            name: "line".to_string(),
+            visibility: Visibility::Public,
+            visibility_explicit: true,
+            is_static: false,
+            readonly: false,
+            ty: Type::Int,
+            init: None,
+        },
+    ];
+    let params = vec![
+        Param {
+            name: "file".to_string(),
+            ty: Type::StringT,
+            is_const: false,
+            default: None,
+            is_ref: false,
+        },
+        Param {
+            name: "line".to_string(),
+            ty: Type::Int,
+            is_const: false,
+            default: None,
+            is_ref: false,
+        },
+    ];
+    let ctor_body: Block = vec![
+        Stmt {
+            kind: StmtKind::Expr(Expr::Assign(
+                LValue::Field(Box::new(Expr::This), "file".to_string()),
+                Box::new(Expr::Ident("file".to_string())),
+            )),
+            line: 0,
+        },
+        Stmt {
+            kind: StmtKind::Expr(Expr::Assign(
+                LValue::Field(Box::new(Expr::This), "line".to_string()),
+                Box::new(Expr::Ident("line".to_string())),
+            )),
+            line: 0,
+        },
+    ];
+    let ctor = MethodDecl {
+        name: "<construct>".to_string(),
+        kind: MethodKind::Constructor,
+        visibility: Visibility::Public,
+        visibility_explicit: true,
+        is_static: false,
+        is_const: false,
+        is_abstract: false,
+        is_final: false,
+        return_type: Type::Void,
+        params,
+        throws: Vec::new(),
+        body: ctor_body,
+        decl_line: 0,
+    };
+    ClassDecl {
+        name: "ExecutionPoint".to_string(),
+        type_params: Vec::new(),
+        extends: None,
+        implements: Vec::new(),
+        fields,
+        methods: vec![ctor],
+        is_readonly: false,
+        is_abstract: false,
+        is_final: false,
+        decl_line: 0,
+        is_enum: false,
+        enum_cases: Vec::new(),
+    }
 }
 
 /// vm.md § Ref parameters (boxing) — the single-field generic box a `ref`
@@ -208,15 +310,29 @@ fn exception_class(name: &str, parent: Option<&str>) -> ClassDecl {
         decl_line: 0,
     };
     let fields = if parent.is_none() {
-        vec![FieldDecl {
-            name: "message".to_string(),
-            visibility: Visibility::Public,
-            visibility_explicit: true,
-            is_static: false,
-            readonly: false,
-            ty: Type::StringT,
-            init: None,
-        }]
+        vec![
+            FieldDecl {
+                name: "message".to_string(),
+                visibility: Visibility::Public,
+                visibility_explicit: true,
+                is_static: false,
+                readonly: false,
+                ty: Type::StringT,
+                init: None,
+            },
+            // vm.md § Stack trace construction — never assigned by this
+            // class's own `<construct>` body (see module doc comment); the
+            // VM sets it natively right before that constructor returns.
+            FieldDecl {
+                name: "stackTrace".to_string(),
+                visibility: Visibility::Public,
+                visibility_explicit: true,
+                is_static: false,
+                readonly: false,
+                ty: Type::Array(Box::new(Type::Named("ExecutionPoint".to_string()))),
+                init: None,
+            },
+        ]
     } else {
         Vec::new()
     };

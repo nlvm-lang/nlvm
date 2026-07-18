@@ -38,15 +38,25 @@ Limitation assumée : `snapshot`/`skip` sont actuellement du code mort (`#[allow
 
 Limitation assumée : le seuil (150) est calibré empiriquement sur cette machine en build debug ; pas de garantie formelle multi-plateforme, mais marge ~2x prise volontairement. 131 tests maison (130 + la nouvelle fixture) + 14/14 nlvm-specs toujours verts, aucune régression clippy/fmt.
 
-### 4. Champ `stackTrace` + capture native au constructeur `Exception`
-- [ ] Ajouter `ExecutionPoint { line: int, file: string }` et `Exception.stackTrace: ExecutionPoint[]` dans `crates/nl-syntax/src/prelude.rs`
-- [ ] Capturer la pile (issue de l'étape 2) au moment de l'exécution du constructeur de base `Exception`, avant retour de `super(...)` — exclure les frames du chaînage de constructeurs de l'exception elle-même
-- [ ] `crates/nl-vm/src/error.rs:9-19` (`VmError::Thrown(Value)`) : vérifier si la trace doit transiter par là ou si elle est déjà portée par l'objet exception NL construit
-- [ ] Sortie sur exception non attrapée : message + trace sur stderr, exit code 1 (vm.md:688,1042,1073)
+### 4. Champ `stackTrace` + capture native au constructeur `Exception` — ~~FAIT~~
+- [x] `ExecutionPoint { file: string, line: int }` déclarée comme vraie classe prelude (`crates/nl-syntax/src/prelude.rs::execution_point_class`) — jamais construite via son propre constructeur NL, uniquement déclarée pour que `Exception.stackTrace: ExecutionPoint[]` soit un type résoluble par nl-sema/nl-codegen comme n'importe quel tableau d'objets
+- [x] `Exception` (classe racine, `parent.is_none()`) porte désormais le champ `stackTrace` en plus de `message`
+- [x] Capture native dans `crates/nl-vm/src/interpreter.rs` : `maybe_capture_stack_trace` appelée juste avant le retour d'un frame dont la classe est littéralement `"Exception"` et qui est un constructeur (`is_exception_root_ctor`) — écrit directement dans `locals[0].fields`, en bypassant `SET_FIELD`/bytecode (cohérent avec vm.md : la readonly-rule l'aurait de toute façon autorisé puisqu'on est dans le constructeur déclarant, donc aucun bypass n'était nécessaire côté spec, seulement plus simple à implémenter ainsi)
+- [x] Exclusion des frames du chaînage de constructeurs de l'exception : `exception_constructor_chain_depth` remonte `extends` depuis la classe **runtime** de `this` (pas la classe statique "Exception" du frame courant) jusqu'à `Exception` inclus — le nombre de classes dans cette chaîne est exactement le nombre de frames encore vivantes au sommet de la pile à ce moment précis (chaque ctor parent est en pause au milieu de son `super(...)`), validé empiriquement par `phase5_0090` (trace démarre bien à la ligne du `new`, pas dans le constructeur)
+- [x] `throw_native` (exceptions levées nativement par la VM : division par zéro, null deref, out-of-bounds, `StackOverflowException`...) peuple aussi `stackTrace`, avec `skip=0` (pas de chaîne de constructeur à exclure — le throw natif se produit directement dans le frame fautif)
+- [x] `file` dérivé du FQCN de la classe déclarante de chaque frame (`namespace.Class` → `namespace/Class.nl`, ex. `phase9.stacktracefields.Main` → `phase9/stacktracefields/Main.nl`) — vm.md dit juste "derived from the module's class name and namespace", pas de format canonique imposé ; les classes de closures synthétiques (`Main$m0$closure0`) produisent un nom un peu étrange (`Main$m0$closure0.nl`) mais restent conformes à la lettre du spec
+- [x] `crates/nl-vm/src/error.rs` : pas touché — `VmError::Thrown(Value)` porte déjà l'objet exception complet (avec son `stackTrace` maintenant peuplé), rien à ajouter côté enum
+- [x] Sortie sur exception non attrapée (`crates/nl-vm/src/program.rs::describe_exception`, utilisée par `run_program` et par `native::dispatch_thread` pour les threads) : ajoute une ligne `\tat file:line` par frame après `ClassName: message` — format libre côté spec ("implementation-defined")
+- [x] Effet de bord découvert en testant : `system.thread.Thread` (`native.rs`) donnait par défaut une pile ~2 MiB (étape 3) — déjà corrigé à l'étape 3, revalidé ici via `phase6_0210` dont la trace pointe correctement dans la closure du thread
 
-### 5. Tests
-- [ ] Ajouter des fixtures maison (aucune fixture yaml nlvm-specs n'existe encore pour le format de trace)
-- [ ] Vérifier lignes correctes (via étape 1), profondeur correcte (étape 2/3), exclusion des frames de constructeur d'exception (étape 4)
+Limitation assumée : `ExecutionPoint` n'a que `{file, line}` (pas de nom de méthode) — conforme à `specs.md:2436-2439`, mais rend les lignes stderr moins riches qu'un trace Java typique.
+
+### 5. Tests — ~~FAIT~~
+- [x] `tests/phase9_0050_exception_stack_trace_fields.yaml` — deux fichiers séparés (`Helper.nl`/`Main.nl`), vérifie `stackTrace.length()==2` et le contenu exact `file:line` des deux frames (throw site + call site), preuve que le walk multi-frame fonctionne, pas juste le frame courant
+- [x] 3 fixtures existantes mises à jour pour le nouveau stderr enrichi (comportement correct, pas une régression) : `tests/phase4_0060_array_out_of_bounds.yaml`, `tests/phase5_0090_uncaught_custom_exception.yaml` (valide la profondeur de chaîne de constructeur : `MyException extends Exception`, trace démarre bien au `throw new MyException(...)`, pas dans un constructeur), `tests/phase6_0210_thread_uncaught_exception.yaml`
+- [x] 132 tests maison (130 + `phase9_0040` étape 3 + `phase9_0050` étape 4) + 14/14 nlvm-specs, aucune régression fmt/clippy sur les fichiers touchés
+
+**Chantier terminé.** Les 4 étapes fonctionnelles + tests sont faites ; `Next.md` peut être mis à jour pour marquer "stack trace info" comme fait.
 
 ## Notes
 - Ne pas faire de shim provisoire (pas de trace "vide mais présente à l'API") — soit c'est fait proprement (lignes réelles), soit ça reste absent du prelude comme aujourd'hui.

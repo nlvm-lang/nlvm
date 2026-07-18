@@ -3,7 +3,7 @@ title: "uncaught custom exception surfaces its class name and message on stderr"
 file_separator: "#NLFILE"
 expected_exit_code: 1
 expected_stdout: ""
-expected_stderr: "Unhandled exception: phase5.uncaught.MyException: nope"
+expected_stderr: "Unhandled exception: phase5.uncaught.MyException: nope\n\tat phase5/uncaught/Main.nl:5"
 ---
 
 #NLFILE phase5/uncaught/MyException.nl

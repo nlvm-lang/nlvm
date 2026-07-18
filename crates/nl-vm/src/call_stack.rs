@@ -24,7 +24,7 @@ thread_local! {
 }
 
 /// vm.md § Call frame — "dépassement de profondeur → StackOverflowException"
-/// (TODO_stack_trace.md step 3). Each `run_frame` invocation is a real Rust
+/// (docs/02_done_stack_trace.md step 3). Each `run_frame` invocation is a real Rust
 /// stack frame (method calls recurse natively, see module doc comment), so
 /// this must stay well under what the host thread's native stack can hold,
 /// with enough margin to survive an **unoptimized debug build** (several
@@ -108,12 +108,10 @@ fn line_for_pc(line_table: &[LineTableEntry], pc: usize) -> u32 {
 /// Snapshots every currently active frame on this thread, innermost
 /// (current) first — vm.md § Stack trace construction: "the VM natively
 /// walks the current call stack". `skip` drops that many innermost frames;
-/// the `Exception` constructor machinery uses this to exclude the exception
-/// hierarchy's own constructor chain so the trace starts at the `new` site.
-///
-/// Not yet called anywhere — wired up once `Exception.stackTrace` capture
-/// lands (TODO_stack_trace.md step 4).
-#[allow(dead_code)]
+/// `interpreter::maybe_capture_stack_trace`/`throw_native` use this to
+/// exclude the exception hierarchy's own constructor chain so the trace
+/// starts at the `new` site (or, for a VM-thrown exception, at the fault
+/// site itself — `skip = 0`, no constructor chain involved).
 pub fn snapshot(skip: usize) -> Vec<(String, String, u32)> {
     STACK.with(|s| {
         s.borrow()

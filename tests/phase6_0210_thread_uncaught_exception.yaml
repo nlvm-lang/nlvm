@@ -3,7 +3,7 @@ title: "Phase 6 — an unhandled exception inside a Thread's task is reported to
 file_separator: "#NLFILE"
 expected_exit_code: 0
 expected_stdout: "done"
-expected_stderr: "Unhandled exception: IndexOutOfBoundsException: index 5, length 1"
+expected_stderr: "Unhandled exception: IndexOutOfBoundsException: index 5, length 1\n\tat phase6/thread3/Main$m0$closure0.nl:6"
 ---
 
 #NLFILE phase6/thread3/Main.nl
