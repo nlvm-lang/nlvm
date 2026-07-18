@@ -1,0 +1,21 @@
+---
+title: "Parse error — a .nl file may only contain one top-level class/interface/enum (regression: enum+class in the same file used to be silently truncated)"
+file_separator: "#NLFILE"
+expected_parse_error: true
+---
+
+#NLFILE phase9/multi_decl/Combo.nl
+namespace phase9.multi_decl;
+
+enum Status: int
+{
+    OK = 200,
+    NotFound = 400,
+}
+
+class Main {
+    public static int main(string[] args) {
+        system.Out.print("hello");
+        return 0;
+    }
+}

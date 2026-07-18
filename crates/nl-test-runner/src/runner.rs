@@ -13,8 +13,17 @@ pub fn run_test(test: &TestFile) -> Outcome {
     for block in &test.blocks {
         match nl_syntax::parse_source_file(&block.content, block.path.clone()) {
             Ok(f) => files.push(f),
-            Err(e) => return Outcome::Fail(format!("parse error in {}: {e}", block.path)),
+            Err(e) => {
+                return if test.header.expected_parse_error == Some(true) {
+                    Outcome::Pass
+                } else {
+                    Outcome::Fail(format!("parse error in {}: {e}", block.path))
+                };
+            }
         }
+    }
+    if test.header.expected_parse_error == Some(true) {
+        return Outcome::Fail("expected a parse error but parsing succeeded".to_string());
     }
 
     if let Err(e) = nl_sema::check_compile(&files) {

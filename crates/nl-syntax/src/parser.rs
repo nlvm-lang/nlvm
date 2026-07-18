@@ -165,6 +165,21 @@ impl Parser {
         } else {
             SourceItem::Class(self.parse_class_decl(Vec::new(), is_abstract, is_final)?)
         };
+
+        // A .nl file holds exactly one top-level class/interface/enum. Without
+        // this check, a second declaration after the first is silently
+        // discarded rather than rejected (its tokens are just never parsed).
+        if !matches!(self.peek().kind, TokenKind::Eof) {
+            return Err(SyntaxError::Parse(
+                format!(
+                    "unexpected {:?} after top-level declaration: a .nl file may contain only one class, interface, or enum",
+                    self.peek().kind
+                ),
+                self.line(),
+                self.col(),
+            ));
+        }
+
         Ok(SourceFile {
             namespace,
             uses,
