@@ -302,7 +302,7 @@ fn compile_method(
         max_stack: emitter.max_stack(),
         code: emitter.code,
         exception_table: emitter.exception_table,
-        line_table: Vec::new(),
+        line_table: emitter.line_table,
     };
     Ok((descriptor, emitter.closures))
 }
@@ -320,5 +320,55 @@ fn visibility_method_flag(v: Visibility) -> u16 {
         Visibility::Public => method_flags::PUBLIC,
         Visibility::Protected => method_flags::PROTECTED,
         Visibility::Private => method_flags::PRIVATE,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// vm.md § Method descriptor (line-number table): entries are sorted by
+    /// ascending `start_pc`, one per source line change, so a `main` whose
+    /// statements sit on known lines should produce a line table whose
+    /// `line`s match those exactly (no gaps, no drift from the coalescing in
+    /// `Emitter::record_line`).
+    #[test]
+    fn line_table_tracks_source_lines() {
+        let src = "namespace test;\n\
+                    class Program {\n\
+                    \x20   public static int main(string[] args) {\n\
+                    \x20       int x = 1;\n\
+                    \x20       int y = 2;\n\
+                    \x20       if (x < y) {\n\
+                    \x20           x = y;\n\
+                    \x20       }\n\
+                    \x20       return x;\n\
+                    \x20   }\n\
+                    }\n";
+        let file = nl_syntax::parse_source_file(src, "Program.nl".to_string()).unwrap();
+        let module = compile_source_file(&file).unwrap();
+        let method = module.find_method("main").unwrap();
+
+        assert!(
+            !method.line_table.is_empty(),
+            "expected a non-empty line table for a method with real statements"
+        );
+
+        // start_pc strictly increasing (one entry per statement boundary,
+        // deduped by line — see `record_line`) and within the method's code.
+        let mut prev_pc = None;
+        for entry in &method.line_table {
+            if let Some(p) = prev_pc {
+                assert!(
+                    entry.start_pc > p,
+                    "line table entries must have strictly increasing start_pc"
+                );
+            }
+            assert!((entry.start_pc as usize) < method.code.len());
+            prev_pc = Some(entry.start_pc);
+        }
+
+        let lines: Vec<u32> = method.line_table.iter().map(|e| e.line).collect();
+        assert_eq!(lines, vec![4, 5, 6, 7, 9]);
     }
 }

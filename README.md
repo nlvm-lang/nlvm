@@ -21,7 +21,7 @@ crates/
 ## Build
 
 ```sh
-cargo build
+cargo build -r
 ```
 
 ## Usage
@@ -36,10 +36,10 @@ cargo run -p nlvm -- out/Main.nlm
 
 ## Tests
 
-The YAML test suite lives in [`nlvm-specs/tests`](../nlvm-specs/tests) (not in this repository). The runner executes it directly:
+The YAML test suite lives in [`nlvm-specs/tests`](https://github.com/tivins/nlvm-specs/tree/main/tests) (not in this repository). The runner executes it directly:
 
 ```sh
-cargo run -p nl-test-runner -- /data/projects/nlvm-specs/tests
+cargo run -p nl-test-runner -- /local-path-to/nlvm-specs/tests
 ```
 
-Each `m{N}_*.yaml` file corresponds to a milestone from [`nlvm-specs/docs/milestones.md`](../nlvm-specs/docs/milestones.md). See [`nlvm-specs/docs/tests.md`](../nlvm-specs/docs/tests.md) for the format.
+Each `m{N}_*.yaml` file corresponds to a milestone from [`nlvm-specs/docs/milestones.md`](https://github.com/tivins/nlvm-specs/blob/main/docs/milestones.md). See [`nlvm-specs/docs/tests.md`](https://github.com/tivins/nlvm-specs/blobl/main/docs/tests.md) for the format.

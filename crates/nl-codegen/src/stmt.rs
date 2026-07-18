@@ -16,6 +16,7 @@ impl<'a> Emitter<'a> {
     }
 
     pub fn compile_stmt(&mut self, stmt: &Stmt) -> Result<(), CodegenError> {
+        self.record_line(stmt.line);
         match &stmt.kind {
             StmtKind::Return(Some(expr)) => {
                 let ty = self.compile_expr(expr)?;

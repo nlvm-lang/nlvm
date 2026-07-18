@@ -185,6 +185,12 @@ pub struct Emitter<'a> {
     /// Accumulated across every `try` statement in this method — vm.md §
     /// Exception table.
     pub exception_table: Vec<nl_bytecode::ExceptionTableEntry>,
+    /// vm.md § Method descriptor (line-number table) — one entry per source
+    /// line change, recorded at each statement's first emitted byte. Used at
+    /// runtime to resolve a frame's current `pc` back to a source line for
+    /// `Exception.stackTrace`.
+    pub line_table: Vec<nl_bytecode::LineTableEntry>,
+    last_line: u32,
     /// Enclosing `finally` blocks currently protecting the code being
     /// compiled, innermost last — compiler.md's `finally` duplication rule:
     /// `return`/`break`/`continue` must run every `finally` block they exit
@@ -244,6 +250,8 @@ impl<'a> Emitter<'a> {
             max_locals: 0,
             loops: Vec::new(),
             exception_table: Vec::new(),
+            line_table: Vec::new(),
+            last_line: 0,
             finally_stack: Vec::new(),
             captured_fields: HashMap::new(),
             closures: Vec::new(),
@@ -343,6 +351,25 @@ impl<'a> Emitter<'a> {
     pub(crate) fn patch_branch_to(&mut self, opcode_pc: usize, operand_pos: usize, target: usize) {
         let offset = (target as i32 - opcode_pc as i32) as i16;
         self.code[operand_pos..operand_pos + 2].copy_from_slice(&offset.to_be_bytes());
+    }
+
+    /// Records a line-number table entry at the current `pc` if `line`
+    /// differs from the last one recorded (vm.md § Method descriptor —
+    /// entries are sorted by ascending `start_pc`, each covering offsets up
+    /// to the next entry's `start_pc`, so a run of statements on the same
+    /// line only needs one entry). Called once per statement, at its first
+    /// emitted byte; `line == 0` (no source position, e.g. `auto`-desugared
+    /// synthetic statements) is skipped rather than recorded as a fake `0`
+    /// entry that would shadow whatever real line preceded it.
+    pub(crate) fn record_line(&mut self, line: u32) {
+        if line == 0 || line == self.last_line {
+            return;
+        }
+        self.last_line = line;
+        self.line_table.push(nl_bytecode::LineTableEntry {
+            start_pc: self.code.len() as u16,
+            line,
+        });
     }
 
     pub(crate) fn emit_store(&mut self, local_index: u16) {
@@ -753,7 +780,7 @@ impl<'a> Emitter<'a> {
                 max_stack: inner.max_stack(),
                 code: inner.code,
                 exception_table: inner.exception_table,
-                line_table: Vec::new(),
+                line_table: inner.line_table,
             };
             nested_closures = inner.closures;
         }
