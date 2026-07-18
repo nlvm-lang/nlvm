@@ -4,6 +4,8 @@ Implementation of the **NL** language, specified in [`nlvm-specs`](https://githu
 
 See [PLAN.md](PLAN.md) for the detailed roadmap (phases, decisions, progress tracking).
 
+See [CHANGELOG.md](CHANGELOG.md) for a history of notable changes.
+
 ## Structure
 
 ```
