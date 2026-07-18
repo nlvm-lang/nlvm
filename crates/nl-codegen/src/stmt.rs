@@ -223,7 +223,7 @@ impl<'a> Emitter<'a> {
     ) -> Result<(), CodegenError> {
         self.compile_expr_bool(cond)?;
         let false_patch = self.branch(Opcode::IfFalse, -1);
-        self.compile_block(then_branch)?;
+        self.with_instanceof_narrowing(cond, |this| this.compile_block(then_branch))?;
         match else_branch {
             Some(else_branch) => {
                 let end_patch = self.branch(Opcode::Goto, 0);

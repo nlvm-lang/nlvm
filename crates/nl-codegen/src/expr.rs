@@ -357,6 +357,60 @@ impl<'a> Emitter<'a> {
         self.track(0);
     }
 
+    /// compiler.md § Type narrowing (smart casts) — `nl-sema` already
+    /// enforces narrowing when *type-checking* `a.bark()` inside
+    /// `if (a instanceof Dog)`; `nl-codegen` has its own separate (and
+    /// coarser) `ExprTy` inference, which must independently see `a` as
+    /// `Dog` there too, or method/field resolution picks the wrong
+    /// declaring class (or fails outright, e.g. a method that only exists
+    /// on the narrowed subtype). Unlike `nl-sema`'s narrowing (keyed by a
+    /// never-reused variable id, layered over `resolve`), this overlays the
+    /// *actual* `LocalSlot.ty` in whichever scope currently holds `name` —
+    /// simpler because codegen only ever needs this for `instanceof`
+    /// (nullable unions already erase to their non-null `ExprTy` member
+    /// regardless of narrowing — see `expr_ty_of`'s `Type::Union` arm — so
+    /// null-check narrowing needs no codegen-side counterpart). Returns the
+    /// previous type so the caller can restore it once the narrowed region
+    /// ends; `None` if `name` isn't a plain local (e.g. a closure capture)
+    /// — left un-narrowed rather than erroring, same leniency as the rest
+    /// of this crate's best-effort resolution.
+    fn set_local_ty(&mut self, name: &str, ty: ExprTy) -> Option<ExprTy> {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(slot) = scope.get_mut(name) {
+                return Some(std::mem::replace(&mut slot.ty, ty));
+            }
+        }
+        None
+    }
+
+    /// If `cond` is `<ident> instanceof C`, narrows that local's `ExprTy` to
+    /// `C` for the duration of the caller-supplied closure (the `if`'s
+    /// then-branch — compiler.md's table only narrows the `true` branch for
+    /// `instanceof`), then restores it. A no-op passthrough for any other
+    /// condition shape.
+    pub(crate) fn with_instanceof_narrowing<T>(
+        &mut self,
+        cond: &Expr,
+        f: impl FnOnce(&mut Self) -> Result<T, CodegenError>,
+    ) -> Result<T, CodegenError> {
+        let restore = match cond {
+            Expr::InstanceOf(target, type_name) => match target.as_ref() {
+                Expr::Ident(name) => {
+                    let fqcn = self.resolve_class_name(type_name);
+                    self.set_local_ty(name, ExprTy::Object(fqcn))
+                        .map(|old| (name.clone(), old))
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+        let result = f(self);
+        if let Some((name, old_ty)) = restore {
+            self.set_local_ty(&name, old_ty);
+        }
+        result
+    }
+
     pub(crate) fn push_scope(&mut self) {
         self.scopes.push(HashMap::new());
     }

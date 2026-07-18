@@ -612,6 +612,7 @@ fn check_method(
         this_ty,
         super_ty,
         scopes: Vec::new(),
+        narrowed: HashMap::new(),
         next_id: 0,
         return_ty: class_table::resolve_type(&method.return_type, imports),
         skip_return_check: false,
@@ -704,6 +705,19 @@ struct MethodChecker<'a> {
     /// `super.method(...)` expressions.
     super_ty: Option<Type>,
     scopes: Vec<HashMap<String, VarEntry>>,
+    /// compiler.md § Type narrowing (smart casts) — the current *narrowed*
+    /// type for a variable id, when it differs from its declared type
+    /// (`VarEntry::ty`, unaffected). Overlaid on top of `scopes`/`resolve`,
+    /// never on top of assignment-target validation (`check_assign` always
+    /// checks against the declared type — narrowing only refines what a
+    /// *read* of the variable sees). Absent from the map = "not currently
+    /// narrowed, use the declared type." Entries are pushed/popped around a
+    /// narrowed region (an `if` branch, one side of `&&`/`||`, a ternary
+    /// branch) so narrowing never leaks past the region it was proven in,
+    /// except for the one case compiler.md carves out explicitly: "early
+    /// exit" narrowing, which is inserted without a matching pop so it
+    /// survives into the code following the `if` (see `StmtKind::If`).
+    narrowed: HashMap<u32, Type>,
     next_id: u32,
     return_ty: Type,
     /// While checking a closure body with no explicit return type
@@ -759,6 +773,139 @@ impl<'a> MethodChecker<'a> {
 
     fn resolve_ty(&self, ty: &Type) -> Type {
         class_table::resolve_type(ty, self.imports)
+    }
+
+    /// `expr`, if it's a plain identifier resolving to a local
+    /// variable/parameter — compiler.md § Type narrowing: "Narrowing
+    /// applies to local variables and parameters only" (never
+    /// `this.field`, an index expression, or a call result).
+    fn narrowable_ident(&self, expr: &Expr) -> Option<(u32, Type)> {
+        match expr {
+            Expr::Ident(name) => self.resolve(name),
+            _ => None,
+        }
+    }
+
+    /// compiler.md § Type narrowing (smart casts) — the narrowing effects a
+    /// boolean condition implies: `(then_narrow, else_narrow)`, each a list
+    /// of variable-id -> refined-type pairs that hold when `cond` is `true`
+    /// / `false` respectively. Only the forms in compiler.md's table are
+    /// recognized (`!= null` / `== null`, `instanceof`, `&&`/`||` chains);
+    /// anything else narrows nothing in either branch. Ternary conditions
+    /// reuse this directly; `if` additionally uses it for "early exit"
+    /// narrowing (see `StmtKind::If`).
+    fn narrowing_from_cond(&self, cond: &Expr) -> (Vec<(u32, Type)>, Vec<(u32, Type)>) {
+        match cond {
+            Expr::Binary(BinOp::Ne, lhs, rhs) => {
+                let target = if matches!(**rhs, Expr::NullLit) {
+                    self.narrowable_ident(lhs)
+                } else if matches!(**lhs, Expr::NullLit) {
+                    self.narrowable_ident(rhs)
+                } else {
+                    None
+                };
+                match target {
+                    Some((id, declared)) => {
+                        (vec![(id, types::strip_null(&declared))], vec![(id, Type::NullT)])
+                    }
+                    None => (Vec::new(), Vec::new()),
+                }
+            }
+            Expr::Binary(BinOp::Eq, lhs, rhs) => {
+                let target = if matches!(**rhs, Expr::NullLit) {
+                    self.narrowable_ident(lhs)
+                } else if matches!(**lhs, Expr::NullLit) {
+                    self.narrowable_ident(rhs)
+                } else {
+                    None
+                };
+                match target {
+                    Some((id, declared)) => {
+                        (vec![(id, Type::NullT)], vec![(id, types::strip_null(&declared))])
+                    }
+                    None => (Vec::new(), Vec::new()),
+                }
+            }
+            // `null` always tests `false` for `instanceof` (specs.md §
+            // Other operators), so the true branch also drops `null` from
+            // the union — a plain `Type::Named(fqcn)`, not a union member.
+            Expr::InstanceOf(target, type_name) => match self.narrowable_ident(target) {
+                Some((id, _declared)) => (vec![(id, Type::Named(self.class_fqcn(type_name)))], Vec::new()),
+                None => (Vec::new(), Vec::new()),
+            },
+            // `a && b` true => both `a` and `b`'s true-narrowing hold. Its
+            // false-narrowing isn't a single fact (`a` false OR `b` false),
+            // so left empty rather than guessing.
+            Expr::Binary(BinOp::And, lhs, rhs) => {
+                let (mut lt, _) = self.narrowing_from_cond(lhs);
+                let (rt, _) = self.narrowing_from_cond(rhs);
+                lt.extend(rt);
+                (lt, Vec::new())
+            }
+            // Dual of `&&`: `a || b` false => both `a` and `b`'s
+            // false-narrowing hold.
+            Expr::Binary(BinOp::Or, lhs, rhs) => {
+                let (_, mut le) = self.narrowing_from_cond(lhs);
+                let (_, re) = self.narrowing_from_cond(rhs);
+                le.extend(re);
+                (Vec::new(), le)
+            }
+            _ => (Vec::new(), Vec::new()),
+        }
+    }
+
+    /// Applies `narrow` as a temporary overlay on `self.narrowed`, checks
+    /// `expr`, then restores the prior overlay state (even if `expr` fails
+    /// to type-check) — narrowing from one side of `&&`/`||` or one branch
+    /// of a ternary must not leak into the other.
+    fn narrow_and_check_expr(
+        &mut self,
+        expr: &Expr,
+        assigned: &mut HashSet<u32>,
+        narrow: &[(u32, Type)],
+    ) -> Result<Type, SemaError> {
+        let saved: Vec<(u32, Option<Type>)> = narrow
+            .iter()
+            .map(|(id, ty)| (*id, self.narrowed.insert(*id, ty.clone())))
+            .collect();
+        let result = self.check_expr(expr, assigned);
+        for (id, prev) in saved {
+            match prev {
+                Some(t) => {
+                    self.narrowed.insert(id, t);
+                }
+                None => {
+                    self.narrowed.remove(&id);
+                }
+            }
+        }
+        result
+    }
+
+    /// `narrow_and_check_expr`, for a statement block (an `if` branch)
+    /// instead of a single expression.
+    fn narrow_and_check_block(
+        &mut self,
+        block: &[Stmt],
+        assigned: HashSet<u32>,
+        narrow: &[(u32, Type)],
+    ) -> Result<(HashSet<u32>, bool), SemaError> {
+        let saved: Vec<(u32, Option<Type>)> = narrow
+            .iter()
+            .map(|(id, ty)| (*id, self.narrowed.insert(*id, ty.clone())))
+            .collect();
+        let result = self.check_block(block, assigned);
+        for (id, prev) in saved {
+            match prev {
+                Some(t) => {
+                    self.narrowed.insert(id, t);
+                }
+                None => {
+                    self.narrowed.remove(&id);
+                }
+            }
+        }
+        result
     }
 
     fn class_fqcn(&self, name: &str) -> String {
@@ -1091,11 +1238,31 @@ impl<'a> MethodChecker<'a> {
                 else_branch,
             } => {
                 self.check_expr(cond, &mut assigned)?;
-                let (then_assigned, then_term) = self.check_block(then_branch, assigned.clone())?;
+                let (then_narrow, else_narrow) = self.narrowing_from_cond(cond);
+                let (then_assigned, then_term) =
+                    self.narrow_and_check_block(then_branch, assigned.clone(), &then_narrow)?;
                 let (else_assigned, else_term) = match else_branch {
-                    Some(b) => self.check_block(b, assigned.clone())?,
+                    Some(b) => self.narrow_and_check_block(b, assigned.clone(), &else_narrow)?,
                     None => (assigned.clone(), false),
                 };
+                // compiler.md § Type narrowing, "early exit": when exactly
+                // one branch unconditionally terminates the current path,
+                // the other branch's narrowing is a fact for whatever
+                // follows the `if` (no matching pop — see `narrowed`'s doc
+                // comment on `MethodChecker`).
+                match (then_term, else_term) {
+                    (true, false) => {
+                        for (id, ty) in else_narrow {
+                            self.narrowed.insert(id, ty);
+                        }
+                    }
+                    (false, true) => {
+                        for (id, ty) in then_narrow {
+                            self.narrowed.insert(id, ty);
+                        }
+                    }
+                    _ => {}
+                }
                 Ok(match (then_term, else_term) {
                     (true, true) => (then_assigned.union(&else_assigned).cloned().collect(), true),
                     (true, false) => (else_assigned, false),
@@ -1343,7 +1510,11 @@ impl<'a> MethodChecker<'a> {
                 if !assigned.contains(&id) {
                     return Err(SemaError::NotDefinitelyAssigned(name.clone()));
                 }
-                Ok(ty)
+                // compiler.md § Type narrowing (smart casts) — a read sees
+                // the current narrowed type, if any; assignment-target
+                // validation (`check_assign`) deliberately doesn't go
+                // through this and always uses the declared type instead.
+                Ok(self.narrowed.get(&id).cloned().unwrap_or(ty))
             }
             Expr::Assign(target, value) => self.check_assign(target, value, assigned),
             Expr::Call(name, args) => {
@@ -1820,11 +1991,15 @@ impl<'a> MethodChecker<'a> {
                         types::display(&cond_ty),
                     ));
                 }
-                let then_ty = self.check_expr(then_e, assigned)?;
+                // compiler.md § Type narrowing: "Ternary condition — same
+                // as if/else: each branch sees the narrowing implied by the
+                // condition."
+                let (then_narrow, else_narrow) = self.narrowing_from_cond(cond);
+                let then_ty = self.narrow_and_check_expr(then_e, assigned, &then_narrow)?;
                 // Lenient about mismatched branch types, same as `match`
                 // arms above — nl-codegen enforces coercibility at emission
                 // time, where it also has `ExprTy` to work with.
-                self.check_expr(else_e, assigned)?;
+                self.narrow_and_check_expr(else_e, assigned, &else_narrow)?;
                 Ok(then_ty)
             }
             // specs.md § Nullish coalescing operator / § Elvis operator.
@@ -2043,6 +2218,11 @@ impl<'a> MethodChecker<'a> {
                 }
                 self.check_assignable(&value_ty, &declared_ty)?;
                 assigned.insert(id);
+                // compiler.md § Type narrowing, invalidation rules: "An
+                // assignment to the variable inside the narrowed region
+                // resets its type to the declared type (then re-narrows
+                // from subsequent tests)".
+                self.narrowed.remove(&id);
                 Ok(declared_ty)
             }
             LValue::Field(target_expr, name) => {
@@ -2093,7 +2273,13 @@ impl<'a> MethodChecker<'a> {
                     types::display(&lty),
                 ));
             }
-            let rty = self.check_expr(rhs, assigned)?;
+            // compiler.md § Type narrowing: "`&&` chains: the narrowing
+            // from the left operand applies within the right operand" —
+            // and dually, `||`'s right operand sees the *negation* of the
+            // left operand's narrowing (`x == null || x.length() == 0`).
+            let (lt_then, lt_else) = self.narrowing_from_cond(lhs);
+            let narrow_for_rhs = if op == BinOp::And { &lt_then } else { &lt_else };
+            let rty = self.narrow_and_check_expr(rhs, assigned, narrow_for_rhs)?;
             if !matches!(rty, Type::Bool) {
                 return Err(SemaError::BadUnaryOperator(
                     op_symbol(op),
