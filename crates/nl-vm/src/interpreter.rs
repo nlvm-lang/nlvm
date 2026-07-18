@@ -77,7 +77,20 @@ fn run_frame(
         .utf8_at(method.name_index)
         .unwrap_or("")
         .to_string();
-    let _frame_guard = crate::call_stack::push_frame(class_fqcn, method_name);
+    // vm.md § Call frame — a call that would exceed `MAX_CALL_DEPTH` throws
+    // `StackOverflowException` as if the *caller's* invoke instruction threw
+    // it (this frame is never entered: no shadow frame gets pushed, no code
+    // runs), so it unwinds through the caller's own exception table exactly
+    // like any other VM-thrown exception (see `throw_native` below).
+    let _frame_guard = match crate::call_stack::push_frame(class_fqcn, method_name) {
+        Ok(guard) => guard,
+        Err(()) => {
+            return Err(throw_native(
+                "StackOverflowException",
+                "call stack depth exceeded",
+            ))
+        }
+    };
 
     loop {
         if pc >= code.len() {

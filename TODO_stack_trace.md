@@ -28,10 +28,15 @@ Implémentation : `Emitter` (`crates/nl-codegen/src/expr.rs`) porte désormais `
 
 Limitation assumée : `snapshot`/`skip` sont actuellement du code mort (`#[allow(dead_code)]`) — rien ne les appelle encore, ce sera fait à l'étape 4. 130 tests maison + 14/14 nlvm-specs toujours verts.
 
-### 3. Garde de profondeur d'appel → `StackOverflowException`
-- [ ] Ajouter un compteur de profondeur (ou détection de la profondeur de pile Rust) dans `crates/nl-vm/src/interpreter.rs`
-- [ ] Choisir un seuil raisonnable et lever `StackOverflowException` (déjà déclarée dans la hiérarchie prelude, `crates/nl-syntax/src/prelude.rs:37`, mais jamais levée) plutôt que de crasher le process Rust
-- [ ] Test : programme récursif infini → doit lever/afficher `StackOverflowException`, pas paniquer
+### 3. Garde de profondeur d'appel → `StackOverflowException` — ~~FAIT~~
+- [x] `call_stack::push_frame` (crates/nl-vm/src/call_stack.rs) refuse de pousser au-delà de `MAX_CALL_DEPTH` (renvoie `Result<FrameGuard, ()>`) ; `interpreter::run_frame` convertit l'échec en `throw_native("StackOverflowException", ...)` — l'exception est levée comme si c'était l'instruction `INVOKE_*` *appelante* qui l'avait levée (le nouveau frame n'est jamais poussé), donc elle remonte normalement à travers la table d'exceptions de l'appelant et reste attrapable par un `try`/`catch` NL
+- [x] `StackOverflowException` était déjà déclarée dans la hiérarchie prelude (`crates/nl-syntax/src/prelude.rs:37`) mais jamais levée — c'est maintenant fait
+- [x] Seuil déterminé **empiriquement** (pas arbitraire) : bisection sur ce poste, build debug, sur un programme `recurse(n) { return recurse(n-1)+1; }` (plus coûteux en pile qu'une récursion terminale) — crash natif Rust vers 300-350 frames aussi bien sur le thread principal (pile 8 MiB, `ulimit -s`) que sur un `system.thread.Thread` spawné. `MAX_CALL_DEPTH = 150` garde une marge ~2x.
+- [x] Effet de bord nécessaire : `native::dispatch_thread`'s `std::thread::spawn` (démarrage de `system.thread.Thread`) donnait par défaut une pile ~2 MiB, bien plus petite que celle du thread principal — un seuil sûr sur le thread principal aurait donc quand même crashé nativement sur un thread spawné. Remplacé par `std::thread::Builder::new().stack_size(8 MiB).spawn(...)` pour aligner les deux, afin qu'un seul et même `MAX_CALL_DEPTH` reste sûr partout.
+- [x] Test unitaire `call_stack::tests::push_frame_rejects_past_max_depth`
+- [x] Test end-to-end `tests/phase9_0040_stack_overflow_exception.yaml` (récursion infinie → catch NL, exit code 7) + validation manuelle supplémentaire (thread principal non catché, thread spawné catché dans la closure, récursion légitime profondeur 120 toujours OK) — nettoyée après coup, pas laissée dans le repo au-delà de la fixture yaml
+
+Limitation assumée : le seuil (150) est calibré empiriquement sur cette machine en build debug ; pas de garantie formelle multi-plateforme, mais marge ~2x prise volontairement. 131 tests maison (130 + la nouvelle fixture) + 14/14 nlvm-specs toujours verts, aucune régression clippy/fmt.
 
 ### 4. Champ `stackTrace` + capture native au constructeur `Exception`
 - [ ] Ajouter `ExecutionPoint { line: int, file: string }` et `Exception.stackTrace: ExecutionPoint[]` dans `crates/nl-syntax/src/prelude.rs`

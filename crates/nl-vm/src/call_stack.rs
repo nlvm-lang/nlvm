@@ -23,6 +23,28 @@ thread_local! {
     static STACK: RefCell<Vec<FrameInfo>> = const { RefCell::new(Vec::new()) };
 }
 
+/// vm.md § Call frame — "dépassement de profondeur → StackOverflowException"
+/// (TODO_stack_trace.md step 3). Each `run_frame` invocation is a real Rust
+/// stack frame (method calls recurse natively, see module doc comment), so
+/// this must stay well under what the host thread's native stack can hold,
+/// with enough margin to survive an **unoptimized debug build** (several
+/// times more stack per frame than release) on the smallest stack a program
+/// might recurse on. `native::dispatch_thread`'s `system.thread.Thread`
+/// spawn gives its OS thread an explicit 8 MiB stack (matching a typical
+/// Linux main-thread default, `ulimit -s`) specifically so this one constant
+/// stays safe on every thread a program can recurse on, not just the main
+/// one.
+///
+/// 300 was the empirically observed crash threshold on this machine, in a
+/// debug build, for both the main thread and an explicitly-8-MiB spawned
+/// thread (measured by bisecting a `recurse(n) { return recurse(n-1)+1; }`
+/// style program — deeper stack use per call than a tail-shaped recurse, so
+/// a reasonable stand-in for "worst case" NL code). 150 keeps a ~2x margin
+/// below that for slower/other platforms, while still allowing genuinely
+/// deep recursion (tree walks, naive Fibonacci, etc.) to run to completion
+/// instead of hitting the ceiling for everyday use.
+const MAX_CALL_DEPTH: usize = 150;
+
 /// RAII guard returned by `push_frame`: pops the frame when dropped, which
 /// happens on every exit path out of `run_frame` (normal return, `?`
 /// propagation, or an unhandled `VmError`) without needing a matching manual
@@ -40,16 +62,24 @@ impl Drop for FrameGuard {
 }
 
 /// Pushes a frame for a method about to start executing. Called once at the
-/// top of `run_frame`, before its instruction loop.
-pub fn push_frame(class_fqcn: String, method_name: String) -> FrameGuard {
+/// top of `run_frame`, before its instruction loop. Fails (without pushing)
+/// once this thread's shadow stack already holds `MAX_CALL_DEPTH` frames —
+/// the caller must throw `StackOverflowException` instead of entering the
+/// new frame.
+pub fn push_frame(class_fqcn: String, method_name: String) -> Result<FrameGuard, ()> {
     STACK.with(|s| {
-        s.borrow_mut().push(FrameInfo {
+        let mut stack = s.borrow_mut();
+        if stack.len() >= MAX_CALL_DEPTH {
+            return Err(());
+        }
+        stack.push(FrameInfo {
             class_fqcn,
             method_name,
             line: Cell::new(0),
         });
-    });
-    FrameGuard { _private: () }
+        Ok(())
+    })?;
+    Ok(FrameGuard { _private: () })
 }
 
 /// Updates the topmost (current) frame's source line — called once per
@@ -134,14 +164,14 @@ mod tests {
         // Isolated by thread_local — safe to run alongside other tests.
         assert_eq!(snapshot(0), Vec::<(String, String, u32)>::new());
         {
-            let _f1 = push_frame("Ns.A".to_string(), "main".to_string());
+            let _f1 = push_frame("Ns.A".to_string(), "main".to_string()).unwrap();
             let table = vec![LineTableEntry {
                 start_pc: 0,
                 line: 10,
             }];
             set_current_line(&table, 0);
             {
-                let _f2 = push_frame("Ns.B".to_string(), "helper".to_string());
+                let _f2 = push_frame("Ns.B".to_string(), "helper".to_string()).unwrap();
                 set_current_line(&table, 0);
                 assert_eq!(
                     snapshot(0),
@@ -160,6 +190,19 @@ mod tests {
                 vec![("Ns.A".to_string(), "main".to_string(), 10)]
             );
         }
+        assert_eq!(snapshot(0), Vec::<(String, String, u32)>::new());
+    }
+
+    #[test]
+    fn push_frame_rejects_past_max_depth() {
+        assert_eq!(snapshot(0), Vec::<(String, String, u32)>::new());
+        let mut guards = Vec::with_capacity(MAX_CALL_DEPTH);
+        for _ in 0..MAX_CALL_DEPTH {
+            guards.push(push_frame("Ns.A".to_string(), "recurse".to_string()).unwrap());
+        }
+        assert!(push_frame("Ns.A".to_string(), "recurse".to_string()).is_err());
+        assert_eq!(snapshot(0).len(), MAX_CALL_DEPTH);
+        drop(guards);
         assert_eq!(snapshot(0), Vec::<(String, String, u32)>::new());
     }
 }

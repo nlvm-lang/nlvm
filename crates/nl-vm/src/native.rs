@@ -1987,20 +1987,35 @@ fn dispatch_thread(
                 .fields
                 .insert("__task__".to_string(), Value::Null);
             let program_clone = Arc::clone(program);
-            let handle = std::thread::spawn(move || match invoke_task(&program_clone, task) {
-                Ok(_) => {}
-                // Same wording as the main thread's own unhandled-exception
-                // report (`program::run_program`) — no trailing newline
-                // either, for the same reason: a later write (from this
-                // thread or another) shouldn't inherit a blank line.
-                Err(VmError::Thrown(exc)) => {
-                    program_clone.write_stderr(&format!(
-                        "Unhandled exception: {}",
-                        crate::program::describe_exception(&exc)
-                    ));
-                }
-                Err(e) => program_clone.write_stderr(&format!("Unhandled exception: {e}")),
-            });
+            // `interpreter::run_frame` recurses natively (one Rust stack
+            // frame per NL call frame — see `call_stack`'s module doc
+            // comment), and `call_stack::MAX_CALL_DEPTH` is sized against
+            // the *main* thread's stack. `std::thread::spawn`'s platform
+            // default (commonly 2 MiB) is well under that — matching the
+            // main thread's here (see `program::run_program`'s host process,
+            // whose stack comes from the OS/`ulimit -s`, typically 8 MiB on
+            // Linux) keeps `StackOverflowException` firing at the same NL
+            // call depth regardless of which thread a program recurses on,
+            // rather than segfaulting on a `system.thread.Thread` well
+            // before the depth guard would trip.
+            const THREAD_STACK_SIZE: usize = 8 * 1024 * 1024;
+            let handle = std::thread::Builder::new()
+                .stack_size(THREAD_STACK_SIZE)
+                .spawn(move || match invoke_task(&program_clone, task) {
+                    Ok(_) => {}
+                    // Same wording as the main thread's own unhandled-exception
+                    // report (`program::run_program`) — no trailing newline
+                    // either, for the same reason: a later write (from this
+                    // thread or another) shouldn't inherit a blank line.
+                    Err(VmError::Thrown(exc)) => {
+                        program_clone.write_stderr(&format!(
+                            "Unhandled exception: {}",
+                            crate::program::describe_exception(&exc)
+                        ));
+                    }
+                    Err(e) => program_clone.write_stderr(&format!("Unhandled exception: {e}")),
+                })
+                .expect("spawning an OS thread for system.thread.Thread");
             let tid = program.register_thread(handle);
             lock(&obj)
                 .fields
