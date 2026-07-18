@@ -86,6 +86,11 @@ pub struct ClassInfo {
     pub is_abstract: bool,
     /// specs.md § Final classes and methods — E035.
     pub is_final: bool,
+    /// specs.md § Enums; see `nl_syntax::ast::ClassDecl::is_enum`.
+    pub is_enum: bool,
+    /// Case names, in declaration order — empty for a non-enum class. See
+    /// `nl_syntax::ast::ClassDecl::enum_cases`.
+    pub enum_cases: Vec<String>,
 }
 
 /// Whether `sub` is `sup` itself or (transitively) extends it — used for
@@ -382,6 +387,8 @@ pub fn build_class_table(files: &[SourceFile]) -> ClassTable {
                     is_readonly: class.is_readonly,
                     is_abstract: class.is_abstract,
                     is_final: class.is_final,
+                    is_enum: class.is_enum,
+                    enum_cases: class.enum_cases.clone(),
                 }
             }
             SourceItem::Interface(iface) => {
@@ -423,6 +430,8 @@ pub fn build_class_table(files: &[SourceFile]) -> ClassTable {
                     is_readonly: false,
                     is_abstract: false,
                     is_final: false,
+                    is_enum: false,
+                    enum_cases: Vec::new(),
                 }
             }
         };

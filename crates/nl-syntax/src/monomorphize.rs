@@ -662,6 +662,8 @@ fn rewrite_class(
         is_abstract: class.is_abstract,
         is_final: class.is_final,
         decl_line: class.decl_line,
+        is_enum: class.is_enum,
+        enum_cases: class.enum_cases.clone(),
     }
 }
 
@@ -1061,6 +1063,8 @@ fn subst_class(class: &ClassDecl, subst: &HashMap<String, Type>) -> ClassDecl {
         is_abstract: class.is_abstract,
         is_final: class.is_final,
         decl_line: class.decl_line,
+        is_enum: class.is_enum,
+        enum_cases: class.enum_cases.clone(),
     }
 }
 

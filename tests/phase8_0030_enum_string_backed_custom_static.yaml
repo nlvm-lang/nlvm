@@ -1,0 +1,26 @@
+---
+title: "enum — string-backed enum, custom static method delegating to the built-in from()"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "active"
+---
+
+#NLFILE phase8/enumstring/State.nl
+namespace phase8.enumstring;
+enum State: string
+{
+    Active = "active",
+    Inactive = "inactive",
+
+    public static State fromLabel(string label) { return State.from(label); }
+}
+
+#NLFILE phase8/enumstring/Main.nl
+namespace phase8.enumstring;
+class Main {
+    public static int main(string[] args) {
+        State s = State.fromLabel("Active");
+        system.Out.print(s.value);
+        return 0;
+    }
+}

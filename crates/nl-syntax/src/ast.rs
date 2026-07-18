@@ -66,6 +66,24 @@ pub struct ClassDecl {
     /// declaration-granularity diagnostics (duplicate class, abstract/final
     /// consistency, etc.) that have no more specific statement to point at.
     pub decl_line: u32,
+    /// `enum Name [: int|string] { ... }` — specs.md § Enums, vm.md § Enum
+    /// representation. The parser (`parse_enum_decl`) desugars an enum
+    /// declaration straight into an ordinary `ClassDecl`: each case becomes a
+    /// `static readonly` field (see `enum_cases`) of the backing type
+    /// (`int` for a basic enum with no backing type, or the declared `int`/
+    /// `string` backing), and `from()`/`tryFrom()` are synthesized as
+    /// ordinary static methods. This flag only controls the `ENUM` class
+    /// flag bit emitted by `nl-codegen` — everything else about an enum
+    /// reuses the plain class pipeline.
+    pub is_enum: bool,
+    /// Case names in declaration order, empty for a non-enum class. Each
+    /// name is also present in `fields` (as the first `enum_cases.len()`
+    /// entries, static+readonly) — kept here too so `nl-sema`/`nl-codegen`
+    /// can tell a case constant (whose *static type* is the enum itself,
+    /// e.g. `Status.OK : Status`) apart from an ordinary static field
+    /// (whose type is its own declared type) without re-deriving the case
+    /// list from field order.
+    pub enum_cases: Vec<String>,
 }
 
 /// One `type T [extends Bound]` template parameter — specs.md § Bounded type

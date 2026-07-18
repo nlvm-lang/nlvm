@@ -140,6 +140,8 @@ fn box_class() -> ClassDecl {
         is_abstract: false,
         is_final: false,
         decl_line: 0,
+        is_enum: false,
+        enum_cases: Vec::new(),
     }
 }
 
@@ -234,5 +236,7 @@ fn exception_class(name: &str, parent: Option<&str>) -> ClassDecl {
         is_abstract: false,
         is_final: false,
         decl_line: 0,
+        is_enum: false,
+        enum_cases: Vec::new(),
     }
 }

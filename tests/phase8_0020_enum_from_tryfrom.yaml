@@ -1,0 +1,42 @@
+---
+title: "enum — from()/tryFrom() convert a case name string to the matching case, tryFrom returns null on unknown"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "NotFound caught OK"
+---
+
+#NLFILE phase8/fromtryfrom/Status.nl
+namespace phase8.fromtryfrom;
+enum Status: int
+{
+    OK = 200,
+    NotFound = 400,
+    InternalServerError = 500,
+}
+
+#NLFILE phase8/fromtryfrom/Main.nl
+namespace phase8.fromtryfrom;
+class Main {
+    public static int main(string[] args) {
+        Status found = Status.from("NotFound");
+        string label = match(found) {
+            Status.OK: "ok",
+            Status.NotFound: "NotFound",
+            Status.InternalServerError: "ise",
+        };
+        system.Out.print(label);
+        system.Out.print(" ");
+
+        auto invalid = Status.tryFrom("Invalid");
+        if (invalid == null) {
+            system.Out.print("caught");
+        }
+        system.Out.print(" ");
+
+        auto ok2 = Status.tryFrom("OK");
+        if (ok2 != null && ok2 == Status.OK) {
+            system.Out.print("OK");
+        }
+        return 0;
+    }
+}

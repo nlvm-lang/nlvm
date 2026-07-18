@@ -1,0 +1,25 @@
+---
+title: "enum — match over every case is exhaustive without a default arm (compiler.md § Match exhaustiveness)"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "green"
+---
+
+#NLFILE phase8/enummatch/Color.nl
+namespace phase8.enummatch;
+enum Color { Red, Green, Blue }
+
+#NLFILE phase8/enummatch/Main.nl
+namespace phase8.enummatch;
+class Main {
+    public static int main(string[] args) {
+        Color c = Color.Green;
+        string name = match(c) {
+            Color.Red: "red",
+            Color.Green: "green",
+            Color.Blue: "blue",
+        };
+        system.Out.print(name);
+        return 0;
+    }
+}

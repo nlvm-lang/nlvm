@@ -1395,9 +1395,51 @@ impl<'a> Emitter<'a> {
                     self.emit_int_const(value);
                     return Ok(ExprTy::Object(path));
                 }
+                // `Status.OK` — a user-declared enum's case constant. Case
+                // values are always compile-time constants (the field's own
+                // `init` expression — see `nl_syntax::parser::
+                // parse_enum_decl`), so this re-compiles that expression at
+                // the reference site instead of reading real static storage
+                // (there is no `GET_STATIC`/class-static-storage mechanism
+                // in this implementation — see `crate::class_table::
+                // FieldInfo::init`'s doc comment). The expression's own
+                // static type is the enum itself, not its backing type
+                // (matches `nl_sema::checker`'s `Expr::FieldAccess` arm).
+                let fqcn = self.resolve_class_name(leading);
+                if let Some(info) = self.classes.get(&fqcn) {
+                    if info.is_enum {
+                        if let Some(field) = info.fields.iter().find(|f| &f.name == name) {
+                            let init = field.init.clone().expect(
+                                "enum case fields always carry an init expression",
+                            );
+                            self.compile_expr(&init)?;
+                            return Ok(ExprTy::Object(fqcn));
+                        }
+                    }
+                }
             }
         }
         let target_ty = self.compile_expr(target)?;
+        // `status.value` — specs.md § Typed enums. The case constant *is*
+        // the backing value at runtime (no wrapper object — vm.md § Enum
+        // representation), so this is identity: no `GET_FIELD` to emit,
+        // just leave whatever `target` already pushed on the stack. The
+        // backing type comes off the enum's first field, same convention as
+        // `nl_sema::checker`'s matching special case.
+        if name == "value" {
+            if let ExprTy::Object(fqcn) = &target_ty {
+                if let Some(info) = self.classes.get(fqcn) {
+                    if info.is_enum {
+                        let backing = info
+                            .fields
+                            .first()
+                            .map(|f| expr_ty_of(&f.ty))
+                            .unwrap_or(ExprTy::Int);
+                        return Ok(backing);
+                    }
+                }
+            }
+        }
         let ExprTy::Object(fqcn) = &target_ty else {
             return Err(CodegenError::Unsupported(format!(
                 "field access on non-object type {target_ty:?}"
@@ -1556,8 +1598,24 @@ impl<'a> Emitter<'a> {
                     .add_method_ref(class_index, name_index, descriptor_index);
                 let return_expr_ty = expr_ty_of(&return_ty);
                 let result_delta = if return_expr_ty == ExprTy::Void { 0 } else { 1 };
+                // specs.md § Enums, "Custom methods and properties": an
+                // enum's instance methods run on a receiver that is a raw
+                // primitive (int/string — vm.md § Enum representation), not
+                // a heap object with a vtable, so `INVOKE_INSTANCE`'s
+                // virtual dispatch (which requires `Value::Object` — see
+                // `nl_vm::interpreter`) can't apply. Enums can't be
+                // subclassed either, so there is no dispatch to virtualize
+                // in the first place — same non-virtual `INVOKE_SPECIAL`
+                // `super.method(...)` already uses, which works with any
+                // receiver `Value` (it just binds it to local 0).
+                let is_enum_receiver = self.classes.get(&fqcn).is_some_and(|i| i.is_enum);
+                let opcode = if is_enum_receiver {
+                    Opcode::InvokeSpecial
+                } else {
+                    Opcode::InvokeInstance
+                };
                 self.op_u16(
-                    Opcode::InvokeInstance,
+                    opcode,
                     method_ref,
                     result_delta - positional.len() as i32 - 1,
                 );

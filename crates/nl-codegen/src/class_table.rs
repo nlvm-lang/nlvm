@@ -13,6 +13,14 @@ pub struct FieldInfo {
     pub name: String,
     /// Resolved (FQCN, not source-simple-name) type.
     pub ty: Type,
+    /// The field's declared initializer, if any — only ever consulted for
+    /// an enum case constant (`nl_syntax::parser::parse_enum_decl` always
+    /// gives one an `init`): `ClassName.CaseName` re-compiles this
+    /// expression at each reference site rather than reading real static
+    /// storage (see `crate::expr::Emitter::compile_field_access`'s enum
+    /// branch — case values are compile-time constants, so there is no
+    /// need for a `GET_STATIC`/class-static-storage mechanism).
+    pub init: Option<Expr>,
 }
 
 #[derive(Debug, Clone)]
@@ -156,6 +164,12 @@ pub struct ClassInfo {
     pub fields: Vec<FieldInfo>,
     pub ctors: Vec<CtorInfo>,
     pub methods: Vec<MethodInfo>,
+    /// specs.md § Enums; see `nl_syntax::ast::ClassDecl::is_enum`. Codegen
+    /// never needs the case-name list itself (unlike `nl-sema`, which uses
+    /// it for match exhaustiveness — see `nl_sema::class_table::ClassInfo`)
+    /// — case constants are recompiled from `fields[i].init` by name at
+    /// each reference site instead (see `FieldInfo::init`).
+    pub is_enum: bool,
 }
 
 pub fn fqcn_of(file: &SourceFile) -> String {
@@ -246,6 +260,7 @@ pub fn build_class_table(files: &[SourceFile]) -> HashMap<String, ClassInfo> {
                     .map(|f| FieldInfo {
                         name: f.name.clone(),
                         ty: resolve_type(&f.ty, &imports),
+                        init: f.init.clone(),
                     })
                     .collect();
 
@@ -291,6 +306,7 @@ pub fn build_class_table(files: &[SourceFile]) -> HashMap<String, ClassInfo> {
                     fields,
                     ctors,
                     methods,
+                    is_enum: class.is_enum,
                 }
             }
             SourceItem::Interface(iface) => {
@@ -316,6 +332,7 @@ pub fn build_class_table(files: &[SourceFile]) -> HashMap<String, ClassInfo> {
                     fields: Vec::new(),
                     ctors: Vec::new(),
                     methods,
+                    is_enum: false,
                 }
             }
         };

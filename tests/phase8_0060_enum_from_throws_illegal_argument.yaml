@@ -1,0 +1,29 @@
+---
+title: "enum — from() throws IllegalArgumentException for an unknown case name"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "caught: unknown case for enum Status"
+---
+
+#NLFILE phase8/enumfromthrows/Status.nl
+namespace phase8.enumfromthrows;
+enum Status: int
+{
+    OK = 200,
+    NotFound = 400,
+}
+
+#NLFILE phase8/enumfromthrows/Main.nl
+namespace phase8.enumfromthrows;
+class Main {
+    public static int main(string[] args) {
+        try {
+            Status s = Status.from("Bogus");
+            system.Out.print("no throw");
+        } catch (IllegalArgumentException e) {
+            system.Out.print("caught: ");
+            system.Out.print(e.message);
+        }
+        return 0;
+    }
+}

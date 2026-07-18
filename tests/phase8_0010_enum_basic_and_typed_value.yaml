@@ -1,0 +1,46 @@
+---
+title: "enum — basic enum ordinals (0,1,2,...), typed int enum's .value, custom instance method"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "0 1 2 true 200"
+---
+
+#NLFILE phase8/enumbasic/States.nl
+namespace phase8.enumbasic;
+enum States
+{
+    Waiting,
+    Loading,
+    Started,
+    Finished, // final trailing comma is valid
+}
+
+#NLFILE phase8/enumbasic/Status.nl
+namespace phase8.enumbasic;
+enum Status: int
+{
+    OK = 200,
+    NotFound = 400,
+    InternalServerError = 500,
+
+    public bool isSuccess() { return this.value >= 200 && this.value < 300; }
+}
+
+#NLFILE phase8/enumbasic/Main.nl
+namespace phase8.enumbasic;
+class Main {
+    public static int main(string[] args) {
+        system.Out.print(system.Int.toString(States.Waiting.value));
+        system.Out.print(" ");
+        system.Out.print(system.Int.toString(States.Loading.value));
+        system.Out.print(" ");
+        system.Out.print(system.Int.toString(States.Started.value));
+        system.Out.print(" ");
+
+        Status status = Status.OK;
+        system.Out.print(system.Bool.toString(status.isSuccess()));
+        system.Out.print(" ");
+        system.Out.print(system.Int.toString(status.value));
+        return 0;
+    }
+}

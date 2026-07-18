@@ -160,6 +160,8 @@ impl Parser {
             SourceItem::Class(self.parse_class_decl(type_params, is_abstract, is_final)?)
         } else if self.is_keyword(Keyword::Interface) {
             SourceItem::Interface(self.parse_interface_decl()?)
+        } else if self.is_keyword(Keyword::Enum) {
+            SourceItem::Class(self.parse_enum_decl()?)
         } else {
             SourceItem::Class(self.parse_class_decl(Vec::new(), is_abstract, is_final)?)
         };
@@ -310,6 +312,127 @@ impl Parser {
             is_abstract,
             is_final,
             decl_line,
+            is_enum: false,
+            enum_cases: Vec::new(),
+        })
+    }
+
+    /// `enum Name [: int|string] { case [= expr], ..., [trailing comma]
+    /// [member declarations] }` — specs.md § Enums. Desugars straight into a
+    /// `ClassDecl`: cases become leading `static readonly` fields of the
+    /// backing type (vm.md § Enum representation), `from()`/`tryFrom()` are
+    /// synthesized as ordinary static methods, and any custom
+    /// static/instance methods or extra static fields are parsed exactly
+    /// like a normal class body via `parse_member`.
+    fn parse_enum_decl(&mut self) -> Result<ClassDecl, SyntaxError> {
+        let decl_line = self.line();
+        self.eat_keyword(Keyword::Enum)?;
+        let name = self.eat_ident()?;
+
+        let backing_ty = if self.is_punct(Punct::Colon) {
+            self.bump();
+            let ty_name = self.eat_ident()?;
+            match ty_name.as_str() {
+                "int" => Some(Type::Int),
+                "string" => Some(Type::StringT),
+                other => {
+                    return Err(SyntaxError::Parse(
+                        format!("enum backing type must be 'int' or 'string', found '{other}'"),
+                        self.line(),
+                        self.col(),
+                    ))
+                }
+            }
+        } else {
+            None
+        };
+        let case_ty = backing_ty.clone().unwrap_or(Type::Int);
+        let is_string_backed = matches!(backing_ty, Some(Type::StringT));
+
+        self.eat_punct(Punct::LBrace)?;
+        let mut raw_cases: Vec<(String, Option<Expr>)> = Vec::new();
+        let mut fields = Vec::new();
+        let mut methods = Vec::new();
+        while !self.is_punct(Punct::RBrace) {
+            // A case is a bare identifier followed by `,`, `=`, or the
+            // closing `}` — anything else (a visibility/`static`/`readonly`
+            // modifier, or `Type name` for an ordinary member) is parsed as
+            // a regular class member instead.
+            let looks_like_case = matches!(&self.peek().kind, TokenKind::Ident(_))
+                && matches!(
+                    self.peek_at(1),
+                    Some(TokenKind::Punct(Punct::Comma))
+                        | Some(TokenKind::Punct(Punct::Assign))
+                        | Some(TokenKind::Punct(Punct::RBrace))
+                );
+            if looks_like_case {
+                let case_name = self.eat_ident()?;
+                let value = if self.is_punct(Punct::Assign) {
+                    self.bump();
+                    Some(self.parse_expr()?)
+                } else {
+                    None
+                };
+                if value.is_none() && is_string_backed {
+                    return Err(SyntaxError::Parse(
+                        format!(
+                            "enum case '{case_name}' of string-backed enum '{name}' requires an explicit value"
+                        ),
+                        self.line(),
+                        self.col(),
+                    ));
+                }
+                raw_cases.push((case_name, value));
+                if self.is_punct(Punct::Comma) {
+                    self.bump();
+                }
+            } else {
+                self.parse_member(&mut fields, &mut methods)?;
+            }
+        }
+        self.eat_punct(Punct::RBrace)?;
+
+        let mut next_ordinal: i64 = 0;
+        let mut case_fields = Vec::with_capacity(raw_cases.len());
+        let mut case_names = Vec::with_capacity(raw_cases.len());
+        for (case_name, value) in raw_cases {
+            let init_expr = value.unwrap_or(Expr::IntLit(next_ordinal));
+            if let Expr::IntLit(n) = &init_expr {
+                next_ordinal = n + 1;
+            }
+            case_names.push(case_name.clone());
+            case_fields.push(FieldDecl {
+                name: case_name,
+                visibility: Visibility::Public,
+                visibility_explicit: true,
+                is_static: true,
+                readonly: true,
+                ty: case_ty.clone(),
+                init: Some(init_expr),
+            });
+        }
+        case_fields.extend(fields);
+
+        if !methods.iter().any(|m: &MethodDecl| m.name == "from") {
+            methods.push(enum_from_method(&name, &case_names, false, decl_line));
+        }
+        if !methods.iter().any(|m: &MethodDecl| m.name == "tryFrom") {
+            methods.push(enum_from_method(&name, &case_names, true, decl_line));
+        }
+
+        Ok(ClassDecl {
+            name,
+            type_params: Vec::new(),
+            extends: None,
+            implements: Vec::new(),
+            fields: case_fields,
+            methods,
+            is_readonly: false,
+            is_abstract: false,
+            is_final: false,
+            decl_line,
+            is_enum: true,
+            enum_cases: case_names,
         })
     }
 
@@ -1674,6 +1797,93 @@ impl Parser {
             _ => false,
         };
         is_primitive && matches!(self.peek_at(1), Some(TokenKind::Punct(Punct::LBrace)))
+    }
+}
+
+/// Synthesizes `from()`/`tryFrom()` — specs.md § Enums methods. Both convert
+/// a case *name* string to the matching case constant (`EnumName.CaseName`,
+/// resolved by `nl-sema`/`nl-codegen` like any other static field access —
+/// see `parse_enum_decl`'s doc comment); they differ only in what happens
+/// when no case matches: `from` throws `IllegalArgumentException` (a
+/// `RuntimeException`, so no `throws` clause is needed — compiler.md only
+/// requires declaring/catching checked exceptions), `tryFrom` returns `null`.
+fn enum_from_method(
+    enum_name: &str,
+    case_names: &[String],
+    is_try: bool,
+    decl_line: u32,
+) -> MethodDecl {
+    let mut body: Block = Vec::new();
+    for case_name in case_names {
+        let cond = Expr::Binary(
+            BinOp::Eq,
+            Box::new(Expr::Ident("value".to_string())),
+            Box::new(Expr::StringLit(case_name.clone())),
+        );
+        let then_branch = vec![Stmt {
+            kind: StmtKind::Return(Some(Expr::FieldAccess(
+                Box::new(Expr::Ident(enum_name.to_string())),
+                case_name.clone(),
+            ))),
+            line: decl_line,
+        }];
+        body.push(Stmt {
+            kind: StmtKind::If {
+                cond,
+                then_branch,
+                else_branch: None,
+            },
+            line: decl_line,
+        });
+    }
+    let (name, return_type, fallback) = if is_try {
+        (
+            "tryFrom".to_string(),
+            Type::Union(vec![Type::Named(enum_name.to_string()), Type::NullT]),
+            Stmt {
+                kind: StmtKind::Return(Some(Expr::NullLit)),
+                line: decl_line,
+            },
+        )
+    } else {
+        (
+            "from".to_string(),
+            Type::Named(enum_name.to_string()),
+            Stmt {
+                kind: StmtKind::Throw(Expr::New(
+                    "IllegalArgumentException".to_string(),
+                    Vec::new(),
+                    vec![Arg {
+                        name: None,
+                        is_ref: false,
+                        value: Expr::StringLit(format!("unknown case for enum {enum_name}")),
+                    }],
+                )),
+                line: decl_line,
+            },
+        )
+    };
+    body.push(fallback);
+    MethodDecl {
+        name,
+        kind: MethodKind::Normal,
+        visibility: Visibility::Public,
+        visibility_explicit: true,
+        is_static: true,
+        is_const: false,
+        is_abstract: false,
+        is_final: false,
+        return_type,
+        params: vec![Param {
+            name: "value".to_string(),
+            ty: Type::StringT,
+            is_const: false,
+            default: None,
+            is_ref: false,
+        }],
+        throws: Vec::new(),
+        body,
+        decl_line,
     }
 }
 

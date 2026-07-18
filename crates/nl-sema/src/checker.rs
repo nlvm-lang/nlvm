@@ -1462,6 +1462,21 @@ impl<'a> MethodChecker<'a> {
                         if let Some(ty) = crate::stdlib::enum_const_ty(&path, name) {
                             return Ok(ty);
                         }
+                        // `Status.OK` — a user-declared enum's case
+                        // constant. Its *static* type is the enum itself
+                        // (`Status`), not the case field's backing type
+                        // (`int`/`string`) — same nominal-over-primitive
+                        // shape as `enum_const_ty` above, just for a real
+                        // `ClassInfo` instead of a hand-written stdlib
+                        // table. Consulted before `check_expr(target)`
+                        // below since `target` (e.g. `Ident("Status")`)
+                        // isn't a value and would fail to resolve as one.
+                        let fqcn = self.class_fqcn(&path);
+                        if let Some(info) = self.classes.get(&fqcn) {
+                            if info.is_enum && info.enum_cases.iter().any(|c| c == name) {
+                                return Ok(Type::Named(fqcn));
+                            }
+                        }
                     }
                 }
                 let target_ty = self.check_expr(target, assigned)?;
@@ -1485,6 +1500,27 @@ impl<'a> MethodChecker<'a> {
                 let Some(fqcn) = named else {
                     return Ok(Type::Void);
                 };
+                // `status.value` — specs.md § Typed enums: reads back the
+                // case's backing value. There is no real `value` field on
+                // the generated class (case constants are named after the
+                // case itself — vm.md § Enum representation), so this is
+                // special-cased instead of falling into `field_ty` below,
+                // which would report an unknown-field error. The backing
+                // type is read off the first case field (case constants are
+                // always emitted before any custom static field — see
+                // `nl_syntax::parser::parse_enum_decl`).
+                if name == "value" {
+                    if let Some(info) = self.classes.get(fqcn) {
+                        if info.is_enum {
+                            let backing = info
+                                .fields
+                                .first()
+                                .map(|f| f.ty.clone())
+                                .unwrap_or(Type::Int);
+                            return Ok(backing);
+                        }
+                    }
+                }
                 // `entry.key`/`entry.value` on a `system.MapEntry<K, V>` —
                 // native result type, absent from `self.classes`.
                 if let Some(ty) = crate::native_generics::field_ty(fqcn, name) {
@@ -1522,6 +1558,54 @@ impl<'a> MethodChecker<'a> {
                                 self.require_handled(exc)?;
                             }
                             return Ok(return_ty);
+                        }
+                        // `Utils.max(a, b)` / `Status.tryFrom(...)` — a
+                        // dotted path resolving to a *user* class's static
+                        // method, not a value (mirrors nl-codegen's
+                        // `compile_static_user_call` recognition). Without
+                        // this, the call's return type falls through to the
+                        // lenient `Expr::Ident` "unresolved -> Void"
+                        // default below — harmless when the result is
+                        // discarded or assigned to an explicitly-typed
+                        // local, but wrong for anything that then
+                        // type-checks the result further (`== null`, a
+                        // `match` subject, an `auto`-inferred local) —
+                        // exactly what enum `from`/`tryFrom` need.
+                        let fqcn = self.class_fqcn(&path);
+                        if let Some((owner, method)) =
+                            class_table::find_method_owner(self.classes, &fqcn, name, args.len())
+                        {
+                            if method.is_static {
+                                if !class_table::is_accessible(
+                                    self.classes,
+                                    method.visibility,
+                                    &owner,
+                                    &self.this_fqcn,
+                                ) {
+                                    return Err(SemaError::MemberNotAccessible(
+                                        name.to_string(),
+                                        self.this_fqcn.clone(),
+                                        visibility_str(method.visibility),
+                                    ));
+                                }
+                                let binding = bind_call_args(
+                                    &method.param_names,
+                                    method.required_count,
+                                    args,
+                                )?;
+                                self.check_ref_args(
+                                    &method.param_names,
+                                    &method.is_ref,
+                                    &binding,
+                                    args,
+                                )?;
+                                for t in method.throws.clone() {
+                                    if let Type::Named(exc_fqcn) = t {
+                                        self.require_handled(&exc_fqcn)?;
+                                    }
+                                }
+                                return Ok(method.return_ty.clone());
+                            }
                         }
                     }
                 }
@@ -1801,11 +1885,11 @@ impl<'a> MethodChecker<'a> {
         }
     }
 
-    /// compiler.md § Match exhaustiveness — E047. No enums yet, so the only
-    /// type that can be exhaustive without a `default` arm is `bool` (both
-    /// `true` and `false` present); everything else requires `default`.
-    /// Two arms with the same constant literal are also E047 (the second
-    /// would be unreachable).
+    /// compiler.md § Match exhaustiveness — E047. Exhaustive without a
+    /// `default` arm for `bool` (both `true`/`false` present) and for an
+    /// enum subject (every case name has an arm — specs.md § Enums);
+    /// everything else requires `default`. Two arms with the same constant
+    /// literal are also E047 (the second would be unreachable).
     fn check_match(
         &mut self,
         subject: &Expr,
@@ -1813,10 +1897,24 @@ impl<'a> MethodChecker<'a> {
         assigned: &mut HashSet<u32>,
     ) -> Result<Type, SemaError> {
         let subject_ty = self.check_expr(subject, assigned)?;
+        // An enum-typed subject's arms are `EnumName.CaseName` patterns —
+        // `Expr::FieldAccess` nodes, not constant literals, so they need
+        // their own coverage tracking (by case name) alongside `literal_eq`'s
+        // duplicate check below (which still applies, e.g. two arms both
+        // matching `Status.OK`).
+        let enum_case_names: Option<Vec<String>> = match &subject_ty {
+            Type::Named(fqcn) => self
+                .classes
+                .get(fqcn)
+                .filter(|info| info.is_enum)
+                .map(|info| info.enum_cases.clone()),
+            _ => None,
+        };
         let mut seen: Vec<&Expr> = Vec::new();
         let mut has_default = false;
         let mut has_true = false;
         let mut has_false = false;
+        let mut covered_cases: HashSet<String> = HashSet::new();
         let mut result_ty: Option<Type> = None;
         for arm in arms {
             match &arm.pattern {
@@ -1831,6 +1929,9 @@ impl<'a> MethodChecker<'a> {
                     match pat {
                         Expr::BoolLit(true) => has_true = true,
                         Expr::BoolLit(false) => has_false = true,
+                        Expr::FieldAccess(_, case_name) => {
+                            covered_cases.insert(case_name.clone());
+                        }
                         _ => {}
                     }
                     self.check_expr(pat, assigned)?;
@@ -1841,7 +1942,11 @@ impl<'a> MethodChecker<'a> {
                 result_ty = Some(value_ty);
             }
         }
-        let exhaustive = has_default || (matches!(subject_ty, Type::Bool) && has_true && has_false);
+        let exhaustive = has_default
+            || (matches!(subject_ty, Type::Bool) && has_true && has_false)
+            || enum_case_names
+                .as_ref()
+                .is_some_and(|cases| cases.iter().all(|c| covered_cases.contains(c)));
         if !exhaustive {
             return Err(SemaError::MatchNotExhaustive("default".to_string()));
         }

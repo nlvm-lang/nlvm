@@ -187,15 +187,18 @@ fn compile_file(
                 closure_modules.extend(closures);
             }
 
+            let mut flags = 0u16;
+            if class.is_readonly {
+                flags |= class_flags::READONLY;
+            }
+            if class.is_enum {
+                flags |= class_flags::ENUM;
+            }
             let mut modules = vec![Module {
                 version: nl_bytecode::module::VERSION,
                 constant_pool: cp,
                 this_class,
-                class_flags: if class.is_readonly {
-                    class_flags::READONLY
-                } else {
-                    0
-                },
+                class_flags: flags,
                 super_class,
                 interfaces,
                 fields,

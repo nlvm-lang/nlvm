@@ -1,0 +1,23 @@
+---
+title: "enum — match missing a case and no default is E047"
+file_separator: "#NLFILE"
+expected_compile_error: "E047"
+---
+
+#NLFILE phase8/enumnotexhaustive/Color.nl
+namespace phase8.enumnotexhaustive;
+enum Color { Red, Green, Blue }
+
+#NLFILE phase8/enumnotexhaustive/Main.nl
+namespace phase8.enumnotexhaustive;
+class Main {
+    public static int main(string[] args) {
+        Color c = Color.Red;
+        string name = match(c) {
+            Color.Red: "red",
+            Color.Green: "green",
+        };
+        system.Out.print(name);
+        return 0;
+    }
+}
