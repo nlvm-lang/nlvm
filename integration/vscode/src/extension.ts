@@ -50,6 +50,37 @@ function parseDiagnostics(output: string): Map<string, vscode.Diagnostic[]> {
   return byFile;
 }
 
+// A program is compiled from every `.nl` file under its `src/` root together
+// (see crates/nlc/src/main.rs) — classes in different files can reference
+// each other. Linting a single file in isolation leaves the checker unable
+// to resolve any cross-file class/method, which it then treats leniently as
+// `void` (see crates/nl-sema/src/checker.rs), producing false-positive E008
+// "Cannot concatenate" errors on any cross-file method call. So find the
+// nearest ancestor directory literally named `src` — same convention the
+// project's own Makefiles use (`nlc src/ -o ...`) — and lint that instead.
+function findSourceRoot(document: vscode.TextDocument): string {
+  const startDir = path.dirname(document.fileName);
+  const boundary = vscode.workspace.getWorkspaceFolder(document.uri)?.uri.fsPath ?? startDir;
+
+  let dir = startDir;
+  for (;;) {
+    if (path.basename(dir) === 'src') {
+      return dir;
+    }
+    if (dir === boundary) {
+      break;
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) {
+      break;
+    }
+    dir = parent;
+  }
+  // No `src/` ancestor found (e.g. a standalone script outside that
+  // convention) — fall back to linting just this file, as before.
+  return document.fileName;
+}
+
 function lintDocument(document: vscode.TextDocument) {
   if (document.languageId !== 'nl') return;
 
@@ -57,9 +88,15 @@ function lintDocument(document: vscode.TextDocument) {
   const compilerPath = config.get<string>('compilerPath', 'nlc');
   const cwd =
     vscode.workspace.getWorkspaceFolder(document.uri)?.uri.fsPath ?? path.dirname(document.fileName);
+  const target = findSourceRoot(document);
 
-  execFile(compilerPath, ['-l', document.fileName], { cwd }, (error, _stdout, stderr) => {
-    diagnostics.delete(document.uri);
+  execFile(compilerPath, ['-l', target], { cwd }, (error, _stdout, stderr) => {
+    // Each run compiles the whole source root as one program, and
+    // `nl_sema::check_compile` stops at the first error found anywhere in
+    // it — so a diagnostic from a previous run can be for any file in the
+    // project and may now be stale. Clear everything rather than just
+    // `document.uri` before repopulating.
+    diagnostics.clear();
 
     if (!error) {
       return;

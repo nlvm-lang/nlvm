@@ -2,7 +2,7 @@
   "name": "nl-language",
   "displayName": "NL Language",
   "description": "Syntax highlighting and linting for the NL language (nlvm)",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "publisher": "nlvm",
   "private": true,
   "license": "MIT",

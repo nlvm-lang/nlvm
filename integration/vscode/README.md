@@ -7,9 +7,11 @@ Syntax highlighting and linting for the [NL language](../../README.md).
 - Syntax highlighting (`syntaxes/nl.tmLanguage.json`) — keywords, primitive types,
   strings, comments, numbers.
 - Bracket/comment matching and auto-closing pairs (`language-configuration.json`).
-- Linting: runs `nlc -l <file>` on open/save and reports syntax and semantic
-  errors in the Problems panel. Also available as the `NL: Lint Current File`
-  command.
+- Linting: runs `nlc -l <src-root>` on open/save — the nearest ancestor
+  directory named `src` (falling back to the single file if none is found) —
+  so cross-file class/method references resolve correctly, and reports
+  syntax and semantic errors in the Problems panel. Also available as the
+  `NL: Lint Current File` command.
 
 ## Settings
 
