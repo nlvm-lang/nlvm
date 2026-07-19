@@ -119,9 +119,9 @@
   // A step is either a typed command or printed output lines.
   var SCRIPT = [
     { type: "cmd", text: "nlc --version" },
-    { type: "out", lines: [{ cls: "out", text: "nlc 0.5.0 (nlvm-specs 0.8.44)" }] },
-    { type: "cmd", text: "nlc -o out/ Main.nl" },
-    { type: "cmd", text: "nlvm out/hello.Main.nlp" },
+    { type: "out", lines: [{ cls: "out", text: "nlc 0.5.1 (nlvm-specs 0.8.44)" }] },
+    { type: "cmd", text: "nlc Main.nl -o Main.nlp" },
+    { type: "cmd", text: "nlvm Main.nlp" },
     { type: "out", lines: [{ cls: "ok", text: "Hello, world!" }] }
   ];
 

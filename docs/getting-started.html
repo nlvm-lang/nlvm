@@ -12,7 +12,7 @@
 
 <header class="site-header">
   <div class="container">
-    <a class="wordmark" href="index.html"><span class="glyph">nl</span>nl<span class="vm">vm</span></a>
+    <a class="wordmark" href="index.html"><span class="glyph">nl</span><span class="name">nl<span class="vm">vm</span></span></a>
     <nav class="site-nav">
       <a href="index.html">Home</a>
       <a href="tour.html">Tour</a>
@@ -48,22 +48,22 @@ class Main {
 }</code></pre>
 
   <h2>3. Compile and run</h2>
-  <p><code>nlc</code> compiles your sources into a single <code>.nlp</code> program file, named after the class that defines <code>main</code>:</p>
-  <pre class="sh"><code>$ nlc -o out/ Main.nl
+  <p><code>nlc</code> compiles your sources into a single <code>.nlp</code> program file:</p>
+  <pre class="sh"><code>$ nlc Main.nl -o Main.nlp
+$ nlvm Main.nlp
+Hello, world!</code></pre>
+  <p>Point <code>-o</code> at a directory instead and the file is named after the class that defines <code>main</code>:</p>
+  <pre class="sh"><code>$ nlc Main.nl -o out/
 $ nlvm out/hello.Main.nlp
 Hello, world!</code></pre>
-  <p>You can also name the output file explicitly:</p>
-  <pre class="sh"><code>$ nlc -o out/prog.nlp Main.nl
-$ nlvm out/prog.nlp
-Hello, world!</code></pre>
 
-  <div class="note">A <code>.nlp</code> file bundles every module of your program — it's the only artifact you ship. Prefer one <code>.nlm</code> module per class? <code>nlc --emit-modules -o out/ Main.nl</code> gives you the exploded layout, and <code>nlvm out/</code> loads a whole directory.</div>
+  <div class="note">A <code>.nlp</code> file bundles every module of your program — it's the only artifact you ship. Prefer one <code>.nlm</code> module per class? <code>nlc --emit-modules Main.nl -o out/</code> gives you the exploded layout, and <code>nlvm out/</code> loads a whole directory.</div>
 
   <h2>4. Check your setup</h2>
   <pre class="sh"><code>$ nlc --version
-nlc 0.5.0 (nlvm-specs 0.8.44)
+nlc 0.5.1 (nlvm-specs 0.8.44)
 $ nlvm --version
-nlvm 0.5.0 (nlvm-specs 0.8.44)</code></pre>
+nlvm 0.5.1 (nlvm-specs 0.8.44)</code></pre>
   <p>Both report the crate version and the release of the <a href="https://github.com/tivins/nlvm-specs">language specification</a> this build implements.</p>
 
   <h2>5. Run the test suite (optional)</h2>

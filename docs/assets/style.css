@@ -246,7 +246,7 @@ h2.section-title {
 .feature-grid {
   margin-top: 44px;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(310px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
   gap: 20px;
 }
 
@@ -349,13 +349,26 @@ pre.sh .out { color: var(--text-faint); }
 /* ---------- two-column split ---------- */
 
 .split {
-  margin-top: 44px;
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 32px;
+  gap: 36px;
   align-items: center;
 }
 @media (max-width: 860px) { .split { grid-template-columns: 1fr; } }
+
+/* ---------- spotlight panel (dogfooding) ---------- */
+
+.spotlight-panel {
+  border: 1px solid var(--border-strong);
+  border-radius: 16px;
+  padding: 42px 44px;
+  background:
+    radial-gradient(520px 300px at 12% 20%, var(--primary-dim), transparent 70%),
+    var(--bg-raised);
+  box-shadow: 0 0 70px var(--primary-dim), inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+.spotlight-panel pre { border-color: var(--border-strong); }
+@media (max-width: 860px) { .spotlight-panel { padding: 28px 22px; } }
 
 /* ---------- prose pages ---------- */
 

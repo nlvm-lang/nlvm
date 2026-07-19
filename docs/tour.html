@@ -12,7 +12,7 @@
 
 <header class="site-header">
   <div class="container">
-    <a class="wordmark" href="index.html"><span class="glyph">nl</span>nl<span class="vm">vm</span></a>
+    <a class="wordmark" href="index.html"><span class="glyph">nl</span><span class="name">nl<span class="vm">vm</span></span></a>
     <nav class="site-nav">
       <a href="index.html">Home</a>
       <a href="tour.html" class="active">Tour</a>
@@ -40,7 +40,7 @@ class Main {
         return 0;
     }
 }</code></pre>
-    <p class="result-line"><b>$</b> nlc -o out/ Main.nl &amp;&amp; nlvm out/hello.Main.nlp → <b>Hello, world!</b></p>
+    <p class="result-line"><b>$</b> nlc Main.nl -o Main.nlp &amp;&amp; nlvm Main.nlp → <b>Hello, world!</b></p>
   </div>
 
   <div class="example reveal">

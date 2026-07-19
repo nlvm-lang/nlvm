@@ -12,7 +12,7 @@
 
 <header class="site-header">
   <div class="container">
-    <a class="wordmark" href="index.html"><span class="glyph">nl</span>nl<span class="vm">vm</span></a>
+    <a class="wordmark" href="index.html"><span class="glyph">nl</span><span class="name">nl<span class="vm">vm</span></span></a>
     <nav class="site-nav">
       <a href="index.html" class="active">Home</a>
       <a href="tour.html">Tour</a>
@@ -62,7 +62,8 @@ int actual = port ?? 8080;</code></pre>
       <div class="feature reveal">
         <h3><span class="dot">◆</span>Errors you can't ignore</h3>
         <p>Checked exceptions: a method that can fail declares <code>throws</code>, and callers must catch or declare. Every exception carries a full stack trace, captured by the VM.</p>
-        <pre class="nl"><code>public static string load(string path) throws IOException {
+        <pre class="nl"><code>public static string load(string path)
+        throws IOException {
     return system.io.File.readAllText(path);
 }
 
@@ -89,11 +90,13 @@ string name = match(c) {
         <h3><span class="dot">◆</span>Functions are values</h3>
         <p>First-class function types with explicit signatures — including <code>throws</code> — plus closures and type inference with <code>auto</code>.</p>
         <pre class="nl"><code>(int, int) => int add = (int a, int b) => a + b;
-system.Out.println(system.Int.toString(add(3, 5)));
+auto eight = add(3, 5);
 
 (string|null) => int throws Exception len =
     (string|null s) => throws Exception {
-        if (s == null) { throw new Exception("null"); }
+        if (s == null) {
+            throw new Exception("null");
+        }
         return s.length();
     };</code></pre>
       </div>
@@ -101,8 +104,8 @@ system.Out.println(system.Int.toString(add(3, 5)));
       <div class="feature reveal">
         <h3><span class="dot">◆</span>One binary, one file</h3>
         <p><code>nlc</code> compiles your whole program into a single <code>.nlp</code> file. The VM is one dependency-free Rust executable. Ship both, done.</p>
-        <pre class="sh"><code>$ nlc -o out/ Main.nl
-$ nlvm out/hello.Main.nlp
+        <pre class="sh"><code>$ nlc Main.nl -o Main.nlp
+$ nlvm Main.nlp
 Hello, world!</code></pre>
       </div>
 
@@ -110,7 +113,7 @@ Hello, world!</code></pre>
         <h3><span class="dot">◆</span>Specified and tested</h3>
         <p>The language is defined by a versioned, public specification — <a href="https://github.com/tivins/nlvm-specs">nlvm-specs</a> — and the implementation tracks it release by release, backed by a YAML conformance suite run in CI.</p>
         <pre class="sh"><code>$ nlvm --version
-nlvm 0.5.0 (nlvm-specs 0.8.44)
+nlvm 0.5.1 (nlvm-specs 0.8.44)
 $ nltest tests/
 140 passed, 0 failed, 140 total</code></pre>
       </div>
@@ -121,27 +124,32 @@ $ nltest tests/
 
 <section class="block">
   <div class="container">
+    <div class="spotlight-panel reveal">
     <div class="split">
-      <div class="reveal">
+      <div>
         <p class="kicker">Dogfooding</p>
         <h2 class="section-title">Our release script is written in NL</h2>
         <p class="section-sub" style="margin-top:14px">Every nlvm release is tagged and pushed by <code>tools/Release.nl</code> — an NL program that reads the changelog with <code>system.text.Regex</code>, and drives git through <code>system.ps.Process</code>. Files, regexes, processes: the standard library is small but it does real work.</p>
         <p style="margin-top:16px"><a href="https://github.com/tivins/nlvm/blob/main/tools/Release.nl">Read the full script →</a></p>
       </div>
-      <pre class="nl reveal"><code>string changelog = system.io.File.readAllText("CHANGELOG.md");
-auto header = system.text.Regex.matchFirst("## \\[([^\\]]+)\\]", changelog);
+      <pre class="nl"><code>string changelog =
+    system.io.File.readAllText("CHANGELOG.md");
+auto header = system.text.Regex.matchFirst(
+    "## \\[([^\\]]+)\\]", changelog);
 if (header == null) {
-    system.Err.println("No version header found.");
+    system.Err.println("No version header.");
     return 1;
 }
 string version = header.groups[1];
 
-auto tag = system.ps.Process.run(
-    new string[]{"git", "tag", "-a", version, "-m", "Release " + version});
+auto tag = system.ps.Process.run(new string[]{
+    "git", "tag", "-a", version,
+    "-m", "Release " + version});
 if (tag.exitCode != 0) {
     system.Err.print(tag.stderr);
     return tag.exitCode;
 }</code></pre>
+    </div>
     </div>
   </div>
 </section>
