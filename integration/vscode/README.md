@@ -21,6 +21,10 @@ Syntax highlighting and linting for the [NL language](../../README.md).
 
 ## Development
 
+Open this folder (`integration/vscode`), not the `nlvm` repo root, as the VS
+Code workspace — the `.vscode/launch.json` and `tsconfig.json` are only
+picked up correctly when `integration/vscode` is the opened folder.
+
 ```sh
 npm install
 npm run compile   # or: npm run watch
@@ -28,3 +32,16 @@ npm run compile   # or: npm run watch
 
 Then press F5 (or "Run NL Extension" in the Run panel) to launch an Extension
 Development Host with the extension loaded, and open a `.nl` file.
+
+## Packaging
+
+```sh
+npm run package
+```
+
+Produces `nl-language-<version>.vsix`. Install it in a regular VS Code window
+with:
+
+```sh
+code --install-extension nl-language-<version>.vsix
+```
