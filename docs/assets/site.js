@@ -121,6 +121,7 @@
   // Every command and its output was captured from the real toolchain.
   var SCENARIOS = [
     {
+      label: "build & run",
       steps: [
         { note: "# a whole source tree, one shippable file" },
         { cmd: "nlc src/ -o software.nlp" },
@@ -129,6 +130,7 @@
       ]
     },
     {
+      label: "compile checks",
       steps: [
         { note: "# null bugs don't compile" },
         { cmd: "nlc Bad.nl -o bad.nlp" },
@@ -139,6 +141,7 @@
       ]
     },
     {
+      label: "stack traces",
       steps: [
         { note: "# every exception knows where it came from" },
         { cmd: "nlvm crash.nlp" },
@@ -150,10 +153,11 @@
       ]
     },
     {
+      label: "spec & tests",
       steps: [
         { note: "# one toolchain, one versioned spec" },
         { cmd: "nlc --version" },
-        { out: [["out", "nlc 0.5.1 (nlvm-specs 0.8.44)"]] },
+        { out: [["out", "nlc 0.5.3 (nlvm-specs 0.8.44)"]] },
         { cmd: "nltest tests/" },
         { out: [["ok", "140 passed, 0 failed, 140 total"]] }
       ]
@@ -164,9 +168,34 @@
   var cursor = document.createElement("span");
   cursor.className = "cursor";
 
-  function renderScenarioInstant(scenario) {
+  // Bumped on every manual tab click so stale timeouts from the previous
+  // scenario cancel themselves.
+  var runId = 0;
+
+  var tabsBox = document.getElementById("terminal-tabs");
+  var tabs = [];
+  if (tabsBox) {
+    SCENARIOS.forEach(function (scenario, s) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.textContent = scenario.label;
+      b.setAttribute("role", "tab");
+      b.addEventListener("click", function () { select(s); });
+      tabsBox.appendChild(b);
+      tabs.push(b);
+    });
+  }
+
+  function setActiveTab(s) {
+    tabs.forEach(function (b, i) {
+      b.classList.toggle("active", i === s);
+      b.setAttribute("aria-selected", i === s ? "true" : "false");
+    });
+  }
+
+  function renderScenarioInstant(s) {
     var html = "";
-    scenario.steps.forEach(function (step) {
+    SCENARIOS[s].steps.forEach(function (step) {
       if (step.note) {
         html += '<span class="com">' + escapeHtml(step.note) + "</span>\n";
       } else if (step.cmd) {
@@ -178,10 +207,25 @@
       }
     });
     term.innerHTML = html;
+    setActiveTab(s);
+  }
+
+  function select(s) {
+    runId++;
+    if (reduced) {
+      renderScenarioInstant(s);
+      return;
+    }
+    started = true;
+    term.classList.remove("fade-out");
+    term.innerHTML = "";
+    term.appendChild(cursor);
+    setActiveTab(s);
+    runStep(runId, s, 0);
   }
 
   if (reduced) {
-    renderScenarioInstant(SCENARIOS[0]);
+    renderScenarioInstant(0);
     return;
   }
 
@@ -191,7 +235,8 @@
     started = true;
     term.innerHTML = "";
     term.appendChild(cursor);
-    runStep(0, 0);
+    setActiveTab(0);
+    runStep(runId, 0, 0);
   }
 
   function appendLine(cls, text) {
@@ -202,19 +247,26 @@
     term.insertBefore(document.createTextNode("\n"), cursor);
   }
 
-  function runStep(s, i) {
+  function later(id, ms, fn) {
+    setTimeout(function () { if (id === runId) fn(); }, ms);
+  }
+
+  function runStep(id, s, i) {
+    if (id !== runId) return;
     var steps = SCENARIOS[s].steps;
     if (i >= steps.length) {
       // Scenario done: hold, fade, then start the next one.
-      setTimeout(function () {
+      later(id, 3200, function () {
         term.classList.add("fade-out");
-        setTimeout(function () {
+        later(id, 350, function () {
           term.innerHTML = "";
           term.appendChild(cursor);
           term.classList.remove("fade-out");
-          runStep((s + 1) % SCENARIOS.length, 0);
-        }, 350);
-      }, 3200);
+          var next = (s + 1) % SCENARIOS.length;
+          setActiveTab(next);
+          runStep(id, next, 0);
+        });
+      });
       return;
     }
     var step = steps[i];
@@ -222,9 +274,9 @@
       var note = document.createElement("span");
       note.className = "com";
       term.insertBefore(note, cursor);
-      typeInto(note, step.note, 0, function () {
+      typeInto(id, note, step.note, 0, function () {
         term.insertBefore(document.createTextNode("\n"), cursor);
-        setTimeout(function () { runStep(s, i + 1); }, 200);
+        later(id, 200, function () { runStep(id, s, i + 1); });
       });
     } else if (step.cmd) {
       var prompt = document.createElement("span");
@@ -233,20 +285,21 @@
       term.insertBefore(prompt, cursor);
       var cmd = document.createElement("span");
       term.insertBefore(cmd, cursor);
-      typeInto(cmd, step.cmd, 0, function () {
+      typeInto(id, cmd, step.cmd, 0, function () {
         term.insertBefore(document.createTextNode("\n"), cursor);
-        setTimeout(function () { runStep(s, i + 1); }, 250);
+        later(id, 250, function () { runStep(id, s, i + 1); });
       });
     } else {
       step.out.forEach(function (l) { appendLine(l[0], l[1]); });
-      setTimeout(function () { runStep(s, i + 1); }, 500);
+      later(id, 500, function () { runStep(id, s, i + 1); });
     }
   }
 
-  function typeInto(el, text, pos, done) {
+  function typeInto(id, el, text, pos, done) {
+    if (id !== runId) return;
     if (pos >= text.length) { done(); return; }
     el.textContent += text[pos];
-    setTimeout(function () { typeInto(el, text, pos + 1, done); }, 24 + Math.random() * 36);
+    setTimeout(function () { typeInto(id, el, text, pos + 1, done); }, 24 + Math.random() * 36);
   }
 
   if ("IntersectionObserver" in window) {

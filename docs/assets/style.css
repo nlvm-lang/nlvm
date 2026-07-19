@@ -215,6 +215,32 @@ a:hover { color: var(--primary-bright); }
 .terminal-body { transition: opacity 0.35s ease; }
 .terminal-body.fade-out { opacity: 0; }
 
+.terminal-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 14px;
+  border-top: 1px solid var(--border);
+}
+
+.terminal-tabs button {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-faint);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 12px;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+.terminal-tabs button:hover { color: var(--text); border-color: var(--border-strong); }
+.terminal-tabs button.active {
+  color: var(--primary);
+  border-color: var(--primary);
+  background: var(--primary-dim);
+}
+
 .cursor {
   display: inline-block;
   width: 8px; height: 16px;
