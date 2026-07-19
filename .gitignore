@@ -1,4 +1,5 @@
 /target
+nl_modules/
 
 # Files created by nlvm-specs runtime fixtures (m7_0030) and local io tests
 _tmp_*
