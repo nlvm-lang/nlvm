@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0]
+
+Single-file program output: `.nlp` container format.
+
+### Added
+- `.nlp` program container format (`nl-bytecode::program`): one file bundling every module of a compiled program, each embedded as a complete `.nlm` image.
+- `nlvm` runs `.nlp` files (and still accepts `.nlm` files, directories, or a mix); containers are detected by magic number, not extension.
+- `nlc --emit-modules`: opt back into the previous one-`.nlm`-per-class output layout.
+
+### Changed
+- `nlc` now produces a single `.nlp` program by default — `-o` may name the file directly (`-o prog.nlp`) or a directory, in which case the file is named after the entry class (the one defining a static `main`).
+- `nlvm --version` reports the real crate version instead of a hardcoded string.
+
 ## [0.3.0]
 
 Release helper script written in NL itself.

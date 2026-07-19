@@ -412,13 +412,13 @@ fn read_cp_entry(r: &mut Reader) -> Result<ConstantPoolEntry, BytecodeError> {
     Ok(entry)
 }
 
-struct Reader<'a> {
+pub(crate) struct Reader<'a> {
     bytes: &'a [u8],
     pos: usize,
 }
 
 impl<'a> Reader<'a> {
-    fn new(bytes: &'a [u8]) -> Self {
+    pub(crate) fn new(bytes: &'a [u8]) -> Self {
         Self { bytes, pos: 0 }
     }
 
@@ -426,7 +426,7 @@ impl<'a> Reader<'a> {
         self.pos
     }
 
-    fn read_bytes(&mut self, len: usize) -> Result<&'a [u8], BytecodeError> {
+    pub(crate) fn read_bytes(&mut self, len: usize) -> Result<&'a [u8], BytecodeError> {
         if self.pos + len > self.bytes.len() {
             return Err(BytecodeError::UnexpectedEof);
         }
@@ -439,12 +439,12 @@ impl<'a> Reader<'a> {
         Ok(self.read_bytes(1)?[0])
     }
 
-    fn read_u16(&mut self) -> Result<u16, BytecodeError> {
+    pub(crate) fn read_u16(&mut self) -> Result<u16, BytecodeError> {
         let b = self.read_bytes(2)?;
         Ok(u16::from_be_bytes([b[0], b[1]]))
     }
 
-    fn read_u32(&mut self) -> Result<u32, BytecodeError> {
+    pub(crate) fn read_u32(&mut self) -> Result<u32, BytecodeError> {
         let b = self.read_bytes(4)?;
         Ok(u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
     }

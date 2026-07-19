@@ -2,6 +2,7 @@ pub mod constant_pool;
 pub mod error;
 pub mod module;
 pub mod opcode;
+pub mod program;
 
 pub use constant_pool::{ConstantPool, ConstantPoolEntry};
 pub use error::BytecodeError;
@@ -10,3 +11,4 @@ pub use module::{
     LineTableEntry, MethodDescriptor, Module,
 };
 pub use opcode::Opcode;
+pub use program::{decode_program, encode_program, is_program, PROGRAM_MAGIC, PROGRAM_VERSION};

@@ -2,8 +2,8 @@ use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 
-/// Recursively collects `.nlm` files under `dir`, sorted for a deterministic
-/// load order regardless of the OS's directory-listing order.
+/// Recursively collects `.nlm` and `.nlp` files under `dir`, sorted for a
+/// deterministic load order regardless of the OS's directory-listing order.
 fn collect_nlm_modules(dir: &Path, out: &mut Vec<String>) -> Result<()> {
     let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
         .with_context(|| format!("reading directory {}", dir.display()))?
@@ -15,7 +15,10 @@ fn collect_nlm_modules(dir: &Path, out: &mut Vec<String>) -> Result<()> {
     for path in entries {
         if path.is_dir() {
             collect_nlm_modules(&path, out)?;
-        } else if path.extension().is_some_and(|ext| ext == "nlm") {
+        } else if path
+            .extension()
+            .is_some_and(|ext| ext == "nlm" || ext == "nlp")
+        {
             out.push(path.display().to_string());
         }
     }
@@ -25,10 +28,11 @@ fn collect_nlm_modules(dir: &Path, out: &mut Vec<String>) -> Result<()> {
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
-    // A program can span several linked classes/interfaces, each compiled
-    // to its own `.nlm` file by `nlc` — every `.nlm` argument is loaded into
-    // one program (see nl_vm::run_program). Anything else (or anything after
-    // `--`) is a program argument.
+    // A program can span several linked classes/interfaces, compiled by
+    // `nlc` either to one `.nlm` file each or to a single `.nlp` container —
+    // every `.nlm`/`.nlp` argument is loaded into one program (see
+    // nl_vm::run_program). Anything else (or anything after `--`) is a
+    // program argument.
     let mut module_paths = Vec::new();
     let mut program_args = Vec::new();
     let mut past_sep = false;
@@ -36,18 +40,22 @@ fn main() -> Result<()> {
     while i < args.len() {
         match args[i].as_str() {
             "--version" => {
-                println!("nlvm 0.1.0");
+                println!("nlvm {}", env!("CARGO_PKG_VERSION"));
                 return Ok(());
             }
             "-h" | "--help" => {
-                println!("usage: nlvm [options] <module.nlm...> [--] [program args...]");
+                println!(
+                    "usage: nlvm [options] <program.nlp | module.nlm...> [--] [program args...]"
+                );
                 return Ok(());
             }
             "-v" | "--verbose" => {}
             "--" if !past_sep => {
                 past_sep = true;
             }
-            other if !past_sep && other.ends_with(".nlm") => module_paths.push(other.to_string()),
+            other if !past_sep && (other.ends_with(".nlm") || other.ends_with(".nlp")) => {
+                module_paths.push(other.to_string())
+            }
             other if !past_sep && Path::new(other).is_dir() => {
                 collect_nlm_modules(Path::new(other), &mut module_paths)?
             }
@@ -57,15 +65,15 @@ fn main() -> Result<()> {
     }
 
     if module_paths.is_empty() {
-        bail!("usage: nlvm [options] <module.nlm...> [--] [program args...]");
+        bail!("usage: nlvm [options] <program.nlp | module.nlm...> [--] [program args...]");
     }
 
     let mut modules = Vec::with_capacity(module_paths.len());
     for path in &module_paths {
         let bytes = std::fs::read(path).with_context(|| format!("reading {path}"))?;
-        let module =
-            nl_vm::load_module(&bytes).map_err(|e| anyhow::anyhow!("loading {path}: {e}"))?;
-        modules.push(module);
+        let loaded =
+            nl_vm::load_modules(&bytes).map_err(|e| anyhow::anyhow!("loading {path}: {e}"))?;
+        modules.extend(loaded);
     }
 
     let outcome = nl_vm::run_program(&modules, &program_args);

@@ -37,23 +37,27 @@ fn format_syntax_error(path: &Path, e: &nl_syntax::SyntaxError) -> String {
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let mut output_dir = PathBuf::from(".");
+    let mut output = PathBuf::from(".");
     let mut sources = Vec::new();
     let mut lint = false;
+    let mut emit_modules = false;
 
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "-o" | "--output" => {
                 i += 1;
-                let dir = args.get(i).context("missing argument for -o/--output")?;
-                output_dir = PathBuf::from(dir);
+                let path = args.get(i).context("missing argument for -o/--output")?;
+                output = PathBuf::from(path);
             }
             "--entry" => {
                 i += 1; // accepted, not yet used to pick the entry module
             }
             "-l" | "--lint" => {
                 lint = true;
+            }
+            "--emit-modules" => {
+                emit_modules = true;
             }
             other => {
                 let path = PathBuf::from(other);
@@ -104,21 +108,50 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    std::fs::create_dir_all(&output_dir)
-        .with_context(|| format!("creating output directory {}", output_dir.display()))?;
-
     // Also includes the built-in exception hierarchy's modules (see
-    // nl_syntax::prelude) — written out alongside the caller's own classes
-    // so `nlvm` can load a program that references e.g. `Exception` without
+    // nl_syntax::prelude) — bundled alongside the caller's own classes so
+    // `nlvm` can load a program that references e.g. `Exception` without
     // the caller having to know about the prelude.
     let modules = nl_codegen::compile_program(&files).map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    for module in &modules {
-        let name = module.this_class_name().unwrap_or("Unknown");
-        let out_path = output_dir.join(format!("{name}.nlm"));
-        std::fs::write(&out_path, module.encode())
-            .with_context(|| format!("writing {}", out_path.display()))?;
+    // `--emit-modules`: one `.nlm` file per class/interface in the output
+    // directory (the historical layout). Default: a single `.nlp` program
+    // container — `-o` may name the file directly (`-o prog.nlp`) or a
+    // directory, in which case the file is named after the entry class.
+    if emit_modules {
+        std::fs::create_dir_all(&output)
+            .with_context(|| format!("creating output directory {}", output.display()))?;
+        for module in &modules {
+            let name = module.this_class_name().unwrap_or("Unknown");
+            let out_path = output.join(format!("{name}.nlm"));
+            std::fs::write(&out_path, module.encode())
+                .with_context(|| format!("writing {}", out_path.display()))?;
+        }
+        return Ok(());
     }
+
+    let out_path = if output.extension().is_some_and(|ext| ext == "nlp") {
+        if let Some(parent) = output.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating output directory {}", parent.display()))?;
+        }
+        output
+    } else {
+        // The entry class (static `main`) names the program. No positional
+        // fallback: compile_program prepends the prelude, so the first
+        // module is a built-in class, not the user's.
+        let name = modules
+            .iter()
+            .find(|m| m.find_method("main").is_some_and(|m| m.is_static()))
+            .and_then(|m| m.this_class_name())
+            .unwrap_or("Program");
+        std::fs::create_dir_all(&output)
+            .with_context(|| format!("creating output directory {}", output.display()))?;
+        output.join(format!("{name}.nlp"))
+    };
+
+    std::fs::write(&out_path, nl_bytecode::encode_program(&modules))
+        .with_context(|| format!("writing {}", out_path.display()))?;
 
     Ok(())
 }

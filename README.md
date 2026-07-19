@@ -29,11 +29,18 @@ cargo build -r
 ## Usage
 
 ```sh
-# Compile a .nl file into an .nlm module
+# Compile .nl sources into a single .nlp program (named after the entry class)
 cargo run -p nlc -- -o out/ Main.nl
 
-# Run a compiled module
-cargo run -p nlvm -- out/Main.nlm
+# ...or to an explicit path
+cargo run -p nlc -- -o out/prog.nlp Main.nl
+
+# Run a compiled program
+cargo run -p nlvm -- out/prog.nlp
+
+# Legacy layout: one .nlm module per class/interface
+cargo run -p nlc -- --emit-modules -o out/ Main.nl
+cargo run -p nlvm -- out/   # loads every .nlm/.nlp under the directory
 ```
 
 ## Tests

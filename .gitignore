@@ -1,5 +1,8 @@
 /target
+
 nl_modules/
+*.nlp
+*.nlm
 
 # Files created by nlvm-specs runtime fixtures (m7_0030) and local io tests
 _tmp_*
