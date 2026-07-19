@@ -5,6 +5,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1]
+
+Project website. No toolchain changes.
+
+### Added
+- Project website under `docs/` (served by GitHub Pages from `main`/`docs`): landing page, language tour, getting-started guide, and an English devlog — static HTML/CSS/JS, dark theme.
+
+### Changed
+- Build journals moved from `docs/` to `journal/` (`docs/` is now the website root); links updated in `CHANGELOG.md` and `Next.md`.
+
 ## [0.5.0]
 
 Track the `nlvm-specs` baseline explicitly.
@@ -50,7 +60,7 @@ Explicit function type declarations.
 
 ## [0.1.1]
 
-Stack trace support. Detailed build journal in [docs/journal_02_stack_trace.md](docs/journal_02_stack_trace.md).
+Stack trace support. Detailed build journal in [journal/journal_02_stack_trace.md](journal/journal_02_stack_trace.md).
 
 ### Added
 - Exception stack trace capture.
@@ -60,7 +70,7 @@ Stack trace support. Detailed build journal in [docs/journal_02_stack_trace.md](
 
 ## [0.1.0]
 
-Initial implementation of the NL language: compiler (`nlc`), bytecode VM (`nlvm`), and YAML test runner (`nltest`). Detailed build journal in [docs/journal_01_initial_build.md](docs/journal_01_initial_build.md).
+Initial implementation of the NL language: compiler (`nlc`), bytecode VM (`nlvm`), and YAML test runner (`nltest`). Detailed build journal in [journal/journal_01_initial_build.md](journal/journal_01_initial_build.md).
 
 ### Added
 - Lexer, parser, AST, and a shared `.nlm` bytecode format (`nl-bytecode`) between compiler and VM.
@@ -74,4 +84,4 @@ Initial implementation of the NL language: compiler (`nlc`), bytecode VM (`nlvm`
 - Full semantic error-code coverage (49/49 checks from the spec).
 
 ### Notes
-- Older, phase-by-phase history: `git log` or [docs/journal_01_initial_build.md](docs/journal_01_initial_build.md).
+- Older, phase-by-phase history: `git log` or [journal/journal_01_initial_build.md](journal/journal_01_initial_build.md).
