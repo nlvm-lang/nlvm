@@ -33,7 +33,7 @@ pub fn run_test(test: &TestFile) -> Outcome {
                 "expected compile error {code}, got {} ({e})",
                 e.code()
             )),
-            None => Outcome::Fail(format!("unexpected compile error: {e} ({})", e.code())),
+            None => Outcome::Fail(format!("unexpected compile error: {e}")),
         };
     }
     if let Some(code) = &test.header.expected_compile_error {
@@ -60,7 +60,7 @@ pub fn run_test(test: &TestFile) -> Outcome {
     }
 
     if let Err(e) = nl_sema::check_entry_point(&files) {
-        return Outcome::Fail(format!("entry point check failed: {e} ({})", e.code()));
+        return Outcome::Fail(format!("entry point check failed: {e}"));
     }
 
     if !modules.iter().any(|m| m.find_method("main").is_some()) {

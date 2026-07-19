@@ -110,7 +110,7 @@ fn main() -> Result<()> {
             eprintln!("{e}");
             std::process::exit(1);
         }
-        return Err(anyhow::anyhow!("{e} ({})", e.code()));
+        return Err(anyhow::anyhow!("{e}"));
     }
 
     // `-l`/`--lint`: parse + semantic checks only, no codegen and no output
