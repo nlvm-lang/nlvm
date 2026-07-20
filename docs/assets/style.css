@@ -85,18 +85,10 @@ a:hover { color: var(--primary-bright); }
 .wordmark:hover { color: var(--text); }
 
 .wordmark .glyph {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+  display: inline-block;
   width: 30px;
   height: 30px;
   border-radius: 7px;
-  background: var(--primary-dim);
-  border: 1px solid var(--border-strong);
-  color: var(--primary);
-  font-size: 13px;
-  font-weight: 700;
-  letter-spacing: -0.5px;
 }
 
 .wordmark .vm { color: var(--text-faint); font-weight: 400; }
@@ -162,20 +154,11 @@ a:hover { color: var(--primary-bright); }
 }
 
 .hero-glyph {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+  display: inline-block;
   width: 44px;
   height: 44px;
   border-radius: 11px;
-  background: var(--primary-dim);
-  border: 1px solid var(--border-strong);
-  color: var(--primary);
-  font-family: var(--mono);
-  font-size: 19px;
-  font-weight: 700;
-  letter-spacing: -1px;
-  box-shadow: 0 0 30px var(--primary-glow), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  box-shadow: 0 0 30px var(--primary-glow);
 }
 
 .hero-eyebrow {
@@ -226,7 +209,7 @@ a:hover { color: var(--primary-bright); }
   font-weight: 600;
   transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
-.btn:hover { transform: translateY(-1px); }
+.btn:hover { /* transform: translateY(-1px); */ }
 
 .btn-primary { background: var(--primary); color: #06231c; }
 .btn-primary:hover { background: var(--primary-bright); color: #06231c; box-shadow: 0 4px 24px var(--primary-glow); }

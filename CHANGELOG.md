@@ -11,9 +11,12 @@ Website & branding: logo assets. No toolchain changes.
 
 ### Added
 - Brand assets under `docs/assets/brand/`: a master `logo.svg` (the "nl" glyph as drawn paths, no font dependency) and PNG exports from 16 to 1024 px, ready for the future `nlvm-lang` GitHub organization avatar.
+- A 1280×640 social preview card (`social-preview.svg` + rendered PNG) for GitHub social previews and Open Graph, using JetBrains Mono / Inter to match the site's own `--mono` / `--sans` type system instead of generic fallback fonts.
+- `docs/assets/brand/generate.py`, a single script that builds all of the above from one set of constants — regenerate everything with `python3 generate.py`.
 
 ### Changed
 - The site favicon now uses `logo.svg` instead of the inline font-dependent data URI, so it renders identically everywhere.
+- The header wordmark (all pages) and the home hero brand now display `logo.svg` instead of the CSS-styled text glyph.
 
 ## [0.5.5]
 
