@@ -83,14 +83,14 @@ def build_social_preview_svg() -> str:
   {logo_mark(icon_x, icon_y, icon_scale)}
 
   <g font-family="{MONO}">
-    <text x="{text_x}" y="264" font-size="21" font-weight="500" letter-spacing="5" fill="{PRIMARY}">THE NL PROGRAMMING LANGUAGE</text>
+    <text x="{text_x}" y="250" font-size="18" font-weight="500" letter-spacing="4" fill="{PRIMARY}">THE NL PROGRAMMING LANGUAGE</text>
     <text x="{text_x - 6}" y="374" font-size="104" font-weight="700">
       <tspan fill="{TEXT}">nl</tspan><tspan fill="{TEXT_FAINT}">vm</tspan><tspan fill="{PRIMARY}">_</tspan>
     </text>
   </g>
-  <g font-family="{SANS}" font-size="38" font-weight="700" fill="{TEXT}">
+  <g font-family="{MONO}" font-size="32" font-weight="700" fill="{TEXT}">
     <text x="{text_x}" y="446">A small language that takes</text>
-    <text x="{text_x}" y="496" xml:space="preserve"><tspan fill="{PRIMARY}">correctness</tspan><tspan fill="{TEXT_MUTED}"> seriously.</tspan></text>
+    <text x="{text_x}" y="490" xml:space="preserve"><tspan fill="{PRIMARY}">correctness</tspan><tspan fill="{TEXT_MUTED}"> seriously.</tspan></text>
   </g>
 </svg>
 '''
