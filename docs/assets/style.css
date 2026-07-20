@@ -450,6 +450,17 @@ pre.sh .out { color: var(--text-faint); }
 }
 .result-line b { color: var(--primary); font-weight: 600; }
 
+/* ---------- stdlib cross-links ---------- */
+
+.stdlib-link {
+  color: inherit;
+  border-bottom: 1px dotted var(--text-faint);
+}
+.stdlib-link:hover {
+  color: var(--primary-bright);
+  border-bottom-color: var(--primary-bright);
+}
+
 /* ---------- two-column split ---------- */
 
 .split {

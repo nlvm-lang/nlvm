@@ -6,7 +6,7 @@
 <title>Proving parallelism in a browser tab: the HTTP server demo — nlvm devlog</title>
 <meta name="description" content="Building a multi-threaded HTTP server in NL: one OS thread per connection, a mutex-guarded shared Server instance, whitelist-based routing, and a button that makes real parallelism visible in the browser.">
 <link rel="stylesheet" href="../assets/style.css">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%230e1514'/><text x='16' y='22' font-family='monospace' font-size='14' font-weight='bold' fill='%233ecfae' text-anchor='middle'>nl</text></svg>">
+<link rel="icon" type="image/svg+xml" href="../assets/brand/logo.svg">
 </head>
 <body>
 
@@ -31,10 +31,10 @@
   <p class="lede">The first five <a href="https://github.com/tivins/nlvm-demos">nlvm-demos</a> each isolate one language feature — closures, generics, enums. None of them touch the standard library's I/O or concurrency surface, and none of them are things you'd actually point a browser at. <code>06_http_server</code> fixes both: a real TCP server, one OS thread per connection, and a page that lets you watch the threads work.</p>
 
   <h2>One thread per connection</h2>
-  <p><code>Main.main()</code> binds a <code>system.net.TcpListener</code> and loops on <code>accept()</code>. Each accepted <code>TcpStream</code> is handed to a fresh <code>system.thread.Thread</code> that calls <code>server.handle(stream, connId)</code> and is started immediately — the main thread is back at <code>accept()</code> while the previous connection is still being served. No connection queue, no event loop: five clients get five threads.</p>
+  <p><code>Main.main()</code> binds a <code class="stdlib">system.net.TcpListener</code> and loops on <code>accept()</code>. Each accepted <code class="stdlib" data-id="systemnettcpstream">TcpStream</code> is handed to a fresh <code class="stdlib">system.thread.Thread</code> that calls <code>server.handle(stream, connId)</code> and is started immediately — the main thread is back at <code>accept()</code> while the previous connection is still being served. No connection queue, no event loop: five clients get five threads.</p>
 
   <h2>One <code>Server</code>, shared, mutex-guarded</h2>
-  <p>All five threads call methods on the <em>same</em> <code>Server</code> object — heap objects, including whatever a closure captures, are shared across <code>system.thread.Thread</code> instances rather than cloned (see <a href="https://github.com/tivins/nlvm-specs/blob/main/docs/vm.md#threading-model">vm.md § Threading model</a>). That makes the request counter and the connection-id counter a real race unless they're protected, so both live behind a <code>system.thread.Mutex</code>:</p>
+  <p>All five threads call methods on the <em>same</em> <code>Server</code> object — heap objects, including whatever a closure captures, are shared across <code class="stdlib">system.thread.Thread</code> instances rather than cloned (see <a href="https://github.com/tivins/nlvm-specs/blob/main/docs/vm.md#threading-model">vm.md § Threading model</a>). That makes the request counter and the connection-id counter a real race unless they're protected, so both live behind a <code class="stdlib">system.thread.Mutex</code>:</p>
   <pre class="nl"><code>public int recordRequest() {
     this.countMutex.lock();
     this.requestCount = this.requestCount + 1;
@@ -55,7 +55,7 @@
         default: "",
     };
 }</code></pre>
-  <p>A client-supplied path never reaches <code>system.io.File.readAllText</code> directly — it's translated through a whitelist first, so there's no <code>../../etc/passwd</code> to worry about. The exhaustive <code>match</code> makes the whitelist visible in one place instead of scattered through <code>if</code>-checks.</p>
+  <p>A client-supplied path never reaches <code class="stdlib">system.io.File.readAllText</code> directly — it's translated through a whitelist first, so there's no <code>../../etc/passwd</code> to worry about. The exhaustive <code>match</code> makes the whitelist visible in one place instead of scattered through <code>if</code>-checks.</p>
 
   <h2>Making parallelism visible, not just true</h2>
   <p>"Runs on real threads" is easy to claim and hard to see. The served page polls <code>/api/stats</code> every second for a live request count, and has a "fire 5 parallel requests" button that hits <code>/api/work</code> — an endpoint that does nothing but <code>system.thread.Thread.sleep(600)</code> — five times at once via <code>Promise.all</code>:</p>

@@ -94,6 +94,36 @@
     pre.appendChild(btn);
   });
 
+  /* ---------- stdlib cross-links ----------
+     <code class="stdlib">system.io.File</code> becomes a link into the
+     nlvm-specs stdlib reference. The target anchor mirrors docsify's own
+     slug rule (lowercase, dots stripped), so no id lookup table is needed —
+     only the base URL below has to change if the docs move. Text with a
+     trailing member (e.g. "system.io.File.readAllText") still resolves to
+     its enclosing class by matching the namespace(.namespace)*.Class
+     prefix. For text that doesn't spell out the full path (e.g. a bare
+     "TcpStream"), set data-id="systemnettcpstream" explicitly. */
+
+  var STDLIB_BASE_URL = "https://tivins.github.io/nlvm-specs/#/docs/stdlib?id=";
+  var STDLIB_CLASS_PREFIX = /^([a-z][a-zA-Z0-9]*\.)*[A-Z][a-zA-Z0-9]*/;
+
+  function stdlibAnchorId(text) {
+    var m = text.match(STDLIB_CLASS_PREFIX);
+    return (m ? m[0] : text).toLowerCase().replace(/\./g, "");
+  }
+
+  document.querySelectorAll("code.stdlib").forEach(function (code) {
+    var id = code.getAttribute("data-id") || stdlibAnchorId(code.textContent);
+    var link = document.createElement("a");
+    link.className = "stdlib-link";
+    link.href = STDLIB_BASE_URL + id;
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.innerHTML = code.innerHTML;
+    code.innerHTML = "";
+    code.appendChild(link);
+  });
+
   /* ---------- scroll reveal ---------- */
 
   var revealed = document.querySelectorAll(".reveal");
@@ -157,7 +187,7 @@
       steps: [
         { note: "# one toolchain, one versioned spec" },
         { cmd: "nlc --version" },
-        { out: [["out", "nlc 0.5.5 (nlvm-specs 0.8.44)"]] },
+        { out: [["out", "nlc 0.5.6 (nlvm-specs 0.8.44)"]] },
         { cmd: "nltest tests/" },
         { out: [["ok", "140 passed, 0 failed, 140 total"]] }
       ]

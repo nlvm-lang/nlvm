@@ -6,7 +6,7 @@
 <title>Teaching the VM to remember: stack traces — nlvm devlog</title>
 <meta name="description" content="How NL exceptions gained real stack traces: a line-number table in the bytecode, a shadow call stack in the VM, and a catchable StackOverflowException.">
 <link rel="stylesheet" href="../assets/style.css">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%230e1514'/><text x='16' y='22' font-family='monospace' font-size='14' font-weight='bold' fill='%233ecfae' text-anchor='middle'>nl</text></svg>">
+<link rel="icon" type="image/svg+xml" href="../assets/brand/logo.svg">
 </head>
 <body>
 
@@ -34,7 +34,7 @@
   <p>A stack trace is useless without source lines, and the VM only sees bytecode. So each compiled method now embeds a compact table of <code>{start_pc, line}</code> entries, emitted by codegen at statement granularity and deduplicated on line changes. The format round-trips through the shared <code>nl-bytecode</code> crate, so both compiler and VM read the same definition.</p>
 
   <h2>2. A shadow call stack</h2>
-  <p>The interpreter recurses natively (a Rust call per NL frame), so there is no walkable NL stack to inspect. Instead of restructuring the interpreter, the VM keeps a lightweight parallel stack: a <code>thread_local!</code> list of frames pushed and popped by an RAII guard — which covers every exit path, including error propagation — with the current line resolved from the line table as each instruction executes. Being thread-local, spawned <code>system.thread.Thread</code> instances get isolation for free.</p>
+  <p>The interpreter recurses natively (a Rust call per NL frame), so there is no walkable NL stack to inspect. Instead of restructuring the interpreter, the VM keeps a lightweight parallel stack: a <code>thread_local!</code> list of frames pushed and popped by an RAII guard — which covers every exit path, including error propagation — with the current line resolved from the line table as each instruction executes. Being thread-local, spawned <code class="stdlib">system.thread.Thread</code> instances get isolation for free.</p>
 
   <h2>3. Recursion limits, calibrated empirically</h2>
   <p>With a frame counter in place, a depth guard becomes trivial — the interesting part was choosing the limit. Measured by bisection on a worst-case recursive program: the native Rust stack crashes around 300–350 NL frames in debug builds, so <code>MAX_CALL_DEPTH = 150</code> keeps a ~2× margin. One surprise surfaced along the way: spawned threads got a ~2&nbsp;MiB stack by default versus 8&nbsp;MiB for the main thread, so a "safe" limit on the main thread would still have crashed natively inside a thread. Thread creation now requests an 8&nbsp;MiB stack, and a single limit is safe everywhere.</p>
