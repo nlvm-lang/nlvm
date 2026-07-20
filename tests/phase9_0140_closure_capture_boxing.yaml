@@ -1,0 +1,47 @@
+---
+title: "Closure variable capture and boxing — vm.md § Variable capture and boxing: a captured parameter, a variable declared without an initializer, and two closures sharing the same box"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "12 6 3"
+---
+
+#NLFILE phase9/closure_capture_boxing/Main.nl
+namespace phase9.closure_capture_boxing;
+class Main {
+	// A plain (non-`ref`) parameter mutated by a closure it's captured
+	// into needs the same box as a local — the mutation must be visible
+	// after the closure returns.
+	public static int bump(int start) {
+		auto inc = () => { start++; };
+		inc();
+		inc();
+		return start;
+	}
+
+	public static int main(string[] args) {
+		int r = bump(10);
+
+		// Declared without an initializer, then assigned before any
+		// closure captures it — still needs a box (the closure mutates
+		// it after that point).
+		int shared;
+		shared = 5;
+		auto addOne = () => { shared++; };
+		addOne();
+
+		// Two different closures capturing and mutating the same
+		// variable must share one box, not two independent copies.
+		int both = 0;
+		auto incByOne = () => { both++; };
+		auto incByTwo = () => { both = both + 2; };
+		incByOne();
+		incByTwo();
+
+		system.Out.print(system.Int.toString(r));
+		system.Out.print(" ");
+		system.Out.print(system.Int.toString(shared));
+		system.Out.print(" ");
+		system.Out.print(system.Int.toString(both));
+		return 0;
+	}
+}

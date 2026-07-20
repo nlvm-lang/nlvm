@@ -37,14 +37,30 @@ impl<'a> Emitter<'a> {
                 init: Some(init),
                 is_const: _,
             } => {
-                let init_ty = self.compile_expr(init)?;
-                let declared_ty = match ty {
-                    Some(t) => expr_ty_of(&resolve_type(t, self.imports)),
-                    None => init_ty.clone(),
-                };
-                self.coerce_value(&init_ty, &declared_ty, name)?;
-                let index = self.declare_local(name.clone(), declared_ty);
-                self.emit_store(index);
+                // vm.md § Variable capture and boxing — a variable that some
+                // closure captures-and-mutates needs a shared `Box<T>`
+                // rather than a plain slot (`Emitter::boxed_captures`,
+                // computed once per method/closure body). Only ever true
+                // for an explicitly-typed declaration (see
+                // `compile_boxed_var_decl`'s doc comment), so the `auto`
+                // path below is unaffected.
+                if self.boxed_captures.contains(name) {
+                    let declared_ty = expr_ty_of(&resolve_type(
+                        ty.as_ref()
+                            .expect("boxed captures are always explicitly typed — see nl_syntax::monomorphize::collect_closure_box_requests"),
+                        self.imports,
+                    ));
+                    self.compile_boxed_var_decl(declared_ty, name, init)?;
+                } else {
+                    let init_ty = self.compile_expr(init)?;
+                    let declared_ty = match ty {
+                        Some(t) => expr_ty_of(&resolve_type(t, self.imports)),
+                        None => init_ty.clone(),
+                    };
+                    self.coerce_value(&init_ty, &declared_ty, name)?;
+                    let index = self.declare_local(name.clone(), declared_ty);
+                    self.emit_store(index);
+                }
             }
             StmtKind::VarDecl {
                 ty,
@@ -61,7 +77,11 @@ impl<'a> Emitter<'a> {
                     ty.as_ref().expect("nl-sema guarantees a type here"),
                     self.imports,
                 ));
-                self.declare_local(name.clone(), declared_ty);
+                if self.boxed_captures.contains(name) {
+                    self.declare_boxed_var_uninit(declared_ty, name);
+                } else {
+                    self.declare_local(name.clone(), declared_ty);
+                }
             }
             StmtKind::ThisCall(args) => {
                 self.compile_this_call(args)?;

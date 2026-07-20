@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use nl_bytecode::{ConstantPool, Opcode};
 use nl_syntax::ast::{Arg, BinOp, Expr, LValue, Type, UnOp};
@@ -154,7 +154,20 @@ fn require_positional_args(args: &[Arg]) -> Result<Vec<Expr>, CodegenError> {
 
 pub(crate) enum IdentRef {
     Local(LocalSlot),
-    CapturedField(ExprTy),
+    CapturedField(CapturedField),
+}
+
+/// A closure-captured variable's field on `this` — vm.md § Closures and
+/// anonymous functions / § Variable capture and boxing. `ty` is the
+/// logical/declared type as source code sees it; `boxed` mirrors
+/// `LocalSlot::boxed`'s meaning one layer down: when `true`, the physical
+/// field holds a `Box<ty>` shared with the enclosing scope (mutations in
+/// either direction are visible to the other), and every read/write must go
+/// through `Box<ty>.value` instead of the field directly.
+#[derive(Debug, Clone)]
+pub(crate) struct CapturedField {
+    pub ty: ExprTy,
+    pub boxed: bool,
 }
 
 pub fn expr_ty_of(ty: &Type) -> ExprTy {
@@ -275,11 +288,18 @@ pub struct Emitter<'a> {
     /// only. See `Stmt::Return`/`Break`/`Continue` in `stmt.rs`.
     pub(crate) finally_stack: Vec<nl_syntax::ast::Block>,
     /// Non-empty only inside a closure's synthesized `invoke` method — name
-    /// -> type of each captured variable, backed by a field of the same
-    /// name on `this`. Consulted as a fallback *after* `self.scopes` (so an
-    /// inner declaration that shadows a capture's name still wins — see
-    /// `resolve_ident`). See `crate::closure`.
-    pub(crate) captured_fields: HashMap<String, ExprTy>,
+    /// -> type/boxed-ness of each captured variable, backed by a field of
+    /// the same name on `this`. Consulted as a fallback *after*
+    /// `self.scopes` (so an inner declaration that shadows a capture's name
+    /// still wins — see `resolve_ident`). See `crate::closure`.
+    pub(crate) captured_fields: HashMap<String, CapturedField>,
+    /// Names in the method/closure body currently being compiled that need
+    /// a `Box<T>` slot (vm.md § Variable capture and boxing) — computed once
+    /// up front by `crate::closure::boxed_captures_in_block`/
+    /// `boxed_captures` and consulted by `stmt::compile_stmt`'s `VarDecl`
+    /// arms and `compile_method`'s parameter loop to decide, at each
+    /// declaration, whether to box it.
+    pub(crate) boxed_captures: HashSet<String>,
     /// Synthetic closure classes generated while compiling this method,
     /// collected here and threaded back up to `compile_program` so they're
     /// included in the linked program's module set (vm.md § Closures: "The
@@ -330,6 +350,7 @@ impl<'a> Emitter<'a> {
             last_line: 0,
             finally_stack: Vec::new(),
             captured_fields: HashMap::new(),
+            boxed_captures: HashSet::new(),
             closures: Vec::new(),
             closure_counter: 0,
             inferred_return_ty: None,
@@ -566,6 +587,73 @@ impl<'a> Emitter<'a> {
         index
     }
 
+    /// Re-declares an already-declared parameter as boxed — vm.md § Variable
+    /// capture and boxing, applied to a parameter that some closure
+    /// captures-and-mutates (see `compile_boxed_var_decl`/
+    /// `declare_boxed_var_uninit` for the analogous `T name = init;` case).
+    /// Must run *after* every parameter has claimed its ordinary positional
+    /// slot — boxing here, not inside the declaration loop itself, keeps
+    /// every parameter's slot index matching the method descriptor's
+    /// calling convention, which reserves exactly one slot per parameter
+    /// regardless of what this method does with it afterwards. Allocates a
+    /// fresh slot for the box and re-points `name` at it (`declare_ref_param`
+    /// inserting the same key again simply overwrites the scope's previous
+    /// entry) — the original raw slot is left in place but never read again.
+    pub(crate) fn rebox_local(&mut self, name: &str, ty: ExprTy) {
+        let raw = self
+            .lookup_local(name)
+            .expect("rebox_local is only ever called right after declaring this local/param");
+        let box_fqcn = crate::class_table::box_fqcn(&expr_ty_to_type(&ty));
+        let class_index = self.cp.add_class(&box_fqcn);
+        self.op_u16(Opcode::New, class_index, 1);
+        self.op(Opcode::Dup, 1);
+        self.op_u16(Opcode::Load, raw.index, 1);
+        let field_ref = self.box_value_field_ref(&ty);
+        self.op_u16(Opcode::SetField, field_ref, -2);
+        let boxed_index = self.declare_ref_param(name.to_string(), ty);
+        self.emit_store(boxed_index);
+    }
+
+    /// `T name = init;` for a local that some closure captures-and-mutates
+    /// (vm.md § Variable capture and boxing) — same physical shape as a
+    /// `ref` parameter (`LocalSlot::boxed`), except the box is allocated
+    /// here at declaration instead of by a caller. `declared_ty` must come
+    /// from an explicit type annotation: `nl_syntax::monomorphize`'s
+    /// box-request collection can't syntactically infer a type for `auto`,
+    /// so `stmt::compile_stmt` never calls this for an `auto` declaration
+    /// (see `Emitter::boxed_captures`'s doc comment).
+    pub(crate) fn compile_boxed_var_decl(
+        &mut self,
+        declared_ty: ExprTy,
+        name: &str,
+        init: &Expr,
+    ) -> Result<(), CodegenError> {
+        let box_fqcn = crate::class_table::box_fqcn(&expr_ty_to_type(&declared_ty));
+        let class_index = self.cp.add_class(&box_fqcn);
+        self.op_u16(Opcode::New, class_index, 1);
+        self.op(Opcode::Dup, 1);
+        let init_ty = self.compile_expr(init)?;
+        self.coerce_value(&init_ty, &declared_ty, name)?;
+        let field_ref = self.box_value_field_ref(&declared_ty);
+        self.op_u16(Opcode::SetField, field_ref, -2);
+        let index = self.declare_ref_param(name.to_string(), declared_ty);
+        self.emit_store(index);
+        Ok(())
+    }
+
+    /// `T name;` (no initializer) for a boxed capture — see
+    /// `compile_boxed_var_decl`. `NEW` zero-initializes the box's `value`
+    /// field like any other object field (vm.md § Object layout); nl-sema's
+    /// definite-assignment check (E001) guarantees a real write reaches it
+    /// before any read, so this placeholder is never observed.
+    pub(crate) fn declare_boxed_var_uninit(&mut self, declared_ty: ExprTy, name: &str) {
+        let box_fqcn = crate::class_table::box_fqcn(&expr_ty_to_type(&declared_ty));
+        let class_index = self.cp.add_class(&box_fqcn);
+        self.op_u16(Opcode::New, class_index, 1);
+        let index = self.declare_ref_param(name.to_string(), declared_ty);
+        self.emit_store(index);
+    }
+
     /// A compiler-internal scratch local (name can never collide with a
     /// user identifier — `$` doesn't lex as an identifier character) used to
     /// hold an intermediate value while emitting field/array-element
@@ -596,26 +684,46 @@ impl<'a> Emitter<'a> {
         if let Ok(slot) = self.lookup_local(name) {
             return Ok(IdentRef::Local(slot));
         }
-        if let Some(ty) = self.captured_fields.get(name) {
-            return Ok(IdentRef::CapturedField(ty.clone()));
+        if let Some(field) = self.captured_fields.get(name) {
+            return Ok(IdentRef::CapturedField(field.clone()));
         }
         Err(CodegenError::Unsupported(format!(
             "undefined variable '{name}'"
         )))
     }
 
-    /// Emits `this.name` (`GET_FIELD` off local 0) for a captured variable
-    /// — the closure's synthetic class always has a field of the same name
-    /// as the capture (see `crate::closure`).
-    fn emit_get_captured_field(&mut self, name: &str, ty: &ExprTy) {
-        self.op_u16(Opcode::Load, 0, 1);
+    /// The constant-pool field-ref for `this.name` — the closure's
+    /// synthetic class always has a field of the same name as the capture
+    /// (see `crate::closure`). When `boxed`, the field's *physical* type is
+    /// `Box<ty>`, not `ty` (vm.md § Variable capture and boxing), matching
+    /// what `compile_closure` actually declares/populates for a boxed
+    /// capture.
+    fn captured_field_ref(&mut self, name: &str, ty: &ExprTy, boxed: bool) -> u16 {
+        let physical_ty = if boxed {
+            ExprTy::Object(crate::class_table::box_fqcn(&expr_ty_to_type(ty)))
+        } else {
+            ty.clone()
+        };
         let class_index = self.cp.add_class(&self.this_fqcn.clone());
         let name_index = self.cp.add_utf8(name.to_string());
         let type_index = self
             .cp
-            .add_type_desc(&type_descriptor(&expr_ty_to_type(ty)));
-        let field_ref = self.cp.add_field_ref(class_index, name_index, type_index);
+            .add_type_desc(&type_descriptor(&expr_ty_to_type(&physical_ty)));
+        self.cp.add_field_ref(class_index, name_index, type_index)
+    }
+
+    /// Emits `this.name` (`GET_FIELD` off local 0) for a captured variable,
+    /// unwrapping through `Box<ty>.value` when `boxed` (vm.md § Variable
+    /// capture and boxing) — same shape as a boxed local's read (see the
+    /// `Expr::Ident` arm of `compile_expr`).
+    fn emit_get_captured_field(&mut self, name: &str, ty: &ExprTy, boxed: bool) {
+        self.op_u16(Opcode::Load, 0, 1);
+        let field_ref = self.captured_field_ref(name, ty, boxed);
         self.op_u16(Opcode::GetField, field_ref, 0);
+        if boxed {
+            let value_field_ref = self.box_value_field_ref(ty);
+            self.op_u16(Opcode::GetField, value_field_ref, 0);
+        }
     }
 
     /// `Box<T>.value`'s field-ref constant-pool index, for the box wrapping
@@ -714,9 +822,9 @@ impl<'a> Emitter<'a> {
                     }
                     Ok(slot.ty)
                 }
-                IdentRef::CapturedField(ty) => {
-                    self.emit_get_captured_field(name, &ty);
-                    Ok(ty)
+                IdentRef::CapturedField(field) => {
+                    self.emit_get_captured_field(name, &field.ty, field.boxed);
+                    Ok(field.ty)
                 }
             },
             Expr::Assign(target, value) => self.compile_assign(target, value),
@@ -771,13 +879,19 @@ impl<'a> Emitter<'a> {
         // Only names that actually resolve as a local in *this* (enclosing)
         // scope are real captures; anything else (a class reference, or a
         // name declared inside the closure body itself) is left for the
-        // inner emitter to resolve normally.
-        let captures: Vec<(String, ExprTy, u16)> = candidates
+        // inner emitter to resolve normally. `slot.boxed` (already decided
+        // at this local's declaration, by `stmt::compile_stmt`'s `VarDecl`
+        // arms/`compile_method`'s parameter loop consulting
+        // `Emitter::boxed_captures`) carries over unchanged: a boxed local's
+        // slot already physically holds the shared `Box<T>` reference, so
+        // simply loading it below (the creation-site copy loop) already
+        // copies the box, not a snapshot of its contents.
+        let captures: Vec<(String, ExprTy, u16, bool)> = candidates
             .into_iter()
             .filter_map(|name| {
                 self.lookup_local(&name)
                     .ok()
-                    .map(|slot| (name, slot.ty, slot.index))
+                    .map(|slot| (name, slot.ty, slot.index, slot.boxed.is_some()))
             })
             .collect();
 
@@ -795,9 +909,17 @@ impl<'a> Emitter<'a> {
 
         let mut synth_cp = ConstantPool::new();
         let synth_this_class = synth_cp.add_class(&synth_fqcn);
-        let captured_fields: HashMap<String, ExprTy> = captures
+        let captured_fields: HashMap<String, CapturedField> = captures
             .iter()
-            .map(|(n, ty, _)| (n.clone(), ty.clone()))
+            .map(|(n, ty, _, boxed)| {
+                (
+                    n.clone(),
+                    CapturedField {
+                        ty: ty.clone(),
+                        boxed: *boxed,
+                    },
+                )
+            })
             .collect();
 
         let deduced_return_ty;
@@ -813,10 +935,22 @@ impl<'a> Emitter<'a> {
                 synth_fqcn.clone(),
             );
             inner.captured_fields = captured_fields;
+            // A closure nested inside this one may itself capture-and-mutate
+            // one of *this* closure's own locals/params — same analysis as
+            // `compile_method`'s, scoped to this closure's own body.
+            inner.boxed_captures = crate::closure::boxed_captures(body);
             inner.push_scope();
             inner.declare_local("this".to_string(), ExprTy::Object(synth_fqcn.clone()));
             for (param, resolved_ty) in params.iter().zip(&resolved_params) {
                 inner.declare_local(param.name.clone(), expr_ty_of(resolved_ty));
+            }
+            // Box this closure's own parameters that a *nested* closure
+            // captures-and-mutates — must run after every parameter has
+            // claimed its ordinary positional slot (see `rebox_local`).
+            for (param, resolved_ty) in params.iter().zip(&resolved_params) {
+                if inner.boxed_captures.contains(&param.name) {
+                    inner.rebox_local(&param.name, expr_ty_of(resolved_ty));
+                }
             }
             deduced_return_ty = match body {
                 nl_syntax::ast::ClosureBody::Block(block) => {
@@ -876,11 +1010,22 @@ impl<'a> Emitter<'a> {
             nested_closures = inner.closures;
         }
 
+        // A boxed capture's field physically holds `Box<ty>`, not `ty` (vm.md
+        // § Variable capture and boxing) — must match what the creation-site
+        // copy loop below and every in-body read/write
+        // (`emit_get_captured_field`/`compile_assign`/`compile_incr`)
+        // already assume.
         let fields: Vec<nl_bytecode::FieldDescriptor> = captures
             .iter()
-            .map(|(name, ty, _)| {
+            .map(|(name, ty, _, boxed)| {
+                let physical_ty = if *boxed {
+                    ExprTy::Object(crate::class_table::box_fqcn(&expr_ty_to_type(ty)))
+                } else {
+                    ty.clone()
+                };
                 let name_index = synth_cp.add_utf8(name.clone());
-                let type_index = synth_cp.add_type_desc(&type_descriptor(&expr_ty_to_type(ty)));
+                let type_index =
+                    synth_cp.add_type_desc(&type_descriptor(&expr_ty_to_type(&physical_ty)));
                 nl_bytecode::FieldDescriptor {
                     flags: nl_bytecode::field_flags::PUBLIC,
                     name_index,
@@ -903,20 +1048,18 @@ impl<'a> Emitter<'a> {
         self.closures.append(&mut nested_closures);
 
         // Creation site: allocate, then copy each capture's current value
-        // into the new object's field of the same name.
+        // into the new object's field of the same name. For a boxed capture
+        // (vm.md § Variable capture and boxing), `outer_index`'s slot
+        // already physically holds the shared `Box<ty>` reference (see
+        // `LocalSlot::boxed`), so this `Load` copies the box itself, not a
+        // snapshot of its contents — the closure and the enclosing scope end
+        // up referencing the exact same box.
         let class_index = self.cp.add_class(&synth_fqcn);
         self.op_u16(Opcode::New, class_index, 1);
-        for (name, ty, outer_index) in &captures {
+        for (name, ty, outer_index, boxed) in &captures {
             self.op(Opcode::Dup, 1);
             self.op_u16(Opcode::Load, *outer_index, 1);
-            let field_class_index = self.cp.add_class(&synth_fqcn);
-            let name_index = self.cp.add_utf8(name.clone());
-            let type_index = self
-                .cp
-                .add_type_desc(&type_descriptor(&expr_ty_to_type(ty)));
-            let field_ref = self
-                .cp
-                .add_field_ref(field_class_index, name_index, type_index);
+            let field_ref = self.captured_field_ref(name, ty, *boxed);
             self.op_u16(Opcode::SetField, field_ref, -2);
         }
 
@@ -1124,21 +1267,29 @@ impl<'a> Emitter<'a> {
                     self.op_u16(Opcode::Store, slot.index, -1);
                     Ok(slot.ty)
                 }
-                IdentRef::CapturedField(field_ty) => {
+                IdentRef::CapturedField(field) => {
+                    let field_ty = field.ty;
                     let value_ty = self.compile_expr(value)?;
                     self.coerce_value(&value_ty, &field_ty, name)?;
                     self.op(Opcode::Dup, 1);
                     let tmp = self.declare_scratch_local(field_ty.clone());
                     self.emit_store(tmp);
                     self.op_u16(Opcode::Load, 0, 1);
-                    self.op(Opcode::Swap, 0);
-                    let class_index = self.cp.add_class(&self.this_fqcn.clone());
-                    let name_index = self.cp.add_utf8(name.clone());
-                    let type_index = self
-                        .cp
-                        .add_type_desc(&type_descriptor(&expr_ty_to_type(&field_ty)));
-                    let field_ref = self.cp.add_field_ref(class_index, name_index, type_index);
-                    self.op_u16(Opcode::SetField, field_ref, -2);
+                    if field.boxed {
+                        // vm.md § Variable capture and boxing — `this.name`
+                        // is a `Box<field_ty>` shared with the enclosing
+                        // scope; write through `.value`, not the field
+                        // itself (mirrors the boxed-local case above).
+                        let box_field_ref = self.captured_field_ref(name, &field_ty, true);
+                        self.op_u16(Opcode::GetField, box_field_ref, 0);
+                        self.op(Opcode::Swap, 0);
+                        let value_field_ref = self.box_value_field_ref(&field_ty);
+                        self.op_u16(Opcode::SetField, value_field_ref, -2);
+                    } else {
+                        self.op(Opcode::Swap, 0);
+                        let field_ref = self.captured_field_ref(name, &field_ty, false);
+                        self.op_u16(Opcode::SetField, field_ref, -2);
+                    }
                     self.op_u16(Opcode::Load, tmp, 1);
                     Ok(field_ty)
                 }
@@ -1216,14 +1367,36 @@ impl<'a> Emitter<'a> {
         let slot = match self.resolve_ident(name)? {
             IdentRef::Local(slot) => slot,
             // `IINC` operates on a local-variable slot by index; a captured
-            // variable is a field on `this` instead, which would need a
-            // separate load/add/store sequence — not implemented (rare
-            // enough in practice, and by-value capture already means the
-            // mutation wouldn't be observable outside the closure anyway;
-            // see `ExprTy::Closure`'s doc comment).
+            // variable is a field on `this` instead. Only reachable here
+            // when it's boxed: `nl_codegen::closure::boxed_captures` always
+            // classifies a `++`/`--` target inside a closure as a mutation,
+            // so `stmt::compile_stmt`'s `VarDecl` arms/`compile_method`'s
+            // parameter loop will already have boxed the enclosing
+            // declaration by the time this closure was compiled — an
+            // unboxed captured field reaching this point would mean that
+            // analysis missed something, so this fails loudly rather than
+            // silently mutating a copy nobody else observes.
+            IdentRef::CapturedField(field) if field.boxed => {
+                if field.ty != ExprTy::Int {
+                    return Err(CodegenError::Unsupported(format!(
+                        "'++'/'--' only supported on int, found {:?}",
+                        field.ty
+                    )));
+                }
+                self.op_u16(Opcode::Load, 0, 1);
+                let box_field_ref = self.captured_field_ref(name, &field.ty, true);
+                self.op_u16(Opcode::GetField, box_field_ref, 0);
+                self.op(Opcode::Dup, 1);
+                let value_field_ref = self.box_value_field_ref(&field.ty);
+                self.op_u16(Opcode::GetField, value_field_ref, 0);
+                self.emit_int_const(delta as i64);
+                self.op(Opcode::IAdd, -1);
+                self.op_u16(Opcode::SetField, value_field_ref, -2);
+                return Ok(ExprTy::Void);
+            }
             IdentRef::CapturedField(_) => {
                 return Err(CodegenError::Unsupported(format!(
-                    "'++'/'--' on captured closure variable '{name}' is not supported"
+                    "'++'/'--' on captured closure variable '{name}' is not supported (not boxed)"
                 )))
             }
         };
@@ -1268,14 +1441,14 @@ impl<'a> Emitter<'a> {
                     return self.compile_closure_invoke(&params, &return_ty, &fqcn, &positional);
                 }
             }
-            Ok(IdentRef::CapturedField(ty)) => {
+            Ok(IdentRef::CapturedField(field)) => {
                 if let ExprTy::Closure {
                     params,
                     return_ty,
                     fqcn,
-                } = ty.clone()
+                } = field.ty.clone()
                 {
-                    self.emit_get_captured_field(name, &ty);
+                    self.emit_get_captured_field(name, &field.ty, field.boxed);
                     let positional = require_positional_args(args)?;
                     return self.compile_closure_invoke(&params, &return_ty, &fqcn, &positional);
                 }
@@ -2546,7 +2719,7 @@ impl<'a> Emitter<'a> {
             Expr::NullLit => Some(ExprTy::Null),
             Expr::Ident(name) => match self.resolve_ident(name).ok()? {
                 IdentRef::Local(slot) => Some(slot.ty),
-                IdentRef::CapturedField(ty) => Some(ty),
+                IdentRef::CapturedField(field) => Some(field.ty),
             },
             Expr::Binary(BinOp::Add, l, r) => match (self.peek_type(l), self.peek_type(r)) {
                 (Some(ExprTy::StringT), _) | (_, Some(ExprTy::StringT)) => Some(ExprTy::StringT),

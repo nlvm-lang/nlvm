@@ -249,6 +249,7 @@ fn compile_method(
         this_fqcn.to_string(),
     );
     emitter.closure_name_prefix = format!("{this_fqcn}$m{method_index}");
+    emitter.boxed_captures = closure::boxed_captures_in_block(&method.body);
     emitter.push_scope();
     if !method.is_static {
         emitter.declare_local(
@@ -261,6 +262,15 @@ fn compile_method(
             emitter.declare_ref_param(param.name.clone(), expr_ty_of(resolved_ty));
         } else {
             emitter.declare_local(param.name.clone(), expr_ty_of(resolved_ty));
+        }
+    }
+    // Box a non-`ref` parameter that some closure captures-and-mutates
+    // (vm.md § Variable capture and boxing) — must run after every
+    // parameter has claimed its ordinary positional slot above (see
+    // `Emitter::rebox_local`).
+    for ((param, resolved_ty), r) in method.params.iter().zip(&resolved_params).zip(&is_ref) {
+        if !*r && emitter.boxed_captures.contains(&param.name) {
+            emitter.rebox_local(&param.name, expr_ty_of(resolved_ty));
         }
     }
     for stmt in &method.body {

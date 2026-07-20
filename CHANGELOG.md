@@ -5,6 +5,13 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.7]
+
+Closures now capture variables by reference, matching specs.md § Variable capture.
+
+### Fixed
+- Anonymous functions capturing a variable that's mutated after capture — either by the enclosing scope or by the closure itself (`counter++` inside the closure body) — now see/produce the same shared value instead of a stale snapshot taken at closure-creation time.
+
 ## [0.5.6]
 
 Website & branding: logo assets. No toolchain changes.

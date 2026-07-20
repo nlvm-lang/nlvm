@@ -37,7 +37,7 @@
 //! user template's type argument (e.g. `system.List<system.List<int>>`) are
 //! not exercised/tested.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
     Arg, Block, ClassDecl, ClosureBody, Expr, FieldDecl, LValue, MethodDecl, SourceFile,
@@ -138,6 +138,7 @@ pub fn expand(files: Vec<SourceFile>) -> Vec<SourceFile> {
     for file in out.iter().chain(generated.iter()) {
         if let SourceItem::Class(class) = &file.item {
             collect_ref_box_requests(class, &mut box_instantiations);
+            collect_closure_box_requests(class, &mut box_instantiations);
         }
     }
     for (mangled_fqcn, (template_fqcn, args)) in &box_instantiations {
@@ -199,6 +200,636 @@ fn collect_ref_box_requests(class: &ClassDecl, out: &mut HashMap<String, (String
                 let mangled = format!("Box<{}>", mangle_type(&p.ty));
                 out.insert(mangled, ("Box".to_string(), vec![p.ty.clone()]));
             }
+        }
+    }
+}
+
+/// vm.md § Variable capture and boxing — a closure that mutates a variable
+/// it captured needs a `Box<T>` shared between the closure and its
+/// enclosing scope, exactly like a `ref` parameter's box between callee and
+/// caller (`collect_ref_box_requests`, right above). AST-only and
+/// best-effort like the rest of this module: only variables with an
+/// *explicit* declared type are ever registered here — a captured `auto`
+/// local's type can't be recovered without a real type checker at this
+/// stage. `nl_codegen::closure`'s boxing decision is symmetric with this
+/// limitation: it only ever boxes an explicitly-typed declaration, so an
+/// `auto`-declared capture simply keeps today's by-value snapshot behavior
+/// rather than referencing a `Box<T>` that was never instantiated here.
+fn collect_closure_box_requests(class: &ClassDecl, out: &mut HashMap<String, (String, Vec<Type>)>) {
+    for m in &class.methods {
+        // Whole-method, not just "mutated inside the closure that captured
+        // it": vm.md's rule is "mutated after capture *by the enclosing
+        // scope or by the closure itself*" (`n = 99;` right after `auto
+        // readN = () => n;` is exactly the by-the-enclosing-scope case, and
+        // is the one this collector missed before — `collect_mutated_in_*`
+        // already recurses into closure bodies too, so this one set covers
+        // both directions).
+        let mut mutated_in_method = HashSet::new();
+        collect_mutated_in_block(&m.body, &mut mutated_in_method);
+
+        let mut scope: HashMap<String, Type> = HashMap::new();
+        for p in &m.params {
+            scope.insert(p.name.clone(), p.ty.clone());
+        }
+        let mut scopes = vec![scope];
+        scan_block_for_box_requests(&m.body, &mut scopes, &mutated_in_method, out);
+    }
+}
+
+fn scan_block_for_box_requests(
+    block: &Block,
+    scopes: &mut Vec<HashMap<String, Type>>,
+    mutated_in_method: &HashSet<String>,
+    out: &mut HashMap<String, (String, Vec<Type>)>,
+) {
+    scopes.push(HashMap::new());
+    for stmt in block {
+        scan_stmt_for_box_requests(stmt, scopes, mutated_in_method, out);
+    }
+    scopes.pop();
+}
+
+fn scan_stmt_for_box_requests(
+    stmt: &Stmt,
+    scopes: &mut Vec<HashMap<String, Type>>,
+    mutated_in_method: &HashSet<String>,
+    out: &mut HashMap<String, (String, Vec<Type>)>,
+) {
+    match &stmt.kind {
+        StmtKind::Return(Some(e)) | StmtKind::Throw(e) => {
+            scan_expr_for_box_requests(e, scopes, mutated_in_method, out)
+        }
+        StmtKind::Return(None) | StmtKind::Break | StmtKind::Continue => {}
+        StmtKind::Expr(e) => scan_expr_for_box_requests(e, scopes, mutated_in_method, out),
+        StmtKind::VarDecl {
+            ty, name, init, ..
+        } => {
+            if let Some(e) = init {
+                scan_expr_for_box_requests(e, scopes, mutated_in_method, out);
+            }
+            if let Some(t) = ty {
+                scopes
+                    .last_mut()
+                    .expect("scope pushed by caller")
+                    .insert(name.clone(), t.clone());
+            }
+        }
+        StmtKind::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            scan_expr_for_box_requests(cond, scopes, mutated_in_method, out);
+            scan_block_for_box_requests(then_branch, scopes, mutated_in_method, out);
+            if let Some(b) = else_branch {
+                scan_block_for_box_requests(b, scopes, mutated_in_method, out);
+            }
+        }
+        StmtKind::While { cond, body } => {
+            scan_expr_for_box_requests(cond, scopes, mutated_in_method, out);
+            scan_block_for_box_requests(body, scopes, mutated_in_method, out);
+        }
+        StmtKind::ForEach {
+            ty,
+            var,
+            iterable,
+            body,
+        } => {
+            scan_expr_for_box_requests(iterable, scopes, mutated_in_method, out);
+            scopes.push(HashMap::new());
+            if let Some(t) = ty {
+                scopes.last_mut().unwrap().insert(var.clone(), t.clone());
+            }
+            for s in body {
+                scan_stmt_for_box_requests(s, scopes, mutated_in_method, out);
+            }
+            scopes.pop();
+        }
+        StmtKind::For {
+            init,
+            cond,
+            step,
+            body,
+        } => {
+            scopes.push(HashMap::new());
+            for s in init {
+                scan_stmt_for_box_requests(s, scopes, mutated_in_method, out);
+            }
+            if let Some(c) = cond {
+                scan_expr_for_box_requests(c, scopes, mutated_in_method, out);
+            }
+            for e in step {
+                scan_expr_for_box_requests(e, scopes, mutated_in_method, out);
+            }
+            for s in body {
+                scan_stmt_for_box_requests(s, scopes, mutated_in_method, out);
+            }
+            scopes.pop();
+        }
+        StmtKind::Block(b) => scan_block_for_box_requests(b, scopes, mutated_in_method, out),
+        StmtKind::ThisCall(args) | StmtKind::SuperCall(args) => {
+            for a in args {
+                scan_expr_for_box_requests(&a.value, scopes, mutated_in_method, out);
+            }
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            finally,
+        } => {
+            scan_block_for_box_requests(body, scopes, mutated_in_method, out);
+            for c in catches {
+                scopes.push(HashMap::new());
+                scopes
+                    .last_mut()
+                    .unwrap()
+                    .insert(c.var.clone(), Type::Named(c.ty.clone()));
+                for s in &c.body {
+                    scan_stmt_for_box_requests(s, scopes, mutated_in_method, out);
+                }
+                scopes.pop();
+            }
+            if let Some(f) = finally {
+                scan_block_for_box_requests(f, scopes, mutated_in_method, out);
+            }
+        }
+    }
+}
+
+fn scan_expr_for_box_requests(
+    expr: &Expr,
+    scopes: &mut Vec<HashMap<String, Type>>,
+    mutated_in_method: &HashSet<String>,
+    out: &mut HashMap<String, (String, Vec<Type>)>,
+) {
+    match expr {
+        Expr::Closure { params, body, .. } => {
+            // Every name this closure references (not just the ones it
+            // mutates itself — vm.md's boxing rule fires just as much when
+            // the *enclosing* scope is the one doing the mutating, e.g.
+            // `auto readN = () => n; n = 99;`) that's also mutated
+            // *somewhere* in the whole method (`mutated_in_method`, computed
+            // once up front) needs a box.
+            let mut referenced = HashSet::new();
+            match body {
+                ClosureBody::Block(b) => collect_referenced_in_block(b, &mut referenced),
+                ClosureBody::Expr(e) => collect_referenced_in_expr(e, &mut referenced),
+            }
+            let param_names: HashSet<&str> = params.iter().map(|p| p.name.as_str()).collect();
+            for name in &referenced {
+                if param_names.contains(name.as_str()) || !mutated_in_method.contains(name) {
+                    continue;
+                }
+                if let Some(ty) = lookup_box_scope(scopes, name) {
+                    let mangled = format!("Box<{}>", mangle_type(ty));
+                    out.insert(mangled, ("Box".to_string(), vec![ty.clone()]));
+                }
+            }
+            // Recurse into the closure's own body too — a doubly-nested
+            // closure may itself capture a variable from further out, and
+            // box requests are a flat/global set with no scoping subtlety
+            // to preserve (unlike `nl_codegen::closure`'s per-name boxing
+            // decision), so reusing the same `scopes` stack (already
+            // holding every name visible from here) is enough.
+            scopes.push(params.iter().map(|p| (p.name.clone(), p.ty.clone())).collect());
+            match body {
+                ClosureBody::Block(b) => scan_block_for_box_requests(b, scopes, mutated_in_method, out),
+                ClosureBody::Expr(e) => scan_expr_for_box_requests(e, scopes, mutated_in_method, out),
+            }
+            scopes.pop();
+        }
+        Expr::IntLit(_)
+        | Expr::FloatLit(_)
+        | Expr::BoolLit(_)
+        | Expr::StringLit(_)
+        | Expr::NullLit
+        | Expr::This
+        | Expr::Super
+        | Expr::Ident(_)
+        | Expr::PostIncr(_)
+        | Expr::PostDecr(_) => {}
+        Expr::Assign(target, value) => {
+            scan_lvalue_for_box_requests(target, scopes, mutated_in_method, out);
+            scan_expr_for_box_requests(value, scopes, mutated_in_method, out);
+        }
+        Expr::Call(_, args) | Expr::New(_, _, args) => {
+            for a in args {
+                scan_expr_for_box_requests(&a.value, scopes, mutated_in_method, out);
+            }
+        }
+        Expr::NewArray(_, dims) => {
+            for size in dims.iter().flatten() {
+                scan_expr_for_box_requests(size, scopes, mutated_in_method, out);
+            }
+        }
+        Expr::NewArrayInit(_, elements) => {
+            for e in elements {
+                scan_expr_for_box_requests(e, scopes, mutated_in_method, out);
+            }
+        }
+        Expr::FieldAccess(target, _) | Expr::InstanceOf(target, _) => {
+            scan_expr_for_box_requests(target, scopes, mutated_in_method, out)
+        }
+        Expr::Cast(_, inner) => scan_expr_for_box_requests(inner, scopes, mutated_in_method, out),
+        Expr::MethodCall(target, _, args) => {
+            scan_expr_for_box_requests(target, scopes, mutated_in_method, out);
+            for a in args {
+                scan_expr_for_box_requests(&a.value, scopes, mutated_in_method, out);
+            }
+        }
+        Expr::Index(target, index) => {
+            scan_expr_for_box_requests(target, scopes, mutated_in_method, out);
+            scan_expr_for_box_requests(index, scopes, mutated_in_method, out);
+        }
+        Expr::Unary(_, inner) => scan_expr_for_box_requests(inner, scopes, mutated_in_method, out),
+        Expr::Binary(_, lhs, rhs) => {
+            scan_expr_for_box_requests(lhs, scopes, mutated_in_method, out);
+            scan_expr_for_box_requests(rhs, scopes, mutated_in_method, out);
+        }
+        Expr::Match(subject, arms) => {
+            scan_expr_for_box_requests(subject, scopes, mutated_in_method, out);
+            for arm in arms {
+                if let Some(p) = &arm.pattern {
+                    scan_expr_for_box_requests(p, scopes, mutated_in_method, out);
+                }
+                scan_expr_for_box_requests(&arm.value, scopes, mutated_in_method, out);
+            }
+        }
+        Expr::Ternary(cond, then_e, else_e) => {
+            scan_expr_for_box_requests(cond, scopes, mutated_in_method, out);
+            scan_expr_for_box_requests(then_e, scopes, mutated_in_method, out);
+            scan_expr_for_box_requests(else_e, scopes, mutated_in_method, out);
+        }
+        Expr::Coalesce(lhs, rhs) | Expr::Elvis(lhs, rhs) => {
+            scan_expr_for_box_requests(lhs, scopes, mutated_in_method, out);
+            scan_expr_for_box_requests(rhs, scopes, mutated_in_method, out);
+        }
+    }
+}
+
+fn scan_lvalue_for_box_requests(
+    lvalue: &LValue,
+    scopes: &mut Vec<HashMap<String, Type>>,
+    mutated_in_method: &HashSet<String>,
+    out: &mut HashMap<String, (String, Vec<Type>)>,
+) {
+    match lvalue {
+        LValue::Local(_) => {}
+        LValue::Field(target, _) => scan_expr_for_box_requests(target, scopes, mutated_in_method, out),
+        LValue::Index(target, index) => {
+            scan_expr_for_box_requests(target, scopes, mutated_in_method, out);
+            scan_expr_for_box_requests(index, scopes, mutated_in_method, out);
+        }
+    }
+}
+
+/// Every bare name referenced in `block`/`expr` — `Expr::Ident`, an
+/// assignment target, `++`/`--` operands — mirroring
+/// `nl_codegen::closure::referenced_names` one layer down (AST-only, no
+/// `ExprTy`). A nested closure's own free names are bubbled up here too
+/// (minus its own parameters), same shadow handling as that function.
+fn collect_referenced_in_block(block: &Block, names: &mut HashSet<String>) {
+    for stmt in block {
+        collect_referenced_in_stmt(stmt, names);
+    }
+}
+
+fn collect_referenced_in_stmt(stmt: &Stmt, names: &mut HashSet<String>) {
+    match &stmt.kind {
+        StmtKind::Return(Some(e)) | StmtKind::Throw(e) => collect_referenced_in_expr(e, names),
+        StmtKind::Return(None) | StmtKind::Break | StmtKind::Continue => {}
+        StmtKind::Expr(e) => collect_referenced_in_expr(e, names),
+        StmtKind::VarDecl { init, .. } => {
+            if let Some(e) = init {
+                collect_referenced_in_expr(e, names);
+            }
+        }
+        StmtKind::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            collect_referenced_in_expr(cond, names);
+            collect_referenced_in_block(then_branch, names);
+            if let Some(b) = else_branch {
+                collect_referenced_in_block(b, names);
+            }
+        }
+        StmtKind::While { cond, body } => {
+            collect_referenced_in_expr(cond, names);
+            collect_referenced_in_block(body, names);
+        }
+        StmtKind::ForEach { iterable, body, .. } => {
+            collect_referenced_in_expr(iterable, names);
+            collect_referenced_in_block(body, names);
+        }
+        StmtKind::For {
+            init,
+            cond,
+            step,
+            body,
+        } => {
+            for s in init {
+                collect_referenced_in_stmt(s, names);
+            }
+            if let Some(c) = cond {
+                collect_referenced_in_expr(c, names);
+            }
+            for e in step {
+                collect_referenced_in_expr(e, names);
+            }
+            collect_referenced_in_block(body, names);
+        }
+        StmtKind::Block(b) => collect_referenced_in_block(b, names),
+        StmtKind::ThisCall(args) | StmtKind::SuperCall(args) => {
+            for a in args {
+                collect_referenced_in_expr(&a.value, names);
+            }
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            finally,
+        } => {
+            collect_referenced_in_block(body, names);
+            for c in catches {
+                collect_referenced_in_block(&c.body, names);
+            }
+            if let Some(f) = finally {
+                collect_referenced_in_block(f, names);
+            }
+        }
+    }
+}
+
+fn collect_referenced_in_expr(expr: &Expr, names: &mut HashSet<String>) {
+    match expr {
+        Expr::Ident(name) | Expr::PostIncr(name) | Expr::PostDecr(name) => {
+            names.insert(name.clone());
+        }
+        Expr::Assign(target, value) => {
+            collect_referenced_in_lvalue(target, names);
+            collect_referenced_in_expr(value, names);
+        }
+        Expr::Closure { params, body, .. } => {
+            let mut inner = HashSet::new();
+            match body {
+                ClosureBody::Block(b) => collect_referenced_in_block(b, &mut inner),
+                ClosureBody::Expr(e) => collect_referenced_in_expr(e, &mut inner),
+            }
+            let param_names: HashSet<&str> = params.iter().map(|p| p.name.as_str()).collect();
+            names.extend(inner.into_iter().filter(|n| !param_names.contains(n.as_str())));
+        }
+        Expr::IntLit(_)
+        | Expr::FloatLit(_)
+        | Expr::BoolLit(_)
+        | Expr::StringLit(_)
+        | Expr::NullLit
+        | Expr::This
+        | Expr::Super => {}
+        Expr::Call(_, args) | Expr::New(_, _, args) => {
+            for a in args {
+                collect_referenced_in_expr(&a.value, names);
+            }
+        }
+        Expr::NewArray(_, dims) => {
+            for size in dims.iter().flatten() {
+                collect_referenced_in_expr(size, names);
+            }
+        }
+        Expr::NewArrayInit(_, elements) => {
+            for e in elements {
+                collect_referenced_in_expr(e, names);
+            }
+        }
+        Expr::FieldAccess(target, _) | Expr::InstanceOf(target, _) => {
+            collect_referenced_in_expr(target, names)
+        }
+        Expr::Cast(_, inner) => collect_referenced_in_expr(inner, names),
+        Expr::MethodCall(target, _, args) => {
+            collect_referenced_in_expr(target, names);
+            for a in args {
+                collect_referenced_in_expr(&a.value, names);
+            }
+        }
+        Expr::Index(target, index) => {
+            collect_referenced_in_expr(target, names);
+            collect_referenced_in_expr(index, names);
+        }
+        Expr::Unary(_, inner) => collect_referenced_in_expr(inner, names),
+        Expr::Binary(_, lhs, rhs) => {
+            collect_referenced_in_expr(lhs, names);
+            collect_referenced_in_expr(rhs, names);
+        }
+        Expr::Match(subject, arms) => {
+            collect_referenced_in_expr(subject, names);
+            for arm in arms {
+                if let Some(p) = &arm.pattern {
+                    collect_referenced_in_expr(p, names);
+                }
+                collect_referenced_in_expr(&arm.value, names);
+            }
+        }
+        Expr::Ternary(cond, then_e, else_e) => {
+            collect_referenced_in_expr(cond, names);
+            collect_referenced_in_expr(then_e, names);
+            collect_referenced_in_expr(else_e, names);
+        }
+        Expr::Coalesce(lhs, rhs) | Expr::Elvis(lhs, rhs) => {
+            collect_referenced_in_expr(lhs, names);
+            collect_referenced_in_expr(rhs, names);
+        }
+    }
+}
+
+fn collect_referenced_in_lvalue(lvalue: &LValue, names: &mut HashSet<String>) {
+    match lvalue {
+        LValue::Local(name) => {
+            names.insert(name.clone());
+        }
+        LValue::Field(target, _) => collect_referenced_in_expr(target, names),
+        LValue::Index(target, index) => {
+            collect_referenced_in_expr(target, names);
+            collect_referenced_in_expr(index, names);
+        }
+    }
+}
+
+fn lookup_box_scope<'a>(scopes: &'a [HashMap<String, Type>], name: &str) -> Option<&'a Type> {
+    scopes.iter().rev().find_map(|s| s.get(name))
+}
+
+/// Names that are assignment/`++`/`--` targets anywhere in `block` or
+/// `expr`, including inside nested closures (whose own parameters are
+/// excluded from their contribution — a closure's own parameter being
+/// reassigned inside itself isn't a capture of anything from outside it).
+/// Shared by `scan_expr_for_box_requests`'s `Expr::Closure` case; kept
+/// separate from that function because it doesn't need type/scope
+/// information, only names.
+fn collect_mutated_in_block(block: &Block, names: &mut HashSet<String>) {
+    for stmt in block {
+        collect_mutated_in_stmt(stmt, names);
+    }
+}
+
+fn collect_mutated_in_stmt(stmt: &Stmt, names: &mut HashSet<String>) {
+    match &stmt.kind {
+        StmtKind::Return(Some(e)) | StmtKind::Throw(e) => collect_mutated_in_expr(e, names),
+        StmtKind::Return(None) | StmtKind::Break | StmtKind::Continue => {}
+        StmtKind::Expr(e) => collect_mutated_in_expr(e, names),
+        StmtKind::VarDecl { init, .. } => {
+            if let Some(e) = init {
+                collect_mutated_in_expr(e, names);
+            }
+        }
+        StmtKind::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            collect_mutated_in_expr(cond, names);
+            collect_mutated_in_block(then_branch, names);
+            if let Some(b) = else_branch {
+                collect_mutated_in_block(b, names);
+            }
+        }
+        StmtKind::While { cond, body } => {
+            collect_mutated_in_expr(cond, names);
+            collect_mutated_in_block(body, names);
+        }
+        StmtKind::ForEach { iterable, body, .. } => {
+            collect_mutated_in_expr(iterable, names);
+            collect_mutated_in_block(body, names);
+        }
+        StmtKind::For {
+            init,
+            cond,
+            step,
+            body,
+        } => {
+            for s in init {
+                collect_mutated_in_stmt(s, names);
+            }
+            if let Some(c) = cond {
+                collect_mutated_in_expr(c, names);
+            }
+            for e in step {
+                collect_mutated_in_expr(e, names);
+            }
+            collect_mutated_in_block(body, names);
+        }
+        StmtKind::Block(b) => collect_mutated_in_block(b, names),
+        StmtKind::ThisCall(args) | StmtKind::SuperCall(args) => {
+            for a in args {
+                collect_mutated_in_expr(&a.value, names);
+            }
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            finally,
+        } => {
+            collect_mutated_in_block(body, names);
+            for c in catches {
+                collect_mutated_in_block(&c.body, names);
+            }
+            if let Some(f) = finally {
+                collect_mutated_in_block(f, names);
+            }
+        }
+    }
+}
+
+fn collect_mutated_in_expr(expr: &Expr, names: &mut HashSet<String>) {
+    match expr {
+        Expr::PostIncr(name) | Expr::PostDecr(name) => {
+            names.insert(name.clone());
+        }
+        Expr::Assign(target, value) => {
+            collect_mutated_in_lvalue(target, names);
+            collect_mutated_in_expr(value, names);
+        }
+        Expr::Closure { params, body, .. } => {
+            let mut inner = HashSet::new();
+            match body {
+                ClosureBody::Block(b) => collect_mutated_in_block(b, &mut inner),
+                ClosureBody::Expr(e) => collect_mutated_in_expr(e, &mut inner),
+            }
+            let param_names: HashSet<&str> = params.iter().map(|p| p.name.as_str()).collect();
+            names.extend(inner.into_iter().filter(|n| !param_names.contains(n.as_str())));
+        }
+        Expr::IntLit(_)
+        | Expr::FloatLit(_)
+        | Expr::BoolLit(_)
+        | Expr::StringLit(_)
+        | Expr::NullLit
+        | Expr::This
+        | Expr::Super
+        | Expr::Ident(_) => {}
+        Expr::Call(_, args) | Expr::New(_, _, args) => {
+            for a in args {
+                collect_mutated_in_expr(&a.value, names);
+            }
+        }
+        Expr::NewArray(_, dims) => {
+            for size in dims.iter().flatten() {
+                collect_mutated_in_expr(size, names);
+            }
+        }
+        Expr::NewArrayInit(_, elements) => {
+            for e in elements {
+                collect_mutated_in_expr(e, names);
+            }
+        }
+        Expr::FieldAccess(target, _) | Expr::InstanceOf(target, _) => {
+            collect_mutated_in_expr(target, names)
+        }
+        Expr::Cast(_, inner) => collect_mutated_in_expr(inner, names),
+        Expr::MethodCall(target, _, args) => {
+            collect_mutated_in_expr(target, names);
+            for a in args {
+                collect_mutated_in_expr(&a.value, names);
+            }
+        }
+        Expr::Index(target, index) => {
+            collect_mutated_in_expr(target, names);
+            collect_mutated_in_expr(index, names);
+        }
+        Expr::Unary(_, inner) => collect_mutated_in_expr(inner, names),
+        Expr::Binary(_, lhs, rhs) => {
+            collect_mutated_in_expr(lhs, names);
+            collect_mutated_in_expr(rhs, names);
+        }
+        Expr::Match(subject, arms) => {
+            collect_mutated_in_expr(subject, names);
+            for arm in arms {
+                if let Some(p) = &arm.pattern {
+                    collect_mutated_in_expr(p, names);
+                }
+                collect_mutated_in_expr(&arm.value, names);
+            }
+        }
+        Expr::Ternary(cond, then_e, else_e) => {
+            collect_mutated_in_expr(cond, names);
+            collect_mutated_in_expr(then_e, names);
+            collect_mutated_in_expr(else_e, names);
+        }
+        Expr::Coalesce(lhs, rhs) | Expr::Elvis(lhs, rhs) => {
+            collect_mutated_in_expr(lhs, names);
+            collect_mutated_in_expr(rhs, names);
+        }
+    }
+}
+
+fn collect_mutated_in_lvalue(lvalue: &LValue, names: &mut HashSet<String>) {
+    match lvalue {
+        LValue::Local(name) => {
+            names.insert(name.clone());
+        }
+        LValue::Field(target, _) => collect_mutated_in_expr(target, names),
+        LValue::Index(target, index) => {
+            collect_mutated_in_expr(target, names);
+            collect_mutated_in_expr(index, names);
         }
     }
 }

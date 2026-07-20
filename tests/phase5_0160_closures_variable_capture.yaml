@@ -1,8 +1,8 @@
 ---
-title: "Anonymous functions — capturing one and multiple variables from the enclosing scope (by value: snapshotted at creation)"
+title: "Anonymous functions — capturing one and multiple variables from the enclosing scope (by reference: shared with the enclosing scope, specs.md § Variable capture)"
 file_separator: "#NLFILE"
 expected_exit_code: 0
-expected_stdout: "50 10 1"
+expected_stdout: "50 10 99 1"
 ---
 
 #NLFILE phase5/closures_capture/Main.nl
@@ -18,17 +18,25 @@ class Main {
 		auto addXY = (int z) => { return x + y + z; };
 		int result2 = addXY(2);
 
-		// Capture is by value: mutating 'n' after the closure is created
-		// does not change what the closure sees.
+		// Capture is by reference: mutating 'n' after the closure is
+		// created *does* change what the closure sees.
 		int n = 1;
 		auto readN = () => { return n; };
 		n = 99;
+
+		// A closure mutating a captured variable is visible in the
+		// enclosing scope too, once the closure has run.
+		int counter = 0;
+		auto increment = () => { counter++; };
+		increment();
 
 		system.Out.print(system.Int.toString(result));
 		system.Out.print(" ");
 		system.Out.print(system.Int.toString(result2));
 		system.Out.print(" ");
 		system.Out.print(system.Int.toString(readN()));
+		system.Out.print(" ");
+		system.Out.print(system.Int.toString(counter));
 		return 0;
 	}
 }
