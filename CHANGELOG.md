@@ -5,6 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.10]
+
+### Added
+- One-line install: `curl -fsSL https://nlvm.dev/install.sh | bash` downloads the latest prebuilt `nlc`/`nlvm` (Linux x86_64, macOS arm64) and verifies it against a published `SHA256SUMS`. Running `./install.sh` from a clone still builds from source, unchanged.
+- `release.yml` now generates and publishes a `SHA256SUMS` file alongside each release's binary tarballs.
+
 ## [0.5.9]
 
 ### Added
