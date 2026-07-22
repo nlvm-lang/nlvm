@@ -2763,6 +2763,29 @@ impl<'a> Emitter<'a> {
                 (Some(ExprTy::StringT), _) | (_, Some(ExprTy::StringT)) => Some(ExprTy::StringT),
                 _ => None,
             },
+            // `obj.field` — resolved the same way `compile_field_access`
+            // resolves it, but purely (no bytecode emitted): peek the
+            // receiver's static class, then reuse the same three lookup
+            // tables in the same order (native-generics result types,
+            // stdlib `Result<T>` fields, then user-declared fields).
+            Expr::FieldAccess(target, name) => {
+                let ExprTy::Object(fqcn) = self.peek_type(target)? else {
+                    return None;
+                };
+                let field = crate::native_generics::field_ty(&fqcn, name)
+                    .or_else(|| crate::stdlib::result_field_ty(&fqcn, name))
+                    .or_else(|| find_field(self.classes, &fqcn, name).map(|f| f.ty.clone()))?;
+                Some(expr_ty_of(&field))
+            }
+            // `obj.method(...)` — same idea, via `find_method`'s declared
+            // return type instead of compiling the call.
+            Expr::MethodCall(target, name, args) => {
+                let ExprTy::Object(fqcn) = self.peek_type(target)? else {
+                    return None;
+                };
+                let method = find_method(self.classes, &fqcn, name, args.len())?;
+                Some(expr_ty_of(&method.return_ty))
+            }
             _ => None,
         }
     }

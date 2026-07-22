@@ -5,6 +5,11 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1]
+
+### Fixed
+- `+` between two field-access expressions of static type `string` (e.g. `page.root + item.href`), with no string literal or local variable anywhere in the chain to anchor the fast path, no longer fails codegen with "unsupported construct: arithmetic/comparison between StringT and StringT". String concatenation's static-type peek now also resolves through field accesses and method calls, not just literals and local variables.
+
 ## [0.7.0]
 
 ### Added
