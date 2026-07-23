@@ -1,5 +1,6 @@
 mod call_stack;
 pub mod error;
+mod gc;
 pub mod interpreter;
 mod mini_regex;
 mod mini_tz;

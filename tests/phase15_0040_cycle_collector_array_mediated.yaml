@@ -1,0 +1,39 @@
+---
+title: "Cycle collector — a cycle routed through an array (object holds an array, the array holds the object back) is reclaimed just like a direct object-to-object cycle"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: |
+  before: 0
+  after: 1
+expected_stderr: ""
+---
+
+#NLFILE phase15/cycle_array/Box.nl
+namespace phase15.cycle.array;
+class Box {
+	public static int destroyedCount = 0;
+	public Box[]|null items;
+
+	public construct() {}
+
+	public destruct() {
+		Box.destroyedCount = Box.destroyedCount + 1;
+	}
+}
+
+#NLFILE phase15/cycle_array/Main.nl
+namespace phase15.cycle.array;
+class Main {
+	public static void makeArrayCycle() {
+		Box b = new Box();
+		Box[] arr = new Box[]{b};
+		b.items = arr;
+	}
+
+	public static int main(string[] args) {
+		system.Out.println("before: " + system.Int.toString(Box.destroyedCount));
+		Main.makeArrayCycle();
+		system.Out.println("after: " + system.Int.toString(Box.destroyedCount));
+		return 0;
+	}
+}

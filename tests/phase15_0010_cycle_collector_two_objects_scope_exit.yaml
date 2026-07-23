@@ -1,0 +1,40 @@
+---
+title: "Cycle collector — two objects referencing each other are both destroyed once every local holding them goes out of scope (vm.md § Garbage collection contract: reclaim on unreachability, not just refcount zero)"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: |
+  before: 0
+  after: 2
+expected_stderr: ""
+---
+
+#NLFILE phase15/cycle/Node.nl
+namespace phase15.cycle.scopeexit;
+class Node {
+	public static int destroyedCount = 0;
+	public Node|null next;
+
+	public construct() {}
+
+	public destruct() {
+		Node.destroyedCount = Node.destroyedCount + 1;
+	}
+}
+
+#NLFILE phase15/cycle/Main.nl
+namespace phase15.cycle.scopeexit;
+class Main {
+	public static void makeCycle() {
+		Node a = new Node();
+		Node b = new Node();
+		a.next = b;
+		b.next = a;
+	}
+
+	public static int main(string[] args) {
+		system.Out.println("before: " + system.Int.toString(Node.destroyedCount));
+		Main.makeCycle();
+		system.Out.println("after: " + system.Int.toString(Node.destroyedCount));
+		return 0;
+	}
+}

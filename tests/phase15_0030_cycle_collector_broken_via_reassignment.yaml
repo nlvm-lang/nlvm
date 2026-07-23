@@ -1,0 +1,42 @@
+---
+title: "Cycle collector — a cycle abandoned by reassigning every local that pointed into it (rather than merely letting them fall out of scope unassigned) is still reclaimed once the frame returns"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: |
+  before: 0
+  after: 2
+expected_stderr: ""
+---
+
+#NLFILE phase15/cycle_reassign/Node.nl
+namespace phase15.cycle.reassign;
+class Node {
+	public static int destroyedCount = 0;
+	public Node|null next;
+
+	public construct() {}
+
+	public destruct() {
+		Node.destroyedCount = Node.destroyedCount + 1;
+	}
+}
+
+#NLFILE phase15/cycle_reassign/Main.nl
+namespace phase15.cycle.reassign;
+class Main {
+	public static void makeThenReassign() {
+		Node|null a = new Node();
+		Node|null b = new Node();
+		a.next = b;
+		b.next = a;
+		a = null;
+		b = null;
+	}
+
+	public static int main(string[] args) {
+		system.Out.println("before: " + system.Int.toString(Node.destroyedCount));
+		Main.makeThenReassign();
+		system.Out.println("after: " + system.Int.toString(Node.destroyedCount));
+		return 0;
+	}
+}

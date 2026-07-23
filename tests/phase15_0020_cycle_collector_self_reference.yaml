@@ -1,0 +1,38 @@
+---
+title: "Cycle collector — an object referencing itself is destroyed exactly once when it goes out of scope (a 1-node cycle, not just an N-node one)"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: |
+  before: 0
+  after: 1
+expected_stderr: ""
+---
+
+#NLFILE phase15/cycle_self/Node.nl
+namespace phase15.cycle.selfref;
+class Node {
+	public static int destroyedCount = 0;
+	public Node|null next;
+
+	public construct() {}
+
+	public destruct() {
+		Node.destroyedCount = Node.destroyedCount + 1;
+	}
+}
+
+#NLFILE phase15/cycle_self/Main.nl
+namespace phase15.cycle.selfref;
+class Main {
+	public static void makeSelfCycle() {
+		Node a = new Node();
+		a.next = a;
+	}
+
+	public static int main(string[] args) {
+		system.Out.println("before: " + system.Int.toString(Node.destroyedCount));
+		Main.makeSelfCycle();
+		system.Out.println("after: " + system.Int.toString(Node.destroyedCount));
+		return 0;
+	}
+}

@@ -11,10 +11,12 @@ use crate::program::Program;
 /// The GC contract (vm.md § Garbage collection contract) is fulfilled by
 /// reference counting: `Arc`'s refcount *is* the garbage collector — memory
 /// is reclaimed exactly when the last reference drops, which also makes
-/// destructor calls "prompt" (end of scope) as vm.md recommends. The known
-/// refcounting limitation applies: objects in a reference cycle are never
-/// reclaimed, so their destructors never run (conformant only for acyclic
-/// object graphs; a cycle collector would be a later addition).
+/// destructor calls "prompt" (end of scope) as vm.md recommends. Reference
+/// cycles (an object graph with no external referrer, but where every
+/// member still references another member) are the one case plain
+/// refcounting cannot resolve on its own — see `crate::gc` for the
+/// synchronous trial-deletion pass that runs alongside ordinary `Arc`
+/// refcounting specifically to reclaim those.
 #[derive(Debug)]
 pub struct Object {
     pub class_name: String,

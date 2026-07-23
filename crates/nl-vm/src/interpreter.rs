@@ -103,6 +103,7 @@ fn run_frame(
             if is_exception_root_ctor {
                 maybe_capture_stack_trace(program, &locals);
             }
+            crate::gc::note_locals_and_collect(program, locals);
             return Ok(None);
         }
         let opcode_pc = pc;
@@ -121,6 +122,7 @@ fn run_frame(
                 if is_exception_root_ctor {
                     maybe_capture_stack_trace(program, &locals);
                 }
+                crate::gc::note_locals_and_collect(program, locals);
                 return Ok(v);
             }
             Err(VmError::Thrown(exc)) => {
@@ -130,10 +132,16 @@ fn run_frame(
                         stack.push(exc);
                         pc = handler_pc;
                     }
-                    None => return Err(VmError::Thrown(exc)),
+                    None => {
+                        crate::gc::note_locals_and_collect(program, locals);
+                        return Err(VmError::Thrown(exc));
+                    }
                 }
             }
-            Err(other) => return Err(other),
+            Err(other) => {
+                crate::gc::note_locals_and_collect(program, locals);
+                return Err(other);
+            }
         }
     }
 }
@@ -250,16 +258,33 @@ fn exec_step(
         Opcode::Store => {
             let idx = read_u16!();
             let v = stack.pop().ok_or(VmError::Malformed("stack underflow"))?;
-            locals[idx as usize] = v;
+            let old = std::mem::replace(&mut locals[idx as usize], v);
+            crate::gc::note_and_collect(program, old);
         }
         Opcode::Load0 => stack.push(locals[0].clone()),
         Opcode::Load1 => stack.push(locals[1].clone()),
         Opcode::Load2 => stack.push(locals[2].clone()),
         Opcode::Load3 => stack.push(locals[3].clone()),
-        Opcode::Store0 => locals[0] = stack.pop().ok_or(VmError::Malformed("stack underflow"))?,
-        Opcode::Store1 => locals[1] = stack.pop().ok_or(VmError::Malformed("stack underflow"))?,
-        Opcode::Store2 => locals[2] = stack.pop().ok_or(VmError::Malformed("stack underflow"))?,
-        Opcode::Store3 => locals[3] = stack.pop().ok_or(VmError::Malformed("stack underflow"))?,
+        Opcode::Store0 => {
+            let v = stack.pop().ok_or(VmError::Malformed("stack underflow"))?;
+            let old = std::mem::replace(&mut locals[0], v);
+            crate::gc::note_and_collect(program, old);
+        }
+        Opcode::Store1 => {
+            let v = stack.pop().ok_or(VmError::Malformed("stack underflow"))?;
+            let old = std::mem::replace(&mut locals[1], v);
+            crate::gc::note_and_collect(program, old);
+        }
+        Opcode::Store2 => {
+            let v = stack.pop().ok_or(VmError::Malformed("stack underflow"))?;
+            let old = std::mem::replace(&mut locals[2], v);
+            crate::gc::note_and_collect(program, old);
+        }
+        Opcode::Store3 => {
+            let v = stack.pop().ok_or(VmError::Malformed("stack underflow"))?;
+            let old = std::mem::replace(&mut locals[3], v);
+            crate::gc::note_and_collect(program, old);
+        }
 
         Opcode::IAdd => int_binop(stack, |a, b| Ok(a.wrapping_add(b)))?,
         Opcode::ISub => int_binop(stack, |a, b| Ok(a.wrapping_sub(b)))?,
@@ -616,7 +641,15 @@ fn exec_step(
             // destructor) drops.
             let replaced = std::mem::replace(&mut arr_mut[idx as usize], value);
             drop(arr_mut);
-            drop(replaced);
+            // `arr` (the outer `Arc`, distinct from the `arr_mut` guard
+            // already dropped above) must go too, *before* the cycle
+            // check: it's this statement's own extra strong reference to
+            // the receiver array, and the collector would otherwise see
+            // it as still externally referenced by this very statement
+            // for as long as it lives — see `note_and_collect`'s doc
+            // comment on why the caller's own temporaries matter here.
+            drop(arr);
+            crate::gc::note_and_collect(program, replaced);
         }
         Opcode::ArrayLength => {
             let v = stack.pop().ok_or(VmError::Malformed("stack underflow"))?;
@@ -692,7 +725,13 @@ fn exec_step(
             // (see `Object::drop`) may call back into `obj` and must not
             // find it still locked.
             let replaced = lock(&obj).fields.insert(field_name, value);
-            drop(replaced);
+            // `obj` is this statement's own extra strong reference to the
+            // receiver — must go *before* the cycle check for the same
+            // reason `ArrayStore` drops its own `arr` first (see there).
+            drop(obj);
+            if let Some(old) = replaced {
+                crate::gc::note_and_collect(program, old);
+            }
         }
         // specs.md § Classes: a non-enum class's `static` field. Backed by
         // `Program`'s per-class static table, pre-populated with type
@@ -714,7 +753,9 @@ fn exec_step(
             let idx = read_u16!();
             let (class_fqcn, field_name, _) = resolve_field_ref(module, idx)?;
             let value = stack.pop().ok_or(VmError::Malformed("stack underflow"))?;
-            program.set_static(&class_fqcn, &field_name, value);
+            if let Some(old) = program.set_static(&class_fqcn, &field_name, value) {
+                crate::gc::note_and_collect(program, old);
+            }
         }
 
         Opcode::InvokeStatic => {

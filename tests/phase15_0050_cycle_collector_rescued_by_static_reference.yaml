@@ -1,0 +1,43 @@
+---
+title: "Cycle collector — a cycle still rooted by a static field is never collected while rooted, and is collected as soon as that root is cleared (no premature collection, no permanent leak either)"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: |
+  after scope exit: 0
+  after clearing root: 2
+expected_stderr: ""
+---
+
+#NLFILE phase15/cycle_rescue/Node.nl
+namespace phase15.cycle.rescue;
+class Node {
+	public static int destroyedCount = 0;
+	public static Node|null keepAlive;
+	public Node|null next;
+
+	public construct() {}
+
+	public destruct() {
+		Node.destroyedCount = Node.destroyedCount + 1;
+	}
+}
+
+#NLFILE phase15/cycle_rescue/Main.nl
+namespace phase15.cycle.rescue;
+class Main {
+	public static void makeCycleKeepA() {
+		Node a = new Node();
+		Node b = new Node();
+		a.next = b;
+		b.next = a;
+		Node.keepAlive = a;
+	}
+
+	public static int main(string[] args) {
+		Main.makeCycleKeepA();
+		system.Out.println("after scope exit: " + system.Int.toString(Node.destroyedCount));
+		Node.keepAlive = null;
+		system.Out.println("after clearing root: " + system.Int.toString(Node.destroyedCount));
+		return 0;
+	}
+}

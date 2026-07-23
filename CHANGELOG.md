@@ -5,6 +5,11 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.2]
+
+### Fixed
+- Objects that only reference each other (a reference cycle — e.g. two objects each holding a field pointing back at the other, or a self-referencing object) are now reclaimed and have their `destruct()` called, closing a previously-documented gap where the `Arc`-refcounting GC could never collect them because their reference count never reached zero. A synchronous trial-deletion pass runs alongside the existing refcounting whenever a reference is dropped from a field, array element, local variable, or `static` field, and again once at program exit; it only reclaims a group once no reference to any of its members exists from outside the group, so an object still reachable through a live variable or a `static` field is never collected while reachable. Collection isn't always instantaneous — reassigning every variable that pointed into a cycle may not free it until the enclosing function returns, a documented limitation — but a cycle is always eventually collected, at the latest by the time the program exits.
+
 ## [0.12.1]
 
 ### Fixed

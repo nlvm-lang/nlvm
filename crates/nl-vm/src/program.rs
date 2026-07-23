@@ -115,6 +115,13 @@ pub struct Program {
     thread_mutexes: Mutex<Vec<Option<Arc<Counter>>>>,
     /// Backing store for `system.thread.Semaphore` (`"__sid__"`).
     thread_semaphores: Mutex<Vec<Option<Arc<Counter>>>>,
+    /// Cycle-collector candidate buffer — see `crate::gc`. Holds `Weak`
+    /// handles to `Object`/`Array` nodes noted at every point a strong
+    /// reference is dropped from a durable slot (field, array element,
+    /// local variable, `static` field) without necessarily freeing the
+    /// referent; `crate::gc::collect_cycles` drains and re-populates it
+    /// with whatever survives each pass.
+    pub(crate) gc_pending: Mutex<Vec<crate::gc::GcNode>>,
 }
 
 impl Program {
@@ -156,6 +163,7 @@ impl Program {
             threads: Mutex::new(Vec::new()),
             thread_mutexes: Mutex::new(Vec::new()),
             thread_semaphores: Mutex::new(Vec::new()),
+            gc_pending: Mutex::new(Vec::new()),
         }
     }
 
@@ -180,11 +188,21 @@ impl Program {
 
     /// `SET_STATIC`. Silently a no-op for an unknown class/field, like
     /// `get_static`'s `None` case — never expected in practice, but there's
-    /// no sensible value to store it under.
-    pub(crate) fn set_static(&self, class_fqcn: &str, field_name: &str, value: Value) {
-        if let Some(class_statics) = lock(&self.statics).get_mut(class_fqcn) {
-            class_statics.insert(field_name.to_string(), value);
-        }
+    /// no sensible value to store it under. Returns the value it replaced
+    /// (always `Some` in practice, since every static field is pre-populated
+    /// with a type default at construction) so the caller can hand it to
+    /// `crate::gc::note_and_collect` — a `static` field is a durable slot
+    /// just like an instance field, and can just as well be the last
+    /// reference keeping a cycle's candidacy alive.
+    pub(crate) fn set_static(
+        &self,
+        class_fqcn: &str,
+        field_name: &str,
+        value: Value,
+    ) -> Option<Value> {
+        lock(&self.statics)
+            .get_mut(class_fqcn)?
+            .insert(field_name.to_string(), value)
     }
 
     pub fn write_stdout(&self, s: &str) {
@@ -503,6 +521,11 @@ pub fn run_program(modules: &[Module], program_args: &[String]) -> RunOutcome {
         Ok(_) => (0, None),
         Err(e) => outcome_for_error(e),
     };
+    // Same reasoning, for reference cycles (crate::gc): a cycle whose last
+    // root disappeared without hitting an instrumented mutation site (see
+    // `crate::gc`'s module doc) would otherwise sit uncollected — and its
+    // destructor's output un-captured — until the process exits.
+    crate::gc::final_sweep(&program);
     let stdout = lock(&program.stdout).clone();
     let mut stderr = lock(&program.stderr).clone();
     if let Some(line) = error_line {
