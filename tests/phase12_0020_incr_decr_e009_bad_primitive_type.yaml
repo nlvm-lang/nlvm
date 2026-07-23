@@ -1,0 +1,15 @@
+---
+title: "Compile E009 — `++`/`--` are not defined for `string`; only `int` and a class overloading `operator++`/`operator--`"
+file_separator: "#NLFILE"
+expected_compile_error: "E009"
+---
+
+#NLFILE phase12/incrdecrbadprimitive/Main.nl
+namespace phase12.incrdecrbadprimitive;
+class Main {
+	public static int main(string[] args) {
+		string s = "a";
+		s++;
+		return 0;
+	}
+}

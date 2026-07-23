@@ -2352,10 +2352,19 @@ impl<'a> Emitter<'a> {
             let ty = self.compile_expr(&args[0])?;
             match ty {
                 ExprTy::StringT => {}
-                ExprTy::Int | ExprTy::Float | ExprTy::Bool => self.op(Opcode::ToString, 0),
+                // `Object` here is only reachable once `nl-sema` has
+                // already confirmed it implements `Stringable`
+                // (`nl_sema::stdlib::is_printlike` +
+                // `Checker::is_concat_operand`) — same "always emit
+                // `ToString`, let the already-validated static type decide"
+                // approach as `+` concatenation and `(string)` cast, which
+                // never re-check `Stringable` in codegen either.
+                ExprTy::Int | ExprTy::Float | ExprTy::Bool | ExprTy::Object(_) => {
+                    self.op(Opcode::ToString, 0)
+                }
                 other => {
                     return Err(CodegenError::Unsupported(format!(
-                        "'{name}' expects a string/int/float/bool argument, got {other:?}"
+                        "'{name}' expects a string/int/float/bool/Stringable argument, got {other:?}"
                     )))
                 }
             }

@@ -1890,7 +1890,14 @@ impl<'a> MethodChecker<'a> {
                         if let Some((param_types, return_ty)) =
                             crate::stdlib::lookup(&path, name, args.len())
                         {
+                            let printlike = crate::stdlib::is_printlike(&path, name);
                             for (actual, expected) in arg_types.iter().zip(&param_types) {
+                                if printlike
+                                    && matches!(actual, Type::Named(_))
+                                    && self.is_concat_operand(actual)
+                                {
+                                    continue;
+                                }
                                 self.check_assignable(actual, expected)?;
                             }
                             for exc in crate::stdlib::throws(&path, name) {
@@ -2133,6 +2140,34 @@ impl<'a> MethodChecker<'a> {
                 }
                 if self.const_vars.contains(&id) {
                     return Err(SemaError::ConstModification(name.clone()));
+                }
+                let op_symbol = if matches!(expr, Expr::PostIncr(_)) { "++" } else { "--" };
+                // Operator overloading — specs.md § Overloadable operators:
+                // `++`/`--` overloads take no parameters (`public Self
+                // operator++()`) and mutate `this`. Mirrors `Expr::Unary`'s
+                // handling of `operator-`/`operator!` just below — `nl-vm`
+                // only actually knows how to mutate a plain `int` slot
+                // (`IINC`) or dispatch to `operator++`/`operator--` on an
+                // object (`nl_codegen::expr::compile_incr`); every other
+                // static type (string, bool, float, byte, array, a Named
+                // type without the overload) reached codegen unchecked
+                // before this, surfacing as an opaque `CodegenError`
+                // instead of a proper E009 at the right layer.
+                if let Type::Named(fqcn) = &ty {
+                    let method_name = if op_symbol == "++" { "operator++" } else { "operator--" };
+                    if let Some(return_ty) = self.resolve_operator_call(fqcn, method_name, &[])? {
+                        return Ok(return_ty);
+                    }
+                    return Err(SemaError::BadUnaryOperator(
+                        op_symbol.to_string(),
+                        types::display(&ty),
+                    ));
+                }
+                if !matches!(ty, Type::Int) {
+                    return Err(SemaError::BadUnaryOperator(
+                        op_symbol.to_string(),
+                        types::display(&ty),
+                    ));
                 }
                 Ok(ty)
             }

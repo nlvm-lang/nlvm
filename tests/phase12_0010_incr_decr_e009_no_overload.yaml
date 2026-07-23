@@ -1,0 +1,25 @@
+---
+title: "Compile E009 — `obj++` on a class with no `operator++` overload is rejected at sema, not left to an opaque codegen error"
+file_separator: "#NLFILE"
+expected_compile_error: "E009"
+---
+
+#NLFILE phase12/incrdecrnooverload/Box.nl
+namespace phase12.incrdecrnooverload;
+class Box {
+	public int value;
+
+	public construct(int value) {
+		this.value = value;
+	}
+}
+
+#NLFILE phase12/incrdecrnooverload/Main.nl
+namespace phase12.incrdecrnooverload;
+class Main {
+	public static int main(string[] args) {
+		auto b = new Box(1);
+		b++;
+		return 0;
+	}
+}

@@ -1,0 +1,32 @@
+---
+title: "`system.Out.println(obj)` calls `Stringable.toString()` by virtual dispatch, same as `+` concatenation and `(string)` cast"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: |
+  Box(42)
+expected_stderr: ""
+---
+
+#NLFILE phase12/stringableprintln/Box.nl
+namespace phase12.stringableprintln;
+class Box implements Stringable {
+	public int value;
+
+	public construct(int value) {
+		this.value = value;
+	}
+
+	public string toString() const {
+		return "Box(" + this.value + ")";
+	}
+}
+
+#NLFILE phase12/stringableprintln/Main.nl
+namespace phase12.stringableprintln;
+class Main {
+	public static int main(string[] args) {
+		auto b = new Box(42);
+		system.Out.println(b);
+		return 0;
+	}
+}

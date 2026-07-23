@@ -1,0 +1,25 @@
+---
+title: "Compile E004 — `system.Out.println(obj)` still rejects a class that does not implement `Stringable`"
+file_separator: "#NLFILE"
+expected_compile_error: "E004"
+---
+
+#NLFILE phase12/printlnnonstringable/Box.nl
+namespace phase12.printlnnonstringable;
+class Box {
+	public int value;
+
+	public construct(int value) {
+		this.value = value;
+	}
+}
+
+#NLFILE phase12/printlnnonstringable/Main.nl
+namespace phase12.printlnnonstringable;
+class Main {
+	public static int main(string[] args) {
+		auto b = new Box(42);
+		system.Out.println(b);
+		return 0;
+	}
+}

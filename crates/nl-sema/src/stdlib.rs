@@ -107,6 +107,22 @@ pub const FILE_MODES: [&str; 6] = [
 /// (stdlib.md), and `checker.rs`'s `Type::StringT` arm prepends the
 /// receiver's type before looking up here, same as the static-call path
 /// just above it.
+/// Whether `fqcn.name` is `system.Out`/`system.Err`'s `print`/`println` —
+/// the one stdlib call whose single parameter accepts more than `lookup`'s
+/// declared `printable` union can express: a `Stringable`-implementing
+/// class (specs.md § Stringable interface lists `print`/`println` as a
+/// third consumer, alongside `+` concatenation and `(string)` cast). Used by
+/// `Checker::check_expr`'s `Expr::MethodCall` arm to fall back to
+/// `is_concat_operand` (the same Stringable check already used for
+/// concat/cast) for a `Type::Named` argument, instead of `check_assignable`
+/// against the primitive-only `printable` union.
+pub fn is_printlike(fqcn: &str, name: &str) -> bool {
+    matches!(
+        (fqcn, name),
+        ("system.Out", "print") | ("system.Out", "println") | ("system.Err", "print") | ("system.Err", "println")
+    )
+}
+
 pub fn lookup(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>, Type)> {
     let printable = Type::Union(vec![Type::StringT, Type::Int, Type::Float, Type::Bool]);
     let nullable = |t: Type| Type::Union(vec![t, Type::NullT]);

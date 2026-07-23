@@ -5,6 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.1]
+
+### Fixed
+- `obj++`/`obj--` on a type with no matching `operator++`/`operator--` overload (or a non-`int` primitive, e.g. `string`) now reports `E009` at compile time instead of silently passing semantic analysis and failing later with an unstructured codegen error.
+- `system.Out.print`/`println`/`system.Err.print`/`println` now accept an argument whose static type implements `Stringable`, calling its `toString()` by virtual dispatch — matching the `+` concatenation and `(string)` cast behavior (specs.md § Stringable interface lists all three as consumers). Previously rejected at compile time with `E004`.
+
 ## [0.11.0]
 
 ### Added
