@@ -1,25 +1,37 @@
 # État d'implémentation vs. nlvm-specs
 
-Photographie de l'écart entre les spécifications (`nlvm-specs`, `SPECS_VERSION` = 0.8.47 côté ce dépôt) et l'implémentation Rust actuelle (nlvm v0.9.0). Établi par lecture croisée de `specs.md`, `compiler.md`, `vm.md`, `stdlib.md`, `optimizations.md`, `tests.md` contre `crates/nl-syntax`, `crates/nl-sema`, `crates/nl-codegen`, `crates/nl-bytecode`, `crates/nl-vm`, `crates/nl-test-runner`, `Next.md` et `journal/`.
+Photographie de l'écart entre les spécifications (`nlvm-specs`, `SPECS_VERSION` = 0.8.47 côté ce dépôt) et l'implémentation Rust actuelle (nlvm v0.10.0). Établi par lecture croisée de `specs.md`, `compiler.md`, `vm.md`, `stdlib.md`, `optimizations.md`, `tests.md` contre `crates/nl-syntax`, `crates/nl-sema`, `crates/nl-codegen`, `crates/nl-bytecode`, `crates/nl-vm`, `crates/nl-test-runner`, `Next.md` et `journal/`.
 
 Ne liste que les écarts. Tout ce qui n'apparaît pas ici a été vérifié conforme.
 
 ## Résumé
 
-Les milestones 1 à 8 (lexer/parser, sémantique, bytecode, VM core, objets, exceptions/closures, stdlib, test runner) sont **globalement en place et fonctionnels** — 14/14 tests officiels des specs passent, 157/157 tests internes passent. Mais plusieurs fonctionnalités documentées sont soit absentes, soit déclarées/parsées sans être réellement câblées au runtime — ce qui est plus trompeur qu'une simple absence, car le code compile mais se comporte différemment de la spec. Le milestone 9 (optimisations) est entièrement optionnel et n'a pas été commencé, comme prévu par le plan des milestones.
+Les milestones 1 à 8 (lexer/parser, sémantique, bytecode, VM core, objets, exceptions/closures, stdlib, test runner) sont **globalement en place et fonctionnels** — 14/14 tests officiels des specs passent, 161/161 tests internes passent (157 + 4 ajoutés en Phase 1, un par écart résolu). Le milestone 9 (optimisations) est entièrement optionnel et n'a pas été commencé, comme prévu par le plan des milestones.
+
+Les trois écarts à fort impact précédemment identifiés (`static` runtime, `ValueEquatable` dans Map/List, `Stringable` dans la concaténation/cast) ont été traités — voir § Phase 1 ci-dessous. Il reste plusieurs écarts de moindre impact (§ 2-6).
 
 ---
 
-## 1. Écarts à fort impact (touchent des fonctionnalités de base déjà "réputées" complètes)
+## Phase 1 — Écarts à fort impact : résolus
 
-### Champs `static` sur classes non-enum : non fonctionnels au runtime
-`GET_STATIC`/`SET_STATIC` retournent `VmError::Unsupported` (`crates/nl-vm/src/interpreter.rs:677-681`). Il n'existe aucune zone de stockage statique par classe, ni d'exécution des initialiseurs statiques au chargement. Seul le cas particulier des enums (constantes `static readonly` re-compilées à chaque site d'usage) fonctionne. Un champ `public static int counter` sur une classe ordinaire échoue à la compilation ou à l'exécution. `static` est pourtant documenté comme modificateur de champ standard (specs.md § Classes) et le milestone 5 (objets/dispatch) le liste comme livrable.
+Les trois écarts qui **compilaient et semblaient marcher** mais se comportaient silencieusement autrement que documenté ont été câblés. 157/157 tests internes + 14/14 tests officiels des specs passent toujours après ces changements (aucune régression détectée). Quatre fixtures YAML ont été ajoutées à `tests/` (`phase10_0040` à `phase10_0070`, une par écart résolu plus une pour le bug d'initialiseur d'instance ci-dessous) — chacune vérifiée pour échouer contre le code d'avant cette passe (rétabli temporairement via `git stash`) avant d'être validée contre le code corrigé, pour confirmer qu'elle couvre bien le comportement changé et pas autre chose.
 
-### `ValueEquatable` déclarable mais jamais consulté par `system.Map`/`system.List`
-Confirmé indépendamment par 4 des 4 recherches. `valueEquals`/`valueHash` sont des méthodes utilisables normalement, mais les collections génériques retombent toujours sur l'identité de référence pour les clés/éléments non primitifs (`crates/nl-vm/src/native.rs`, `crates/nl-sema/src/native_generics.rs`, `crates/nl-codegen/src/native_generics.rs`). Un commentaire du code le reconnaît explicitement. Déjà noté dans CHANGELOG v0.9.0.
+### Champs `static` sur classes non-enum
+`GET_STATIC`/`SET_STATIC` sont maintenant implémentés. `nl_vm::Program` porte une table de stockage statique par classe (`HashMap<fqcn, HashMap<field_name, Value>>`), pré-remplie avec la valeur par défaut de chaque champ `static` au chargement (`Program::new`). Un champ déclaré avec un initialiseur (`public static int counter = 0;`) est assigné une seule fois, avant `main`, par une méthode synthétique `<clinit>` que `nl-codegen` génère automatiquement (nom réservé, jamais en collision avec du code utilisateur) et que `nl_vm::program::run_static_initializers` exécute pour chaque classe chargée, dans l'ordre de chargement (déterministe, mais pas d'initialisation paresseuse à la Java — documenté comme simplification, cohérent avec le reste de l'implémentation). L'accès `ClassName.field` (lecture et écriture) résout la classe *déclarante* du champ même quand on y accède via une sous-classe (`find_field_owner`, côté `nl-sema` et `nl-codegen`), pour que le stockage soit partagé correctement en cas d'héritage.
 
-### `Stringable.toString()` non câblé dans la concaténation `+` et le cast `(string)`
-L'interface se déclare et passe la vérification de const-correction (E044), mais `is_concat_operand` (`crates/nl-sema/src/checker.rs:2720`) et `Value::to_display_string` (`crates/nl-vm/src/value.rs:161`) ne gèrent que les primitives. Toute classe implémentant `Stringable` est **rejetée** (E008/E007) plutôt qu'acceptée avec appel implicite de `toString()`, contrairement à specs.md § String concatenation / § Cast to string.
+**Problème rencontré pendant le développement** : en creusant l'exécution des initialiseurs statiques, il est apparu que les initialiseurs de champs *d'instance* (`public int x = 42;`) n'étaient eux non plus **jamais appliqués** — un champ non-static avec initialiseur gardait silencieusement la valeur par défaut de son type après `new`, quel que soit ce qui était écrit dans le code source. Ce n'était pas l'un des trois écarts listés, mais un bug préexistant plus large découvert en cherchant où (et si) un mécanisme équivalent existait déjà pour les champs static — aucun des 157 tests internes ni des 14 tests officiels n'exerçait ce cas assez précisément pour le détecter (confirmé par un test manuel avant/après : `new Foo().getX()` retournait `0` au lieu de `42`).
+**Solution** : `nl-codegen` désucre maintenant tout champ avec initialiseur (statique ou non) en une assignation ordinaire (`this.field = init;` / `ClassName.field = init;`), injectée soit au début de chaque `construct` (juste après un éventuel appel `super(...)`, jamais dupliquée dans un `construct` qui délègue via `this(...)`), soit dans le `<clinit>` synthétique. Corrigé dans le même changement puisque static et instance partagent exactement le même désucrage.
+
+### `ValueEquatable` dans `system.Map`/`system.List`
+`get`/`set`/`remove`/`has` (Map) et `contains` (List) appellent maintenant `valueEquals` (dispatch virtuel, via `nl_vm::native::equatable_equals`) quand le type de la clé/élément implémente `ValueEquatable`, au lieu de toujours retomber sur l'identité de référence. `valueHash` reste déclarable et appelable comme une méthode ordinaire mais n'est toujours pas réellement utilisé pour le hachage : `Map<K,V>` reste un stockage par tableaux parallèles à recherche O(n) (changement hors scope — refonte de la structure de données, pas juste du câblage d'interface).
+
+**Problème rencontré** : les recherches par clé (`get`/`set`/`remove`/`has`) tenaient le verrou (`Mutex`) du tableau de clés pendant la comparaison d'égalité. Appeler `valueEquals` (du bytecode utilisateur, potentiellement ré-entrant) pendant que ce verrou est tenu risquait un deadlock si le code utilisateur touchait la même map.
+**Solution** : les clés sont copiées (`clone()` du `Vec<Value>`, le verrou est relâché) avant toute comparaison d'égalité — même précaution que celle déjà documentée ailleurs dans `nl-vm` pour `SET_FIELD` (ne jamais tenir un verrou pendant un rappel dans du code utilisateur).
+
+### `Stringable.toString()` dans la concaténation `+` et le cast `(string)`
+`nl-sema` accepte maintenant un opérande de concaténation/cast dont le type statique est une classe implémentant `Stringable` (directement ou via héritage). Côté VM, l'opcode `TO_STRING` (partagé par `+`, `(string)`, et la normalisation `system.Out.print`/`println`) appelle `toString()` par dispatch virtuel quand l'objet implémente `Stringable`, au lieu de toujours utiliser la représentation `[object ClassName]`.
+
+**Problème rencontré** : aucun — en creusant `nl-codegen`, l'émission de bytecode pour `+`/`(string)` était déjà entièrement générique (elle émet `TO_STRING` pour *tout* opérande qui n'est pas déjà une `string`, sans jamais distinguer les primitives des objets). Tout le déficit était donc concentré dans (a) la vérification de type `nl-sema`, qui rejetait catégoriquement tout type `Named`, et (b) l'opcode `TO_STRING` côté VM, qui ne savait produire que la représentation par défaut. Aucun changement de `nl-codegen` n'a été nécessaire — plus simple que prévu initialement.
 
 ---
 
@@ -69,10 +81,10 @@ Aucune des optimisations listées dans `optimizations.md` n'est implémentée (c
 
 ## Étape suivante recommandée
 
-Trois écarts de la section 1 (`static` runtime, `ValueEquatable` dans Map/List, `Stringable` dans la concaténation/cast) sont les plus prioritaires : ce sont des fonctionnalités qui **compilent et semblent marcher** mais se comportent silencieusement autrement que documenté — le risque pour un utilisateur du langage est bien plus élevé qu'une fonctionnalité simplement absente (qui, elle, échoue franchement à la compilation). Je recommande de traiter en premier le câblage de `Stringable`/`ValueEquatable` (les deux se ressemblent : "interface spéciale déclarée mais jamais consultée par le runtime/la stdlib générique", donc probablement un chantier commun côté `nl-vm`/`nl-codegen`), puis `GET_STATIC`/`SET_STATIC` qui est un trou de milestone 4/5 déjà censé être clos.
-
-Ensuite, dans l'ordre de valeur/risque décroissant :
+Les trois écarts à fort impact étant traités et couverts par des tests (§ Phase 1), l'ordre de valeur/risque décroissant pour la suite :
 1. `typedef` — déjà la tâche unique de `Next.md`, donc alignée avec le plan existant.
 2. `switch`/`case` — sucre syntaxique, `match` couvre déjà le besoin fonctionnel, donc moins urgent malgré sa visibilité dans les specs.
 3. `system.db` et `system.text.json` — gros chantiers autonomes (nouvelles dépendances, nouveau binding natif complet) ; à traiter comme des mini-projets séparés une fois les fondations ci-dessus solidifiées.
 4. Milestone 9 (optimisations) — à laisser pour la fin, conformément au plan des milestones lui-même.
+
+Écart additionnel découvert en marge de la Phase 1 (voir son propre paragraphe "Problème rencontré" ci-dessus) : `system.Out.print`/`println` continue de rejeter tout argument objet, y compris une classe `Stringable` — specs.md § Stringable interface le liste pourtant comme troisième consommateur (avec `+` et `(string)`). L'opcode VM sous-jacent (`TO_STRING`) est déjà corrigé ; seule la vérification côté `nl-codegen::compile_stdlib_call` (`is_printlike`) reste à assouplir. Non traité ici pour rester strictement dans le périmètre des trois écarts demandés.

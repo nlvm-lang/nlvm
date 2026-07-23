@@ -12,7 +12,10 @@ use std::collections::HashMap;
 use nl_bytecode::{
     class_flags, field_flags, method_flags, ConstantPool, HashAlgo, MethodDescriptor, Module,
 };
-use nl_syntax::ast::{ClassDecl, MethodKind, SourceFile, SourceItem, Type, Visibility};
+use nl_syntax::ast::{
+    ClassDecl, Expr, LValue, MethodDecl, MethodKind, SourceFile, SourceItem, Stmt, StmtKind, Type,
+    Visibility,
+};
 
 use class_table::{build_class_table, fqcn_of, import_map, resolve_type, ClassInfo};
 pub use error::CodegenError;
@@ -163,6 +166,29 @@ fn compile_file(
                 }
             }
 
+            // Field initializers — specs.md § Default values: "A class
+            // property ... must be initialized either at the declaration
+            // site or inside every `construct` path". The declaration-site
+            // form has no dedicated bytecode representation; it's desugared
+            // here into ordinary assignment statements spliced into each
+            // constructor (instance fields — `this.field = init`) or into a
+            // single synthetic `<clinit>` (static fields — `ClassName.field
+            // = init`, see `compile_static_init`). Enums are left alone
+            // entirely: their fields (case constants, plus any hand-written
+            // extra static field) are already handled by
+            // `Emitter::compile_field_access`'s recompile-at-use-site enum
+            // branch, which predates and doesn't need real static storage.
+            let instance_field_inits: Vec<Stmt> = if class.is_enum {
+                Vec::new()
+            } else {
+                class
+                    .fields
+                    .iter()
+                    .filter(|f| !f.is_static)
+                    .filter_map(field_init_stmt(Expr::This))
+                    .collect()
+            };
+
             let mut methods = Vec::with_capacity(class.methods.len());
             let mut closure_modules = Vec::new();
             // specs.md § Abstract classes and methods — an abstract method
@@ -171,6 +197,13 @@ fn compile_file(
             // concrete subclass provides a real override, which virtual
             // dispatch always resolves to first) — nothing to emit.
             for (method_index, m) in class.methods.iter().filter(|m| !m.is_abstract).enumerate() {
+                let patched;
+                let m = if m.kind == MethodKind::Constructor && !instance_field_inits.is_empty() {
+                    patched = prepend_field_inits(m, &instance_field_inits);
+                    &patched
+                } else {
+                    m
+                };
                 let (descriptor, closures) = compile_method(
                     m.name.as_str(),
                     method_index,
@@ -185,6 +218,52 @@ fn compile_file(
                 )?;
                 methods.push(descriptor);
                 closure_modules.extend(closures);
+            }
+
+            // Static field initializers — see the comment above. Compiled
+            // last (after every declared method, so `class.methods.len()`
+            // is a free `method_index` for the closure-naming prefix) into
+            // one synthetic `<clinit>`, run once per class by
+            // `nl_vm::program::run_static_initializers` before `main`.
+            if !class.is_enum {
+                let static_init_stmts: Vec<Stmt> = class
+                    .fields
+                    .iter()
+                    .filter(|f| f.is_static)
+                    .filter_map(field_init_stmt(Expr::Ident(class.name.clone())))
+                    .collect();
+                if !static_init_stmts.is_empty() {
+                    let clinit = MethodDecl {
+                        name: "<clinit>".to_string(),
+                        kind: MethodKind::Normal,
+                        visibility: Visibility::Public,
+                        visibility_explicit: true,
+                        is_static: true,
+                        is_const: false,
+                        is_abstract: false,
+                        is_final: false,
+                        is_nodiscard: false,
+                        return_type: Type::Void,
+                        params: Vec::new(),
+                        throws: Vec::new(),
+                        body: static_init_stmts,
+                        decl_line: class.decl_line,
+                    };
+                    let (descriptor, closures) = compile_method(
+                        "<clinit>",
+                        class.methods.len(),
+                        &clinit,
+                        class,
+                        &mut cp,
+                        this_class,
+                        &fqcn,
+                        &imports,
+                        classes,
+                        &static_sigs,
+                    )?;
+                    methods.push(descriptor);
+                    closure_modules.extend(closures);
+                }
             }
 
             let mut flags = 0u16;
@@ -315,6 +394,53 @@ fn compile_method(
         line_table: emitter.line_table,
     };
     Ok((descriptor, emitter.closures))
+}
+
+/// Builds `<receiver>.<field.name> = <field.init>;` for a field declared
+/// with an initializer — `receiver` is `Expr::This` for an instance field
+/// (spliced into each constructor) or `Expr::Ident(<simple class name>)` for
+/// a `static` one (spliced into the synthetic `<clinit>`). Returns a closure
+/// suitable for `Iterator::filter_map` so a field with no initializer is
+/// silently skipped (it keeps its type's ordinary default value — see
+/// `nl_vm::interpreter::default_value_for`).
+fn field_init_stmt(
+    receiver: Expr,
+) -> impl Fn(&nl_syntax::ast::FieldDecl) -> Option<Stmt> {
+    move |f| {
+        let init = f.init.clone()?;
+        Some(Stmt {
+            kind: StmtKind::Expr(Expr::Assign(
+                LValue::Field(Box::new(receiver.clone()), f.name.clone()),
+                Box::new(init),
+            )),
+            line: 0,
+        })
+    }
+}
+
+/// Splices `inits` (see `field_init_stmt`) into a constructor's body.
+/// Skipped for a `this(...)`-delegating overload (compiler.md § Constructor
+/// delegation: the target overload it delegates to already carries the same
+/// `inits`, and running them twice would double-apply any side-effecting
+/// initializer); inserted right after a `super(...)` call if present
+/// (superclass fields should already be set by the time this class's own
+/// initializers run), otherwise at the very front of the body.
+fn prepend_field_inits(ctor: &MethodDecl, inits: &[Stmt]) -> MethodDecl {
+    let mut patched = ctor.clone();
+    match patched.body.first().map(|s| &s.kind) {
+        Some(StmtKind::ThisCall(_)) => {}
+        Some(StmtKind::SuperCall(_)) => {
+            let rest = patched.body.split_off(1);
+            patched.body.extend(inits.iter().cloned());
+            patched.body.extend(rest);
+        }
+        _ => {
+            let mut body = inits.to_vec();
+            body.extend(patched.body);
+            patched.body = body;
+        }
+    }
+    patched
 }
 
 fn visibility_field_flag(v: Visibility) -> u16 {

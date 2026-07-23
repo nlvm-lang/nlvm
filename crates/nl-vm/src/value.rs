@@ -167,11 +167,13 @@ impl Value {
             Value::Byte(v) => v.to_string(),
             Value::Str(s) => (**s).clone(),
             Value::Array(_) => "[array]".to_string(),
-            // Stringable dispatch (calling `toString()`) isn't implemented
-            // this phase; nl-codegen never emits TO_STRING for an object
-            // operand (string concatenation only accepts primitives/strings
-            // — compiler.md's Stringable check is future work), so this is
-            // an unreachable fallback, not a real code path.
+            // Plain fallback representation — no `Program` access here, so
+            // no way to call back into a `Stringable`-implementing object's
+            // `toString()`. `interpreter::display_string_of` is the real
+            // `TO_STRING`-site entry point (it has `Program` and prefers
+            // `toString()` when the runtime class implements `Stringable`);
+            // this stays the fallback for everything else, e.g.
+            // `program::describe_exception`'s non-`Object` case.
             Value::Object(obj) => format!("[object {}]", lock(obj).class_name),
         }
     }

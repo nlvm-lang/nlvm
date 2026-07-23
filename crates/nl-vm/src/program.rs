@@ -2,10 +2,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 
-use nl_bytecode::{MethodDescriptor, Module};
+use nl_bytecode::{field_flags, MethodDescriptor, Module};
 
 use crate::error::VmError;
-use crate::interpreter::call_static;
+use crate::interpreter::{call_static, default_value_for};
 use crate::value::{lock, Value};
 
 /// A counting synchronization primitive shared by `system.thread.Mutex`
@@ -68,6 +68,21 @@ impl Counter {
 /// borrow one tied to the spawning frame's stack.
 pub struct Program {
     modules: HashMap<String, Module>,
+    /// Every module's FQCN, in the order `Program::new` received them (the
+    /// order `nl_codegen::compile_program` emitted them in — prelude first,
+    /// then each source file). `run_static_initializers` walks this instead
+    /// of `modules` (a `HashMap`, unordered) so `<clinit>` runs happen in a
+    /// deterministic, reproducible sequence.
+    load_order: Vec<String>,
+    /// Per-class `static` field storage — specs.md § Classes. Keyed by
+    /// declaring-class FQCN (never a subclass's, even when a field is
+    /// referenced through one — see `nl_codegen::class_table::
+    /// find_field_owner`), then field name. Pre-populated with every static
+    /// field's type default at construction time; `run_static_initializers`
+    /// overwrites the ones with a declared initializer before `main` runs.
+    /// Enum case constants are never stored here (nl-codegen recompiles them
+    /// at each use site instead of emitting `GET_STATIC`/`SET_STATIC`).
+    statics: Mutex<HashMap<String, HashMap<String, Value>>>,
     /// Accumulated output from native `system.Out`/`system.Err` calls (see
     /// `crate::native`) — `Program` is shared across every call frame *and*
     /// every thread, so these are interior-mutable rather than threaded
@@ -105,13 +120,33 @@ pub struct Program {
 impl Program {
     pub fn new(modules: Vec<Module>) -> Self {
         let mut map = HashMap::with_capacity(modules.len());
+        let mut load_order = Vec::with_capacity(modules.len());
+        let mut statics: HashMap<String, HashMap<String, Value>> = HashMap::new();
         for module in modules {
             if let Some(name) = module.this_class_name() {
+                let mut class_statics = HashMap::new();
+                for f in &module.fields {
+                    if f.flags & field_flags::STATIC == 0 {
+                        continue;
+                    }
+                    let Some(field_name) = module.constant_pool.utf8_at(f.name_index) else {
+                        continue;
+                    };
+                    let type_desc = module
+                        .constant_pool
+                        .type_desc_at(f.type_index)
+                        .unwrap_or("void");
+                    class_statics.insert(field_name.to_string(), default_value_for(type_desc));
+                }
+                statics.insert(name.to_string(), class_statics);
+                load_order.push(name.to_string());
                 map.insert(name.to_string(), module);
             }
         }
         Program {
             modules: map,
+            load_order,
+            statics: Mutex::new(statics),
             stdout: Mutex::new(String::new()),
             stderr: Mutex::new(String::new()),
             file_handles: Mutex::new(Vec::new()),
@@ -132,6 +167,24 @@ impl Program {
         self.modules
             .values()
             .find_map(|m| m.find_method("main").map(|meth| (m, meth)))
+    }
+
+    /// `GET_STATIC` — see `Opcode::GetStatic`'s doc comment in
+    /// `crate::interpreter`. `None` means the constant-pool `FieldRef`
+    /// named a class/field this table never saw a `static` declaration for
+    /// (an nl-codegen bug, since every static field is pre-populated by
+    /// `Program::new`), not "field currently unset".
+    pub(crate) fn get_static(&self, class_fqcn: &str, field_name: &str) -> Option<Value> {
+        lock(&self.statics).get(class_fqcn)?.get(field_name).cloned()
+    }
+
+    /// `SET_STATIC`. Silently a no-op for an unknown class/field, like
+    /// `get_static`'s `None` case — never expected in practice, but there's
+    /// no sensible value to store it under.
+    pub(crate) fn set_static(&self, class_fqcn: &str, field_name: &str, value: Value) {
+        if let Some(class_statics) = lock(&self.statics).get_mut(class_fqcn) {
+            class_statics.insert(field_name.to_string(), value);
+        }
     }
 
     pub fn write_stdout(&self, s: &str) {
@@ -311,6 +364,27 @@ pub struct RunOutcome {
 pub fn run_program(modules: &[Module], program_args: &[String]) -> RunOutcome {
     let program = Arc::new(Program::new(modules.to_vec()));
 
+    // vm.md § Program startup happens after every class's `static` storage
+    // is in place — see `run_static_initializers`'s doc comment for why
+    // this runs once, up front, rather than lazily per class on first use.
+    // A `<clinit>` failure (an uncaught exception inside a static field
+    // initializer) is reported exactly like an uncaught exception from
+    // `main` itself; nothing has run yet, so there's no partial output to
+    // preserve beyond whatever the failing initializer itself wrote.
+    if let Err(e) = run_static_initializers(&program) {
+        let (exit_code, error_line) = outcome_for_error(e);
+        let stdout = lock(&program.stdout).clone();
+        let mut stderr = lock(&program.stderr).clone();
+        if let Some(line) = error_line {
+            append_line(&mut stderr, &line);
+        }
+        return RunOutcome {
+            exit_code,
+            stdout,
+            stderr,
+        };
+    }
+
     let Some((main_module, main)) = program.find_main() else {
         return RunOutcome {
             exit_code: 1,
@@ -334,17 +408,7 @@ pub fn run_program(modules: &[Module], program_args: &[String]) -> RunOutcome {
     let (exit_code, error_line) = match result {
         Ok(Some(Value::Int(code))) => (code as i32, None),
         Ok(_) => (0, None),
-        Err(VmError::Thrown(exc)) => {
-            let line = format!("Unhandled exception: {}", describe_exception(&exc));
-            drop(exc);
-            (1, Some(line))
-        }
-        // `system.ps.Process.exit(code)` — see `VmError::Exit`'s doc
-        // comment. Not an error at all from `run_program`'s point of view,
-        // just an early, uncatchable short-circuit of `main`'s own return
-        // value.
-        Err(VmError::Exit(code)) => (code, None),
-        Err(e) => (1, Some(format!("Unhandled exception: {e}"))),
+        Err(e) => outcome_for_error(e),
     };
     let stdout = lock(&program.stdout).clone();
     let mut stderr = lock(&program.stderr).clone();
@@ -355,6 +419,45 @@ pub fn run_program(modules: &[Module], program_args: &[String]) -> RunOutcome {
         exit_code,
         stdout,
         stderr,
+    }
+}
+
+/// Runs every loaded class's `<clinit>` (see `nl_codegen`'s
+/// `compile_file`), in `Program::load_order` — a fixed, deterministic
+/// sequence rather than Java-style lazy-on-first-use initialization,
+/// documented simplification like this codebase's other approximations
+/// (e.g. reference-counting GC, linear virtual dispatch — see
+/// `IMPLEMENTATION_STATUS.md`). A class with no static field carrying a
+/// declared initializer has no `<clinit>` at all (`nl_codegen` only emits
+/// one when needed), so this is a no-op for the overwhelming majority of
+/// classes.
+fn run_static_initializers(program: &Arc<Program>) -> Result<(), VmError> {
+    for fqcn in &program.load_order {
+        let module = program
+            .modules
+            .get(fqcn)
+            .expect("load_order only ever names classes present in `modules`");
+        if let Some(clinit) = module.find_method("<clinit>") {
+            call_static(program, module, clinit, Vec::new())?;
+        }
+    }
+    Ok(())
+}
+
+/// Shared by `run_static_initializers`'s and `main`'s failure paths —
+/// vm.md § Throw and stack unwinding, step 5.
+fn outcome_for_error(e: VmError) -> (i32, Option<String>) {
+    match e {
+        VmError::Thrown(exc) => {
+            let line = format!("Unhandled exception: {}", describe_exception(&exc));
+            drop(exc);
+            (1, Some(line))
+        }
+        // `system.ps.Process.exit(code)` — see `VmError::Exit`'s doc
+        // comment. Not an error at all from the caller's point of view,
+        // just an early, uncatchable short-circuit.
+        VmError::Exit(code) => (code, None),
+        e => (1, Some(format!("Unhandled exception: {e}"))),
     }
 }
 

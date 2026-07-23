@@ -4,7 +4,8 @@ use nl_bytecode::{ConstantPool, Opcode};
 use nl_syntax::ast::{Arg, BinOp, Expr, LValue, Type, UnOp};
 
 use crate::class_table::{
-    find_ctor, find_field, find_method, find_operator_method, resolve_type, ClassInfo, MethodInfo,
+    find_ctor, find_field, find_field_owner, find_method, find_operator_method, resolve_type,
+    ClassInfo, MethodInfo,
 };
 use crate::error::CodegenError;
 use crate::type_desc::{method_descriptor, type_descriptor};
@@ -1384,6 +1385,37 @@ impl<'a> Emitter<'a> {
                 }
             },
             LValue::Field(target_expr, field_name) => {
+                // `Counter.instances = n;` — a plain (non-enum) class's
+                // `static` field, written via its class name rather than an
+                // instance. Same recognize-before-`compile_expr` shape as
+                // `compile_field_access`'s dotted-path branch — `target_expr`
+                // (e.g. `Ident("Counter")`) isn't a value.
+                if let Some(path) = dotted_path(target_expr) {
+                    let leading = path.split('.').next().expect("dotted_path is never empty");
+                    if self.lookup_local(leading).is_err() {
+                        let fqcn = self.resolve_class_name(leading);
+                        if let Some((owner, field)) = find_field_owner(self.classes, &fqcn, field_name)
+                        {
+                            if field.is_static {
+                                let field_ty = field.ty.clone();
+                                let expr_field_ty = expr_ty_of(&field_ty);
+                                let value_ty = self.compile_expr(value)?;
+                                self.coerce_value(&value_ty, &expr_field_ty, field_name)?;
+                                self.op(Opcode::Dup, 1);
+                                let tmp = self.declare_scratch_local(expr_field_ty.clone());
+                                self.emit_store(tmp);
+                                let class_index = self.cp.add_class(&owner);
+                                let name_index = self.cp.add_utf8(field_name.clone());
+                                let type_index = self.cp.add_type_desc(&type_descriptor(&field_ty));
+                                let field_ref =
+                                    self.cp.add_field_ref(class_index, name_index, type_index);
+                                self.op_u16(Opcode::SetStatic, field_ref, -1);
+                                self.op_u16(Opcode::Load, tmp, 1);
+                                return Ok(expr_field_ty);
+                            }
+                        }
+                    }
+                }
                 let target_ty = self.compile_expr(target_expr)?;
                 let ExprTy::Object(fqcn) = &target_ty else {
                     return Err(CodegenError::Unsupported(format!(
@@ -1955,6 +1987,25 @@ impl<'a> Emitter<'a> {
                             self.compile_expr(&init)?;
                             return Ok(ExprTy::Object(fqcn));
                         }
+                    }
+                }
+                // `Counter.instances` — a plain (non-enum) class's `static`
+                // field, read via its class name. Unlike the enum case
+                // above, this reads real per-class storage (`GET_STATIC` —
+                // see `crate::class_table::FieldInfo::is_static`'s doc
+                // comment), so the field ref's class index must name the
+                // *declaring* class (`find_field_owner`), not `fqcn`
+                // itself, in case it was reached through a subclass name.
+                if let Some((owner, field)) = find_field_owner(self.classes, &fqcn, name) {
+                    if field.is_static {
+                        let field_ty = field.ty.clone();
+                        let expr_ty = expr_ty_of(&field_ty);
+                        let class_index = self.cp.add_class(&owner);
+                        let name_index = self.cp.add_utf8(name.to_string());
+                        let type_index = self.cp.add_type_desc(&type_descriptor(&field_ty));
+                        let field_ref = self.cp.add_field_ref(class_index, name_index, type_index);
+                        self.op_u16(Opcode::GetStatic, field_ref, 1);
+                        return Ok(expr_ty);
                     }
                 }
             }

@@ -326,6 +326,10 @@ fn exec_step(
             };
             stack.push(Value::Int(b as i64));
         }
+        // specs.md § String concatenation / § Other operators (cast to
+        // string): a `Stringable`-implementing object's `toString()` wins
+        // over `Value::to_display_string`'s built-in `[object ClassName]`
+        // fallback — see `display_string_of`.
         Opcode::ToString => {
             let v = stack.pop().ok_or(VmError::Malformed("stack underflow"))?;
             if v.is_null() {
@@ -334,7 +338,8 @@ fn exec_step(
                     "null pointer dereference",
                 ));
             }
-            stack.push(Value::Str(Arc::new(v.to_display_string())));
+            let s = display_string_of(program, &v)?;
+            stack.push(Value::Str(Arc::new(s)));
         }
 
         Opcode::CmpEq => {
@@ -674,10 +679,27 @@ fn exec_step(
             let replaced = lock(&obj).fields.insert(field_name, value);
             drop(replaced);
         }
-        Opcode::GetStatic | Opcode::SetStatic => {
-            return Err(VmError::Unsupported(format!(
-                "{op:?} lands in a later phase"
-            )));
+        // specs.md § Classes: a non-enum class's `static` field. Backed by
+        // `Program`'s per-class static table, pre-populated with type
+        // defaults for every static field at load time and overwritten by
+        // the class's synthetic `<clinit>` for any that carry a declared
+        // initializer (`nl_codegen`'s `field_init_stmt`/`compile_file`) —
+        // see `crate::program::run_static_initializers`, run once before
+        // `main`. Enum case constants never reach here (nl-codegen recompiles
+        // them at each use site instead — see `class_table::FieldInfo::init`).
+        Opcode::GetStatic => {
+            let idx = read_u16!();
+            let (class_fqcn, field_name, _) = resolve_field_ref(module, idx)?;
+            let value = program.get_static(&class_fqcn, &field_name).ok_or_else(|| {
+                VmError::Malformed("GET_STATIC on an unknown class/field")
+            })?;
+            stack.push(value);
+        }
+        Opcode::SetStatic => {
+            let idx = read_u16!();
+            let (class_fqcn, field_name, _) = resolve_field_ref(module, idx)?;
+            let value = stack.pop().ok_or(VmError::Malformed("stack underflow"))?;
+            program.set_static(&class_fqcn, &field_name, value);
         }
 
         Opcode::InvokeStatic => {
@@ -983,7 +1005,7 @@ fn resolve_method_ref(module: &Module, idx: u16) -> Result<(String, String, Stri
 
 /// Default value for a field/array-element type descriptor — specs.md §
 /// Null, initialization, and default values.
-fn default_value_for(type_desc: &str) -> Value {
+pub(crate) fn default_value_for(type_desc: &str) -> Value {
     match type_desc {
         "int" => Value::Int(0),
         "float" => Value::Float(0.0),
@@ -1008,7 +1030,7 @@ fn implements_interface(program: &Arc<Program>, class_fqcn: &str, target_fqcn: &
 /// `instanceof`/exception-catch-type test: is `current` (or, transitively,
 /// any of its `extends` ancestors) equal to `target_fqcn`, or does one of
 /// them `implements` it? — vm.md § Object operations, § Exception table.
-fn is_instance_of(program: &Arc<Program>, mut current: String, target_fqcn: &str) -> bool {
+pub(crate) fn is_instance_of(program: &Arc<Program>, mut current: String, target_fqcn: &str) -> bool {
     loop {
         if current == target_fqcn || implements_interface(program, &current, target_fqcn) {
             return true;
@@ -1024,6 +1046,34 @@ fn is_instance_of(program: &Arc<Program>, mut current: String, target_fqcn: &str
             None => return false,
         }
     }
+}
+
+/// `TO_STRING`'s value-to-string conversion (`+` concatenation, `(string)`
+/// cast, `system.Out`/`system.Err`'s `print`/`println` normalization) —
+/// specs.md § String concatenation: "If one operand is a reference type
+/// that implements the Stringable interface, its `toString()` method is
+/// called". Dispatched virtually (`resolve_virtual_by_name`, so an override
+/// further down the hierarchy wins), like any other instance method call.
+/// Anything else (primitives, `string`, a non-`Stringable` object) falls
+/// back to `Value::to_display_string`'s built-in representation — nl-sema's
+/// `checker::is_concat_operand`/`check_cast` only let a non-`Stringable`
+/// object reach a `TO_STRING` site in the first place through some other,
+/// already-`string`-shaped operand, so that fallback is the common case,
+/// not dead code.
+fn display_string_of(program: &Arc<Program>, v: &Value) -> Result<String, VmError> {
+    if let Value::Object(obj) = v {
+        let class_name = lock(obj).class_name.clone();
+        if is_instance_of(program, class_name.clone(), "Stringable") {
+            if let Some((module, method)) = resolve_virtual_by_name(program, &class_name, "toString")
+            {
+                let result = call_instance(program, module, method, v.clone(), Vec::new())?;
+                if let Some(Value::Str(s)) = result {
+                    return Ok((*s).clone());
+                }
+            }
+        }
+    }
+    Ok(v.to_display_string())
 }
 
 /// Builds a native `Value::Object` for a VM-raised exception (division by
@@ -1159,6 +1209,32 @@ pub(crate) fn resolve_virtual<'m>(
     loop {
         let module = program.get(&current)?;
         if let Some(target) = module.find_method_by_descriptor(name, descriptor) {
+            return Some((module, target));
+        }
+        if module.super_class == 0 {
+            return None;
+        }
+        current = module
+            .constant_pool
+            .class_name_at(module.super_class)?
+            .to_string();
+    }
+}
+
+/// Like `resolve_virtual`, but matches on name alone — for a native caller
+/// (`crate::native`) invoking a well-known single-overload interface method
+/// (e.g. `ValueEquatable.valueEquals`) where building the exact mangled
+/// descriptor (`Self` resolved per-implementer) isn't worth it, unlike a
+/// bytecode call site which already has one baked into its `MethodRef`.
+pub(crate) fn resolve_virtual_by_name<'m>(
+    program: &'m Arc<Program>,
+    start_fqcn: &str,
+    name: &str,
+) -> Option<(&'m Module, &'m MethodDescriptor)> {
+    let mut current = start_fqcn.to_string();
+    loop {
+        let module = program.get(&current)?;
+        if let Some(target) = module.find_method(name) {
             return Some((module, target));
         }
         if module.super_class == 0 {

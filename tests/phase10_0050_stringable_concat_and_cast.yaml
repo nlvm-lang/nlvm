@@ -1,0 +1,48 @@
+---
+title: "`Stringable.toString()` in `+` concatenation and `(string)` cast — specs.md § String concatenation / § Other operators: a reference type implementing Stringable (directly or via a superclass) has its `toString()` called implicitly instead of being rejected (E008/E007)."
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: |
+  point=(1, 2)
+  (1, 2)
+  child=(5, 6)
+expected_stderr: ""
+---
+
+#NLFILE phase10/stringable/Vec2.nl
+namespace phase10.stringable;
+class Vec2 implements Stringable {
+	public int x;
+	public int y;
+
+	public construct(int x, int y) {
+		this.x = x;
+		this.y = y;
+	}
+
+	public string toString() const {
+		return "(" + this.x + ", " + this.y + ")";
+	}
+}
+
+#NLFILE phase10/stringable/Vec3.nl
+namespace phase10.stringable;
+class Vec3 extends Vec2 {
+	public construct(int x, int y) {
+		super(x, y);
+	}
+}
+
+#NLFILE phase10/stringable/Main.nl
+namespace phase10.stringable;
+class Main {
+	public static int main(string[] args) {
+		auto v = new Vec2(1, 2);
+		system.Out.println("point=" + v);
+		system.Out.println((string) v);
+
+		auto child = new Vec3(5, 6);
+		system.Out.println("child=" + child);
+		return 0;
+	}
+}

@@ -50,19 +50,15 @@
 //! fresh `Rc`), not a live view — mutating the returned array must not
 //! desync it from the map, per stdlib.md's "Returns an array containing".
 //!
-//! Key/element equality for `contains`/map lookups reuses
-//! `interpreter::values_equal` (primitives and `string` by value,
-//! everything else by reference identity) — this is the same rule
-//! stdlib.md documents as the *fallback* for types that don't implement
-//! `ValueEquatable`; `ValueEquatable` itself is not implemented, so that
-//! optimization never kicks in (reference types with structural key/element
-//! equality always fall back to identity here).
+//! Key/element equality for `contains`/map lookups goes through
+//! `equatable_equals`: primitives and `string` by value, a reference type
+//! implementing `ValueEquatable` by calling its `valueEquals` (virtually —
+//! `resolve_virtual_by_name`, so an override further down the hierarchy
+//! wins), everything else by reference identity (`interpreter::
+//! values_equal`) — exactly stdlib.md's documented rule.
 //!
-//! Not implemented (PLAN.md Phase 6 gap): the `T[] initial` list
-//! constructor's/`contains`'s/map key equality's interaction with
-//! `ValueEquatable` (always falls back to primitive/string value equality
-//! or reference identity, see above); `List` has no `forEach` of its own
-//! (stdlib.md doesn't define one, only `Map.forEach` — see `dispatch_map`).
+//! `List` has no `forEach` of its own (stdlib.md doesn't define one, only
+//! `Map.forEach` — see `dispatch_map`).
 //!
 //! ## Arrays (`T[]`)
 //!
@@ -82,7 +78,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use crate::error::VmError;
-use crate::interpreter::values_equal;
+use crate::interpreter::{
+    call_instance, is_instance_of, resolve_virtual_by_name, values_equal,
+};
 use crate::program::Program;
 use crate::value::{lock, Object, Value};
 
@@ -2185,10 +2183,31 @@ pub fn dispatch_instance(
     args: Vec<Value>,
 ) -> Result<Option<Value>, VmError> {
     if fqcn.starts_with("system.List<") {
-        dispatch_list(name, receiver, args)
+        dispatch_list(program, name, receiver, args)
     } else {
         dispatch_map(program, name, receiver, args)
     }
+}
+
+/// specs.md § ValueEquatable interface / stdlib.md § system.Map,
+/// `List.contains`: structural equality via `a.valueEquals(b)` when `a`'s
+/// runtime class implements `ValueEquatable`, falling back to
+/// `values_equal` (primitive/`string` value equality, reference identity
+/// for everything else) otherwise. Only `a` (the stored key/element) is
+/// checked — both sides are the same static type `K`/`T` at every call
+/// site, so either both implement the interface or neither does.
+fn equatable_equals(program: &Arc<Program>, a: &Value, b: &Value) -> Result<bool, VmError> {
+    if let Value::Object(obj) = a {
+        let class_name = lock(obj).class_name.clone();
+        if is_instance_of(program, class_name.clone(), "ValueEquatable") {
+            if let Some((module, method)) = resolve_virtual_by_name(program, &class_name, "valueEquals")
+            {
+                let result = call_instance(program, module, method, a.clone(), vec![b.clone()])?;
+                return Ok(matches!(result, Some(Value::Bool(true))));
+            }
+        }
+    }
+    Ok(values_equal(a, b))
 }
 
 type ArrayRc = Arc<Mutex<Vec<Value>>>;
@@ -2204,6 +2223,7 @@ fn list_data(receiver: &Value) -> Result<ArrayRc, VmError> {
 }
 
 fn dispatch_list(
+    program: &Arc<Program>,
     name: &str,
     receiver: &Value,
     mut args: Vec<Value>,
@@ -2283,9 +2303,19 @@ fn dispatch_list(
             let value = args
                 .pop()
                 .ok_or(VmError::Malformed("missing value argument"))?;
-            Ok(Some(Value::Bool(
-                lock(&data).iter().any(|v| values_equal(v, &value)),
-            )))
+            // Snapshot before calling back into `equatable_equals` (which
+            // may run user NL code, `valueEquals`) rather than holding
+            // `data`'s lock across it — same not-across-a-call-boundary
+            // rule as `interpreter::exec_step`'s `SET_FIELD` comment.
+            let snapshot = lock(&data).clone();
+            let mut found = false;
+            for v in &snapshot {
+                if equatable_equals(program, v, &value)? {
+                    found = true;
+                    break;
+                }
+            }
+            Ok(Some(Value::Bool(found)))
         }
         _ => Err(VmError::MethodNotFound(format!("system.List.{name}"))),
     }
@@ -2302,6 +2332,23 @@ fn map_storage(receiver: &Value) -> Result<(ArrayRc, ArrayRc), VmError> {
     }
 }
 
+/// `get`/`set`/`remove`/`has`'s shared key lookup — see `equatable_equals`.
+/// Snapshots `keys` first rather than holding its lock across the
+/// (potentially user-code-calling) equality check.
+fn find_key_index(
+    program: &Arc<Program>,
+    keys: &ArrayRc,
+    key: &Value,
+) -> Result<Option<usize>, VmError> {
+    let snapshot = lock(keys).clone();
+    for (i, k) in snapshot.iter().enumerate() {
+        if equatable_equals(program, k, key)? {
+            return Ok(Some(i));
+        }
+    }
+    Ok(None)
+}
+
 fn dispatch_map(
     program: &Arc<Program>,
     name: &str,
@@ -2315,7 +2362,7 @@ fn dispatch_map(
             let key = args
                 .pop()
                 .ok_or(VmError::Malformed("missing key argument"))?;
-            let idx = lock(&keys).iter().position(|k| values_equal(k, &key));
+            let idx = find_key_index(program, &keys, &key)?;
             Ok(Some(match idx {
                 Some(i) => lock(&values)[i].clone(),
                 None => Value::Null,
@@ -2328,7 +2375,7 @@ fn dispatch_map(
             let key = args
                 .pop()
                 .ok_or(VmError::Malformed("missing key argument"))?;
-            let idx = lock(&keys).iter().position(|k| values_equal(k, &key));
+            let idx = find_key_index(program, &keys, &key)?;
             match idx {
                 Some(i) => lock(&values)[i] = value,
                 None => {
@@ -2342,7 +2389,7 @@ fn dispatch_map(
             let key = args
                 .pop()
                 .ok_or(VmError::Malformed("missing key argument"))?;
-            let idx = lock(&keys).iter().position(|k| values_equal(k, &key));
+            let idx = find_key_index(program, &keys, &key)?;
             match idx {
                 Some(i) => {
                     lock(&keys).remove(i);
@@ -2356,9 +2403,7 @@ fn dispatch_map(
             let key = args
                 .pop()
                 .ok_or(VmError::Malformed("missing key argument"))?;
-            Ok(Some(Value::Bool(
-                lock(&keys).iter().any(|k| values_equal(k, &key)),
-            )))
+            Ok(Some(Value::Bool(find_key_index(program, &keys, &key)?.is_some())))
         }
         "keys" => Ok(Some(Value::Array(Arc::new(Mutex::new(
             lock(&keys).clone(),

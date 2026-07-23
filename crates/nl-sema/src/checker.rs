@@ -1513,18 +1513,30 @@ impl<'a> MethodChecker<'a> {
         })
     }
 
+    /// Whether `ty` may appear as a `+` concatenation operand or the source
+    /// of a `(string)` cast — specs.md § String concatenation / Cast to
+    /// string: every primitive, plus a reference type whose static type
+    /// `implements` `Stringable` (directly or via a superclass — see
+    /// `class_table::implements_interface`).
+    fn is_concat_operand(&self, ty: &Type) -> bool {
+        match ty {
+            Type::Int | Type::Float | Type::Bool | Type::Byte | Type::StringT => true,
+            Type::Named(fqcn) => class_table::implements_interface(self.classes, fqcn, "Stringable"),
+            _ => false,
+        }
+    }
+
     /// `(T) expr` cast validation — compiler.md § Cast validation / E007.
     /// Numeric widening/narrowing between `int`/`float`/`byte` is always
     /// valid either way (the direction only matters for whether a cast is
     /// *required*, which is a parser/ergonomics concern, not a validity
-    /// one); casting to `string` is restricted to primitives, same as `+`
-    /// concatenation (E008) — this codebase doesn't implement `Stringable`
-    /// dispatch (see `nl_vm::value::Value::to_display_string`), so a
-    /// reference-type `(string)` cast can never actually succeed at
-    /// runtime. Class casts (either direction — upcast is always valid,
-    /// downcast is checked at runtime by `CHECKCAST`/`InvalidCastException`)
-    /// are accepted between any two classes/interfaces related by `extends`
-    /// or `implements`; unrelated classes are rejected at compile time.
+    /// one); casting to `string` is restricted to primitives plus a
+    /// `Stringable`-implementing reference type (`is_concat_operand`, same
+    /// rule as `+` concatenation — E008/§ Cast to string). Class casts
+    /// (either direction — upcast is always valid, downcast is checked at
+    /// runtime by `CHECKCAST`/`InvalidCastException`) are accepted between
+    /// any two classes/interfaces related by `extends` or `implements`;
+    /// unrelated classes are rejected at compile time.
     fn check_cast(&self, from: &Type, to: &Type) -> Result<(), SemaError> {
         // `Type::Void` = "not really modeled by this checker" wildcard, same
         // as `check_assignable` (an unresolved call, a closure literal, ...).
@@ -1545,7 +1557,7 @@ impl<'a> MethodChecker<'a> {
             return Ok(());
         }
         if matches!(to, Type::StringT) {
-            return if is_concat_operand(from) {
+            return if self.is_concat_operand(from) {
                 Ok(())
             } else {
                 Err(SemaError::BadCast(types::display(from), types::display(to)))
@@ -1746,6 +1758,31 @@ impl<'a> MethodChecker<'a> {
                         if let Some(info) = self.classes.get(&fqcn) {
                             if info.is_enum && info.enum_cases.iter().any(|c| c == name) {
                                 return Ok(Type::Named(fqcn));
+                            }
+                        }
+                        // `Counter.instances` — a plain (non-enum) class's
+                        // `static` field, read via its class name rather
+                        // than an instance. `target` (e.g. `Ident("Counter")`)
+                        // isn't a value, hence the same
+                        // recognize-before-`check_expr` shape as the enum
+                        // case just above.
+                        if let Some((owner, field)) =
+                            class_table::find_field_owner(self.classes, &fqcn, name)
+                        {
+                            if field.is_static {
+                                if !class_table::is_accessible(
+                                    self.classes,
+                                    field.visibility,
+                                    &owner,
+                                    &self.this_fqcn,
+                                ) {
+                                    return Err(SemaError::MemberNotAccessible(
+                                        name.to_string(),
+                                        self.this_fqcn.clone(),
+                                        visibility_str(field.visibility),
+                                    ));
+                                }
+                                return Ok(field.ty);
                             }
                         }
                     }
@@ -2394,6 +2431,43 @@ impl<'a> MethodChecker<'a> {
                 if self.is_const_method && matches!(**target_expr, Expr::This) {
                     return Err(SemaError::ConstMethodPropertyModification(name.clone()));
                 }
+                // `Counter.instances = n;` — a plain (non-enum) class's
+                // `static` field, written via its class name. Same
+                // recognize-before-`check_expr` shape as the read side
+                // (`Expr::FieldAccess` above) — `target_expr` (e.g.
+                // `Ident("Counter")`) isn't a value.
+                if let Some(path) = dotted_path(target_expr) {
+                    let leading = path.split('.').next().expect("dotted_path is never empty");
+                    if self.resolve(leading).is_none() {
+                        let fqcn = self.class_fqcn(&path);
+                        if let Some((owner, field)) =
+                            class_table::find_field_owner(self.classes, &fqcn, name)
+                        {
+                            if field.is_static {
+                                if !class_table::is_accessible(
+                                    self.classes,
+                                    field.visibility,
+                                    &owner,
+                                    &self.this_fqcn,
+                                ) {
+                                    return Err(SemaError::MemberNotAccessible(
+                                        name.to_string(),
+                                        self.this_fqcn.clone(),
+                                        visibility_str(field.visibility),
+                                    ));
+                                }
+                                if field.readonly {
+                                    return Err(SemaError::ReadonlyPropertyModification(
+                                        name.to_string(),
+                                    ));
+                                }
+                                let value_ty = self.check_expr(value, assigned)?;
+                                self.check_assignable(&value_ty, &field.ty)?;
+                                return Ok(field.ty);
+                            }
+                        }
+                    }
+                }
                 let target_ty = self.check_expr(target_expr, assigned)?;
                 let value_ty = self.check_expr(value, assigned)?;
                 let Type::Named(fqcn) = &target_ty else {
@@ -2499,10 +2573,10 @@ impl<'a> MethodChecker<'a> {
 
         // String concatenation: '+' where either static type is `string`.
         if op == BinOp::Add && (matches!(lty, Type::StringT) || matches!(rty, Type::StringT)) {
-            if !matches!(lty, Type::StringT) && !is_concat_operand(&lty) {
+            if !matches!(lty, Type::StringT) && !self.is_concat_operand(&lty) {
                 return Err(SemaError::BadConcatenation(types::display(&lty)));
             }
-            if !matches!(rty, Type::StringT) && !is_concat_operand(&rty) {
+            if !matches!(rty, Type::StringT) && !self.is_concat_operand(&rty) {
                 return Err(SemaError::BadConcatenation(types::display(&rty)));
             }
             return Ok(Type::StringT);
@@ -2717,12 +2791,6 @@ fn literal_eq(a: &Expr, b: &Expr) -> bool {
     }
 }
 
-fn is_concat_operand(ty: &Type) -> bool {
-    matches!(
-        ty,
-        Type::Int | Type::Float | Type::Bool | Type::Byte | Type::StringT
-    )
-}
 
 fn visibility_str(v: nl_syntax::ast::Visibility) -> String {
     match v {

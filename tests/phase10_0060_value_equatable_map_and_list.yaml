@@ -1,0 +1,51 @@
+---
+title: "`ValueEquatable` consulted by `system.Map`/`system.List` — stdlib.md § system.Map / List.contains: key/element lookup calls `valueEquals` on a ValueEquatable-implementing type instead of always falling back to reference identity."
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: |
+  1
+  second
+  true
+expected_stderr: ""
+---
+
+#NLFILE phase10/valueequatablecollections/Point.nl
+namespace phase10.valueequatablecollections;
+class Point implements ValueEquatable {
+	public int x;
+	public int y;
+
+	public construct(int x, int y) {
+		this.x = x;
+		this.y = y;
+	}
+
+	public bool valueEquals(const Point|null other) {
+		if (other == null) { return false; }
+		return this.x == other.x && this.y == other.y;
+	}
+
+	public int valueHash() {
+		return 31 * this.x + this.y;
+	}
+}
+
+#NLFILE phase10/valueequatablecollections/Main.nl
+namespace phase10.valueequatablecollections;
+class Main {
+	public static int main(string[] args) {
+		auto map = new system.Map<Point, string>();
+		map.set(new Point(1, 2), "first");
+		// Distinct instance, but value-equal to the key above: must update
+		// the existing entry rather than adding a second one.
+		map.set(new Point(1, 2), "second");
+		system.Out.println(system.Int.toString(map.size()));
+		string|null v = map.get(new Point(1, 2));
+		system.Out.println(v ?? "null");
+
+		auto list = new system.List<Point>();
+		list.add(new Point(3, 4));
+		system.Out.println(system.Bool.toString(list.contains(new Point(3, 4))));
+		return 0;
+	}
+}

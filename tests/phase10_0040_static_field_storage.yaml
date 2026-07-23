@@ -1,0 +1,54 @@
+---
+title: "`static` field on a non-enum class — specs.md § Classes: real per-class storage (GET_STATIC/SET_STATIC), a declared initializer runs once before `main`, and the field is shared with subclasses accessed through their own name."
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: |
+  100
+  103
+  12
+expected_stderr: ""
+---
+
+#NLFILE phase10/staticfield/Counter.nl
+namespace phase10.staticfield;
+class Counter {
+	public static int instances = 100;
+
+	public construct() {
+		Counter.instances = Counter.instances + 1;
+	}
+
+	public static int getInstances() {
+		return Counter.instances;
+	}
+}
+
+#NLFILE phase10/staticfield/Base.nl
+namespace phase10.staticfield;
+class Base {
+	public static int shared;
+}
+
+#NLFILE phase10/staticfield/Sub.nl
+namespace phase10.staticfield;
+class Sub extends Base {
+	public construct() {}
+}
+
+#NLFILE phase10/staticfield/Main.nl
+namespace phase10.staticfield;
+class Main {
+	public static int main(string[] args) {
+		system.Out.println(system.Int.toString(Counter.instances));
+
+		auto a = new Counter();
+		auto b = new Counter();
+		auto c = new Counter();
+		system.Out.println(system.Int.toString(Counter.getInstances()));
+
+		Base.shared = 7;
+		Sub.shared = Sub.shared + 5;
+		system.Out.println(system.Int.toString(Base.shared));
+		return 0;
+	}
+}

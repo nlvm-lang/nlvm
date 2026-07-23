@@ -5,6 +5,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0]
+
+### Added
+- `static` fields on ordinary (non-enum) classes are now backed by real per-class storage (`GET_STATIC`/`SET_STATIC`), previously unimplemented (`VmError::Unsupported`). A declared initializer (`public static int counter = 0;`) runs once at program load time, before `main`. Accessed and assigned via `ClassName.field`, including through a subclass name when the field is inherited.
+- `system.Map`/`system.List` key/element lookup (`get`/`set`/`remove`/`has`/`contains`) now calls a `ValueEquatable`-implementing type's `valueEquals` for structural equality instead of always falling back to reference identity.
+- `Stringable.toString()` is now called implicitly by string concatenation (`+`) and the `(string)` cast when an operand's static type implements `Stringable`, instead of being rejected at compile time (E008/E007).
+
+### Fixed
+- A class property declared with an inline initializer (`public int x = 42;`) is now actually assigned that value at construction — previously the initializer expression was parsed and accepted by the compiler but silently never applied, leaving the field at its type's plain default (`0`/`""`/`false`/`null`) regardless of what was written.
+
 ## [0.9.0]
 
 ### Added

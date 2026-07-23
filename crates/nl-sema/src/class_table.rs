@@ -12,6 +12,7 @@ pub struct FieldInfo {
     pub ty: Type,
     pub visibility: Visibility,
     pub readonly: bool,
+    pub is_static: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -109,6 +110,30 @@ pub fn is_subclass_or_same(classes: &ClassTable, sub: &str, sup: &str) -> bool {
             return true;
         }
         match classes.get(&current).and_then(|c| c.extends.clone()) {
+            Some(parent) => current = parent,
+            None => return false,
+        }
+    }
+}
+
+/// Whether `fqcn` (or, transitively, any of its `extends` ancestors)
+/// declares `target` in its `implements` list — used for `Stringable`
+/// dispatch (E008/E007's concat/cast operand check) so a subclass of a
+/// `Stringable`-implementing class counts too, not just the exact
+/// declaring class. No transitivity through interface-`extends` (an
+/// interface `extends`ing another isn't parsed yet — see
+/// `IMPLEMENTATION_STATUS.md`), matching `is_object_assignable`'s existing
+/// leniency.
+pub fn implements_interface(classes: &ClassTable, fqcn: &str, target: &str) -> bool {
+    let mut current = fqcn;
+    loop {
+        let Some(info) = classes.get(current) else {
+            return false;
+        };
+        if info.implements.iter().any(|i| i == target) {
+            return true;
+        }
+        match &info.extends {
             Some(parent) => current = parent,
             None => return false,
         }
@@ -364,6 +389,7 @@ pub fn build_class_table(files: &[SourceFile]) -> ClassTable {
                         ty: resolve_type(&f.ty, &imports),
                         visibility: f.visibility,
                         readonly: f.readonly,
+                        is_static: f.is_static,
                     })
                     .collect();
                 let resolve_throws = |m: &nl_syntax::ast::MethodDecl| -> Vec<Type> {

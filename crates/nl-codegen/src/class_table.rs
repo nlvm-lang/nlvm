@@ -13,14 +13,22 @@ pub struct FieldInfo {
     pub name: String,
     /// Resolved (FQCN, not source-simple-name) type.
     pub ty: Type,
-    /// The field's declared initializer, if any — only ever consulted for
-    /// an enum case constant (`nl_syntax::parser::parse_enum_decl` always
-    /// gives one an `init`): `ClassName.CaseName` re-compiles this
-    /// expression at each reference site rather than reading real static
-    /// storage (see `crate::expr::Emitter::compile_field_access`'s enum
-    /// branch — case values are compile-time constants, so there is no
-    /// need for a `GET_STATIC`/class-static-storage mechanism).
+    /// The field's declared initializer, if any. For an enum case constant
+    /// (`nl_syntax::parser::parse_enum_decl` always gives one an `init`),
+    /// `ClassName.CaseName` re-compiles this expression at each reference
+    /// site rather than reading real static storage (see
+    /// `crate::expr::Emitter::compile_field_access`'s enum branch — case
+    /// values are compile-time constants). For an ordinary `static` field on
+    /// a non-enum class, this is instead compiled once into a synthetic
+    /// `<clinit>` method (see `crate::compile_file`) that runs at program
+    /// load time and writes through `SET_STATIC`.
     pub init: Option<Expr>,
+    /// `static` modifier — see `nl_syntax::ast::FieldDecl::is_static`.
+    /// Non-enum statics are backed by real per-class storage
+    /// (`GET_STATIC`/`SET_STATIC`, `nl_vm::Program`'s static table); an
+    /// enum's own case "fields" also carry this flag at the bytecode level
+    /// but are never read back through it — see `init`'s doc comment.
+    pub is_static: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -270,6 +278,7 @@ pub fn build_class_table(files: &[SourceFile]) -> HashMap<String, ClassInfo> {
                         name: f.name.clone(),
                         ty: resolve_type(&f.ty, &imports),
                         init: f.init.clone(),
+                        is_static: f.is_static,
                     })
                     .collect();
 
@@ -425,6 +434,26 @@ pub fn find_field<'c>(
         let info = classes.get(current)?;
         if let Some(f) = info.fields.iter().find(|f| f.name == name) {
             return Some(f);
+        }
+        current = info.extends.as_deref()?;
+    }
+}
+
+/// Like `find_field`, but also returns the FQCN of the class that actually
+/// *declares* the field — needed for `GET_STATIC`/`SET_STATIC`, whose
+/// constant-pool `FieldRef` must name the declaring class (where
+/// `nl_vm::Program`'s static storage lives), not whatever subclass name a
+/// reference happened to spell out.
+pub fn find_field_owner<'c>(
+    classes: &'c HashMap<String, ClassInfo>,
+    fqcn: &str,
+    name: &str,
+) -> Option<(String, &'c FieldInfo)> {
+    let mut current = fqcn;
+    loop {
+        let info = classes.get(current)?;
+        if let Some(f) = info.fields.iter().find(|f| f.name == name) {
+            return Some((current.to_string(), f));
         }
         current = info.extends.as_deref()?;
     }

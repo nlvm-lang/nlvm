@@ -310,16 +310,14 @@ fn cloneable() -> InterfaceDecl {
 /// Self|null other); public int valueHash();`. Same hand-built-AST rationale
 /// as `cloneable()` above.
 ///
-/// **Known limitation** (matching the existing doc comment on this gap in
-/// `nl_vm::native` and `nl_sema`/`nl_codegen`'s `native_generics.rs`):
-/// `system.Map`/`List` key/element lookup still uses `values_equal`
-/// (primitive/string value equality, reference identity for everything
-/// else) — it does not call back into a `ValueEquatable`-implementing
-/// object's `valueEquals`/`valueHash`. Declaring the interface makes
-/// `valueEquals`/`valueHash` implementable and callable as ordinary instance
-/// methods (specs.md's own example — `p1.valueEquals(p2)` — needs nothing
-/// more than that), but the `system.Map` optimization specs.md describes
-/// remains unimplemented.
+/// `system.Map`/`List` key/element lookup (`nl_vm::native::
+/// equatable_equals`) calls into an implementing object's `valueEquals`
+/// (virtually — an override further down the hierarchy wins), falling back
+/// to `values_equal` (primitive/string value equality, reference identity
+/// otherwise) for everything else. `valueHash` is declared and callable
+/// like any ordinary instance method, but nothing in this implementation
+/// actually hashes by it — `Map<K,V>` is backed by parallel arrays with
+/// O(n) lookup (see that module's doc comment), not a real hash table.
 fn value_equatable() -> InterfaceDecl {
     InterfaceDecl {
         name: "ValueEquatable".to_string(),

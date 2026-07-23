@@ -20,10 +20,10 @@
 //! untested. `Map.forEach` is implemented (closures-as-native-callbacks,
 //! see `nl_vm::native::dispatch_array`'s doc comment); `List` has no
 //! `forEach` of its own — stdlib.md doesn't define one, only `Map` does.
-//! The `T[] initial` list constructor's interaction with `ValueEquatable`
-//! is not implemented — `contains`/map key equality fall back to
-//! primitive/string value equality or reference identity (see
-//! `nl_vm::native`), never `valueEquals`/`valueHash`.
+//! `contains`/map key equality consult `ValueEquatable.valueEquals` when
+//! the element/key type implements it, falling back to primitive/string
+//! value equality or reference identity otherwise (see
+//! `nl_vm::native::equatable_equals`).
 //!
 //! `system.MapEntry<K, V>` (stdlib.md § Result types) is covered as a
 //! third native generic: never constructed by user code, only returned by

@@ -1,0 +1,29 @@
+---
+title: "Class property declaration-site initializer is actually applied — specs.md § Default values: `public int x = 42;` must hold 42 on a fresh instance, not the type's plain default."
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: |
+  42
+  hello
+expected_stderr: ""
+---
+
+#NLFILE phase10/fieldinit/Foo.nl
+namespace phase10.fieldinit;
+class Foo {
+	public int x = 42;
+	public string label = "hello";
+
+	public construct() {}
+}
+
+#NLFILE phase10/fieldinit/Main.nl
+namespace phase10.fieldinit;
+class Main {
+	public static int main(string[] args) {
+		auto f = new Foo();
+		system.Out.println(system.Int.toString(f.x));
+		system.Out.println(f.label);
+		return 0;
+	}
+}
