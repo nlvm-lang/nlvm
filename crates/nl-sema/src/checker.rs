@@ -453,14 +453,8 @@ fn check_const_interface_impl(
     // compiler.md § Interface inheritance: "a class implementing Closeable
     // must provide both close() and dispose()" — so E044's const check must
     // walk each directly-implemented interface's own `extends` closure too,
-    // not just its own directly-declared methods. `seen` guards against
-    // revisiting the same interface through a diamond.
-    let mut seen = std::collections::HashSet::new();
-    let mut queue: Vec<String> = info.implements.clone();
-    while let Some(iface_fqcn) = queue.pop() {
-        if !seen.insert(iface_fqcn.clone()) {
-            continue;
-        }
+    // not just its own directly-declared methods.
+    for iface_fqcn in class_table::interface_closure(classes, &info.implements) {
         let Some(iface_info) = classes.get(&iface_fqcn) else {
             continue;
         };
@@ -482,7 +476,6 @@ fn check_const_interface_impl(
                 ));
             }
         }
-        queue.extend(iface_info.implements.iter().cloned());
     }
     Ok(())
 }
@@ -493,7 +486,11 @@ fn check_const_interface_impl(
 /// a final class), E036 (overrides a final method), E049 (conflicting
 /// `abstract`/`final` on the same class or method), and E033 (a concrete
 /// class that still has an unimplemented abstract method somewhere in its
-/// `extends` chain, including one it declares directly itself).
+/// `extends` chain, including one it declares directly itself, **or** an
+/// unimplemented method from an interface it — or an ancestor — implements;
+/// specs.md § Interface inheritance: "Interface methods are implicitly
+/// abstract", and "a class implementing an interface must implement all
+/// methods, including those inherited from extended interfaces").
 fn check_abstract_final(
     class: &ClassDecl,
     classes: &ClassTable,
@@ -556,6 +553,56 @@ fn check_abstract_final(
             match &info.extends {
                 Some(parent) => current = parent.clone(),
                 None => break,
+            }
+        }
+
+        // specs.md § Interface inheritance — every method of every interface
+        // implemented anywhere along `this_fqcn`'s own `extends` chain (not
+        // just directly by `this_fqcn` itself: a concrete subclass of an
+        // abstract class that implements an interface inherits the same
+        // obligation) must have a concrete (non-abstract) implementation
+        // somewhere along that same chain, arity-matched the same
+        // best-effort way as E044's const check above.
+        let mut interfaces: HashSet<String> = HashSet::new();
+        let mut current = Some(this_fqcn.to_string());
+        while let Some(fqcn) = current {
+            let Some(info) = classes.get(&fqcn) else {
+                break;
+            };
+            interfaces.extend(class_table::interface_closure(classes, &info.implements));
+            current = info.extends.clone();
+        }
+        for iface_fqcn in &interfaces {
+            let Some(iface_info) = classes.get(iface_fqcn) else {
+                continue;
+            };
+            for iface_method in &iface_info.methods {
+                let arity = iface_method.params.len();
+                let has_concrete_impl = {
+                    let mut current = this_fqcn;
+                    loop {
+                        let Some(info) = classes.get(current) else {
+                            break false;
+                        };
+                        if let Some(m) = info
+                            .methods
+                            .iter()
+                            .find(|m| m.name == iface_method.name && m.params.len() == arity)
+                        {
+                            break !m.is_abstract;
+                        }
+                        match info.extends.as_deref() {
+                            Some(parent) => current = parent,
+                            None => break false,
+                        }
+                    }
+                };
+                if !has_concrete_impl {
+                    return Err(SemaError::ClassMustBeAbstract(
+                        class.name.clone(),
+                        iface_method.name.clone(),
+                    ));
+                }
             }
         }
     }

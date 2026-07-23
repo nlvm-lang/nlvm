@@ -1,0 +1,35 @@
+---
+title: "An abstract class implementing an interface may leave its methods unimplemented; a concrete subclass must still provide them (or itself stays E033)"
+file_separator: "#NLFILE"
+expected_exit_code: 42
+expected_stdout: ""
+---
+
+#NLFILE phase13/e033abstractok/Closeable.nl
+namespace phase13.e033abstractok;
+interface Closeable {
+	public void close();
+}
+
+#NLFILE phase13/e033abstractok/BaseHandle.nl
+namespace phase13.e033abstractok;
+abstract class BaseHandle implements Closeable {
+	public construct() {}
+}
+
+#NLFILE phase13/e033abstractok/FileHandle.nl
+namespace phase13.e033abstractok;
+class FileHandle extends BaseHandle {
+	public construct() { super(); }
+	public void close() {}
+}
+
+#NLFILE phase13/e033abstractok/Main.nl
+namespace phase13.e033abstractok;
+class Main {
+	public static int main(string[] args) {
+		FileHandle f = new FileHandle();
+		f.close();
+		return 42;
+	}
+}

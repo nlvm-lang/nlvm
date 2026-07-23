@@ -5,9 +5,12 @@ mod testfile;
 use anyhow::{Context, Result};
 
 fn main() -> Result<()> {
-    let dir = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "/data/projects/nlvm-specs/tests".to_string());
+    // Defaults to this repo's own internal fixtures (`tests/`, relative to
+    // wherever the binary is invoked from) rather than any machine-specific
+    // path — the external nlvm-specs suite lives in a sibling repo whose
+    // location isn't knowable here; pass it explicitly, e.g.
+    // `cargo run -p nl-test-runner -- /path/to/nlvm-specs/tests` (see README).
+    let dir = std::env::args().nth(1).unwrap_or_else(|| "tests".to_string());
 
     let mut entries: Vec<_> = std::fs::read_dir(&dir)
         .with_context(|| format!("reading test directory {dir}"))?

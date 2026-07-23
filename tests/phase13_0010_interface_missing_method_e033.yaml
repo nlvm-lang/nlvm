@@ -1,0 +1,25 @@
+---
+title: "Compile E033 — class implementing an interface without providing one of its methods must be declared abstract"
+file_separator: "#NLFILE"
+expected_compile_error: "E033"
+---
+
+#NLFILE phase13/e033missing/Closeable.nl
+namespace phase13.e033missing;
+interface Closeable {
+	public void close();
+}
+
+#NLFILE phase13/e033missing/FileHandle.nl
+namespace phase13.e033missing;
+class FileHandle implements Closeable {
+	public construct() {}
+}
+
+#NLFILE phase13/e033missing/Main.nl
+namespace phase13.e033missing;
+class Main {
+	public static int main(string[] args) {
+		return 0;
+	}
+}

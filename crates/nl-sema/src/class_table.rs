@@ -143,6 +143,27 @@ fn interface_extends(classes: &ClassTable, iface: &str, target: &str, seen: &mut
         .any(|parent| interface_extends(classes, parent, target, seen))
 }
 
+/// BFS closure of interfaces reachable from `direct` (each interface plus,
+/// transitively, anything it `extends` — see `interface_extends`'s doc
+/// comment). Shared by E044's const-correctness check and E033's interface
+/// conformance check (`check_abstract_final` in `checker.rs`), so both agree
+/// on exactly which interface methods a class is on the hook for.
+pub fn interface_closure(classes: &ClassTable, direct: &[String]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut queue: Vec<String> = direct.to_vec();
+    let mut result = Vec::new();
+    while let Some(iface_fqcn) = queue.pop() {
+        if !seen.insert(iface_fqcn.clone()) {
+            continue;
+        }
+        if let Some(info) = classes.get(&iface_fqcn) {
+            queue.extend(info.implements.iter().cloned());
+        }
+        result.push(iface_fqcn);
+    }
+    result
+}
+
 /// Whether `fqcn` (or, transitively, any of its `extends` ancestors)
 /// declares `target` in its `implements` list, or one of those directly
 /// implemented interfaces itself (transitively) `extends`-es `target` — used

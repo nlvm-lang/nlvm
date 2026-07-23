@@ -5,6 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.2]
+
+### Fixed
+- A non-abstract class that implements an interface (directly, via an ancestor `extends`, or transitively through `interface ... extends ...`) without providing all of its methods is now rejected with `E033 — Class must be declared abstract`, matching specs.md § Interface inheritance ("a class implementing an interface must implement all methods") and § Abstract classes and methods ("interface methods are implicitly abstract"). Previously such a class compiled successfully and only failed at runtime, with an unhelpful error, the first time virtual dispatch tried to find the missing method.
+- `nl-test-runner` no longer defaults to a machine-specific absolute path (`/data/projects/nlvm-specs/tests`) when run without an argument; it now defaults to this repo's own `tests/` directory, which always exists relative to the invocation.
+
 ## [0.11.1]
 
 ### Fixed

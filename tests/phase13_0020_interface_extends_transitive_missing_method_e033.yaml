@@ -1,0 +1,32 @@
+---
+title: "Compile E033 — a class must implement methods inherited from an extended interface, not just its own directly-declared ones"
+file_separator: "#NLFILE"
+expected_compile_error: "E033"
+---
+
+#NLFILE phase13/e033transitive/Disposable.nl
+namespace phase13.e033transitive;
+interface Disposable {
+	public void dispose();
+}
+
+#NLFILE phase13/e033transitive/Closeable.nl
+namespace phase13.e033transitive;
+interface Closeable extends Disposable {
+	public void close();
+}
+
+#NLFILE phase13/e033transitive/FileHandle.nl
+namespace phase13.e033transitive;
+class FileHandle implements Closeable {
+	public construct() {}
+	public void close() {}
+}
+
+#NLFILE phase13/e033transitive/Main.nl
+namespace phase13.e033transitive;
+class Main {
+	public static int main(string[] args) {
+		return 0;
+	}
+}
