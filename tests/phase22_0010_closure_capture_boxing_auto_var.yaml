@@ -1,0 +1,41 @@
+---
+title: "Closure variable capture and boxing — vm.md § Variable capture and boxing: an `auto`-declared local (not just an explicitly-typed one) still gets boxed when a closure captures and mutates it (issue #15)"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "2 99 3"
+---
+
+#NLFILE phase22/closure_capture_boxing_auto_var/Main.nl
+namespace phase22.closure_capture_boxing_auto_var;
+class Main {
+	public static int main(string[] args) {
+		// Mutated *inside* the capturing closure — `auto` must be boxed
+		// exactly like an explicitly-typed `int n = 0;` would be.
+		auto n = 0;
+		auto incN = () => { n++; };
+		incN();
+		incN();
+
+		// Mutated by the *enclosing* scope after the closure captured it —
+		// still needs a box, same as vm.md's rule for explicitly-typed
+		// captures.
+		auto m = 0;
+		auto readM = () => m;
+		m = 99;
+
+		// Two different closures capturing and mutating the same `auto`
+		// local must share one box, not two independent copies.
+		auto both = 0;
+		auto incByOne = () => { both++; };
+		auto incByTwo = () => { both = both + 2; };
+		incByOne();
+		incByTwo();
+
+		system.Out.print(system.Int.toString(n));
+		system.Out.print(" ");
+		system.Out.print(system.Int.toString(readM()));
+		system.Out.print(" ");
+		system.Out.print(system.Int.toString(both));
+		return 0;
+	}
+}

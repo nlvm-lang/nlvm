@@ -34,6 +34,33 @@ type MethodSig = (Vec<Param>, Type, Vec<Type>);
 /// `LocatedError` by attaching `file.path`.
 type Located = (u32, SemaError);
 
+/// vm.md § Variable capture and boxing, issue #15 — an `auto`-declared local
+/// that needs a boxed slot (it's captured by a closure and mutated
+/// somewhere in the method) but whose concrete type
+/// `nl_syntax::monomorphize::collect_closure_box_requests` can't recover on
+/// its own: that pass runs on bare AST, before any type checking, so it only
+/// ever registers a `Box<T>` instantiation for an *explicitly*-typed
+/// declaration. This checker already resolves an `auto` declaration's type
+/// from its initializer (`StmtKind::VarDecl`'s `(None, Some(v))` arm), so it
+/// hands that type back here; `nl_sema::check_compile_with_warnings` then
+/// patches it into the caller's own (pre-expansion) AST — turning `auto n =
+/// 0;` into the equivalent of `int n = 0;` before nl-codegen ever runs — so
+/// neither `nl_syntax::monomorphize` nor `nl_codegen` needs to know `auto`
+/// was ever involved.
+///
+/// Identified by `(path, line, name)` rather than a variable id: the fix is
+/// applied to a *different* clone of the AST than the one this checker
+/// walked (the caller's original, pre-expansion `files`, vs. this crate's
+/// own prelude+typedef+monomorphize-expanded working copy), and those two
+/// clones share source line numbers and declaration names but not any
+/// checker-internal id space.
+pub(crate) struct AutoBoxFix {
+    pub(crate) path: String,
+    pub(crate) line: u32,
+    pub(crate) name: String,
+    pub(crate) ty: Type,
+}
+
 fn locate<T>(line: u32, r: Result<T, SemaError>) -> Result<T, Located> {
     r.map_err(|e| (line, e))
 }
@@ -42,7 +69,7 @@ pub fn check_source_file(
     file: &SourceFile,
     all_files: &[SourceFile],
     classes: &ClassTable,
-) -> Result<Vec<LocatedWarning>, LocatedError> {
+) -> Result<(Vec<LocatedWarning>, Vec<AutoBoxFix>), LocatedError> {
     let SourceItem::Class(class) = &file.item else {
         // Interfaces declare signatures only — nothing to flow-check yet,
         // except the diamond-merge conflict an interface's own `extends`
@@ -57,7 +84,7 @@ pub fn check_source_file(
             iface.decl_line,
             check_diamond_interface_merge(classes, &this_fqcn),
         )
-        .map(|()| Vec::new())
+        .map(|()| (Vec::new(), Vec::new()))
         .map_err(|(line, error)| LocatedError {
             file: file.path.clone(),
             line,
@@ -66,6 +93,7 @@ pub fn check_source_file(
     };
 
     let mut warnings: Vec<(u32, SemaWarning)> = Vec::new();
+    let mut auto_box_fixes: Vec<(u32, String, Type)> = Vec::new();
     let result: Result<(), Located> = (|| {
         locate(class.decl_line, check_duplicate_methods(class))?;
         locate(class.decl_line, check_constructor_delegation(class))?;
@@ -114,8 +142,16 @@ pub fn check_source_file(
         }
 
         for method in &class.methods {
-            check_method(method, &sigs, classes, &imports, &mut warnings, &this_fqcn)
-                .map_err(|(line, e)| (line, relabel_template_operator_error(e, &this_fqcn)))?;
+            check_method(
+                method,
+                &sigs,
+                classes,
+                &imports,
+                &mut warnings,
+                &mut auto_box_fixes,
+                &this_fqcn,
+            )
+            .map_err(|(line, e)| (line, relabel_template_operator_error(e, &this_fqcn)))?;
             // compiler.md § Exception inheritance rules — E016/E017. Only
             // meaningful for instance methods (static methods hide, not
             // override) that actually override an ancestor's method.
@@ -131,14 +167,24 @@ pub fn check_source_file(
 
     result
         .map(|()| {
-            warnings
+            let warnings = warnings
                 .into_iter()
                 .map(|(line, warning)| LocatedWarning {
                     file: file.path.clone(),
                     line,
                     warning,
                 })
-                .collect()
+                .collect();
+            let fixes = auto_box_fixes
+                .into_iter()
+                .map(|(line, name, ty)| AutoBoxFix {
+                    path: file.path.clone(),
+                    line,
+                    name,
+                    ty,
+                })
+                .collect();
+            (warnings, fixes)
         })
         .map_err(|(line, error)| LocatedError {
             file: file.path.clone(),
@@ -844,6 +890,7 @@ fn check_method(
     classes: &ClassTable,
     imports: &HashMap<String, String>,
     warnings: &mut Vec<(u32, SemaWarning)>,
+    auto_box_fixes: &mut Vec<(u32, String, Type)>,
     this_fqcn: &str,
 ) -> Result<(), Located> {
     let this_ty = if method.is_static {
@@ -885,6 +932,7 @@ fn check_method(
         readonly_loop_vars: HashSet::new(),
         current_line: method.decl_line,
         warnings: Vec::new(),
+        auto_decls: Vec::new(),
     };
     checker.push_scope();
     let mut assigned = HashSet::new();
@@ -911,6 +959,19 @@ fn check_method(
         .map_err(|e| (checker.current_line, e))?;
     checker.pop_scope();
     warnings.append(&mut checker.warnings);
+
+    // issue #15 — of every `auto` declaration this method checked
+    // (`checker.auto_decls`), only the ones nl-codegen's own (type-blind)
+    // capture analysis would actually box need their resolved type handed
+    // back; anything else keeps today's plain-snapshot behavior exactly as
+    // before, so this can't regress a program that already compiled fine.
+    let boxed_names = nl_syntax::capture::boxed_captures_in_block(&method.body);
+    auto_box_fixes.extend(
+        checker
+            .auto_decls
+            .into_iter()
+            .filter(|(_, name, _)| boxed_names.contains(name)),
+    );
     Ok(())
 }
 
@@ -1002,6 +1063,12 @@ struct MethodChecker<'a> {
     /// compilation, so it can't go through the same `Result<_, Located>`
     /// path as everything else in this checker.
     warnings: Vec<(u32, SemaWarning)>,
+    /// Issue #15 — every `auto`-declared local this method checked, with
+    /// its resolved (initializer) type, recorded regardless of whether it
+    /// ends up needing a box; `check_method` filters this down to the ones
+    /// that do (see `AutoBoxFix`) once the whole body has been walked and
+    /// the capture analysis has run.
+    auto_decls: Vec<(u32, String, Type)>,
 }
 
 impl<'a> MethodChecker<'a> {
@@ -1590,6 +1657,13 @@ impl<'a> MethodChecker<'a> {
                 };
                 if let Some(v) = &value_ty {
                     self.check_assignable(v, &declared_ty)?;
+                }
+                // Issue #15 — remember every `auto` declaration's resolved
+                // type regardless of whether it turns out to need boxing;
+                // `check_method` filters by the capture analysis afterward.
+                if ty.is_none() {
+                    self.auto_decls
+                        .push((stmt.line, name.clone(), declared_ty.clone()));
                 }
                 let id = self.declare(name, declared_ty);
                 if *is_const {

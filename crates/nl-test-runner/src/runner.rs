@@ -26,7 +26,7 @@ pub fn run_test(test: &TestFile) -> Outcome {
         return Outcome::Fail("expected a parse error but parsing succeeded".to_string());
     }
 
-    let warnings = match nl_sema::check_compile_with_warnings(&files) {
+    let warnings = match nl_sema::check_compile_with_warnings(&mut files) {
         Ok(warnings) => warnings,
         Err(e) => {
             return match &test.header.expected_compile_error {
