@@ -22,6 +22,14 @@
 //!   string (stdlib.md § system.text.Regex: "found anywhere in input...
 //!   like grep"), used by `system.text.Regex.match`/`matchFirst`/`replace`/
 //!   `split`. A caller wanting a full match anchors explicitly (`"^...$"`).
+//!
+//! [`compile_glob`] additionally translates real glob syntax (`*`, `**`,
+//! `?`) into a pattern for this same engine, for `File.glob`'s "pattern may
+//! be glob ... or regex" (stdlib.md § system.io.File (glob), issue #3: the
+//! pattern used to always be compiled as a regex, so a literal glob like
+//! `"*.txt"` matched only the literal string `*.txt`). `native::File::glob`
+//! picks between [`Regex::compile`] and [`compile_glob`] based on whether
+//! the pattern contains regex-only syntax (see that call site).
 
 use std::cell::{Cell, RefCell};
 
@@ -143,6 +151,59 @@ pub fn escape(s: &str) -> String {
         out.push(c);
     }
     out
+}
+
+/// Translates a glob pattern into this engine's regex syntax and compiles
+/// it, for `File.glob`'s glob half (stdlib.md § system.io.File (glob)):
+/// `*` matches any run of characters other than `/` (doesn't cross
+/// directories), `**` matches any run of characters including `/` (does),
+/// `?` matches exactly one non-`/` character, and `[...]`/`[^...]`
+/// character classes pass through unchanged (same syntax as this engine's
+/// regex classes). Every other character is escaped so it matches
+/// literally — a glob has no concept of `.`/`^`/`$`/`|`/`+`/groups.
+pub fn compile_glob(pattern: &str) -> Result<Regex, String> {
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut out = String::with_capacity(chars.len() + 2);
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            '*' if chars.get(i + 1) == Some(&'*') => {
+                out.push_str(".*");
+                i += 2;
+            }
+            '*' => {
+                out.push_str("[^/]*");
+                i += 1;
+            }
+            '?' => {
+                out.push_str("[^/]");
+                i += 1;
+            }
+            '[' => {
+                out.push('[');
+                i += 1;
+                while i < chars.len() && chars[i] != ']' {
+                    out.push(chars[i]);
+                    i += 1;
+                }
+                if i < chars.len() {
+                    out.push(']');
+                    i += 1;
+                }
+            }
+            c => {
+                if matches!(
+                    c,
+                    '.' | '^' | '$' | '|' | '+' | '(' | ')' | '\\' | '{' | '}'
+                ) {
+                    out.push('\\');
+                }
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    Regex::compile(&out)
 }
 
 struct Parser {
@@ -454,5 +515,40 @@ mod tests {
     fn escape_metacharacters() {
         assert_eq!(super::escape("a.b*c"), "a\\.b\\*c");
         assert!(is_match(&super::escape("a.b*c"), "a.b*c"));
+    }
+
+    fn glob_match(pattern: &str, s: &str) -> bool {
+        super::compile_glob(pattern)
+            .expect("valid glob")
+            .is_match(s)
+    }
+
+    #[test]
+    fn glob_star_does_not_cross_directories() {
+        assert!(glob_match("*.txt", "readme.txt"));
+        assert!(!glob_match("*.txt", "sub/readme.txt"));
+        assert!(!glob_match("*.txt", "readme.txt.bak"));
+    }
+
+    #[test]
+    fn glob_double_star_crosses_directories() {
+        assert!(glob_match("src/**/*.nl", "src/a/b/main.nl"));
+        assert!(glob_match("src/**/*.nl", "src/x/main.nl"));
+        assert!(!glob_match("src/**/*.nl", "src/x/main.txt"));
+    }
+
+    #[test]
+    fn glob_question_mark_and_literal_dot() {
+        assert!(glob_match("a?c", "abc"));
+        assert!(!glob_match("a?c", "ac"));
+        assert!(!glob_match("a?c", "a/c"));
+        assert!(!glob_match("v1.2", "v1x2"));
+        assert!(glob_match("v1.2", "v1.2"));
+    }
+
+    #[test]
+    fn glob_character_class_passthrough() {
+        assert!(glob_match("[a-z]*.txt", "readme.txt"));
+        assert!(!glob_match("[a-z]*.txt", "README.txt"));
     }
 }

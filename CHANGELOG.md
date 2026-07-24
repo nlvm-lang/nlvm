@@ -5,6 +5,11 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.1]
+
+### Fixed
+- `system.io.File.glob` now supports real glob syntax (`*`, `**`, `?`, `[...]`), not just regex. Previously every pattern was compiled as a regex, so a plain glob like `"*.txt"` matched only the literal string `*.txt` (`*` had nothing to quantify, so it was parsed as a literal character) instead of files ending in `.txt`. A pattern is now compiled as a regex only if it uses regex-only syntax (backslash escapes, `^`/`$` anchors, `|` alternation, `+`, groups, `{m,n}`) — this keeps existing regex patterns (e.g. `".*\\.nl"`) working unchanged — and as a glob otherwise, via a new `mini_regex::compile_glob` translator (`*` → any run of non-`/` characters, `**` → any run of characters including `/`, `?` → one non-`/` character). See [issue #3](https://github.com/nlvm-lang/nlvm/issues/3).
+
 ## [0.14.0]
 
 ### Added

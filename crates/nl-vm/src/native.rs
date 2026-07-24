@@ -14,9 +14,10 @@
 //! `INVOKE_STATIC system.String.<name>`, see `nl_codegen::stdlib`),
 //! `system.List<T>`/`system.Map<K,V>` (see the section below), and
 //! `system.io.*` file I/O including `File.open`'s `FileMode` overload and
-//! `File.glob` (backed by `crate::mini_regex`, since patterns are matched
-//! as regex — see that module's doc comment), `system.io.Grep` (same
-//! `mini_regex` backing, applied per-line instead of per-path), and
+//! `File.glob` (backed by `crate::mini_regex`, patterns compiled as glob or
+//! regex depending on content — see `compile_glob_or_regex` and that
+//! module's doc comment), `system.io.Grep` (same `mini_regex` backing,
+//! always regex, applied per-line instead of per-path), and
 //! `system.text.Regex`/`system.text.Encoding` (also backed by `crate::mini_regex`, plus
 //! `crate::text` for base64 and `RegexMatch` construction), and
 //! `system.time.DateTime`/`system.time.TimeZone` (calendar math and IANA
@@ -315,7 +316,7 @@ pub fn dispatch(
         ("system.io.File", "glob") => {
             let base = str_at(&args, 0)?;
             let pattern = str_at(&args, 1)?;
-            let regex = crate::mini_regex::Regex::compile(&pattern).map_err(|e| {
+            let regex = compile_glob_or_regex(&pattern).map_err(|e| {
                 throw_native(
                     "IOException",
                     format!("invalid glob pattern '{pattern}': {e}"),
@@ -894,6 +895,27 @@ fn normalize_path(path: &str) -> String {
         (true, _) => format!("{}{joined}", std::path::MAIN_SEPARATOR),
         (false, true) => ".".to_string(),
         (false, false) => joined,
+    }
+}
+
+/// Compiles a `File.glob` pattern as glob or regex (stdlib.md § system.io.File
+/// (glob): "may be glob ... or regex") — issue #3: previously always
+/// compiled as a regex, so a plain glob like `"*.txt"` matched only the
+/// literal string `*.txt` (`*` has no preceding atom to quantify, so
+/// `Regex::compile` parses it as a literal character), not files ending in
+/// `.txt`. There's no separate flag to say which syntax a pattern uses, so
+/// this picks by content: a pattern using syntax that's regex-only and
+/// never appears in a glob (backslash escapes, `^`/`$` anchors, `|`
+/// alternation, `+`, groups `(...)`, counted repetition `{m,n}`) is
+/// compiled as a regex — this keeps the existing official fixture
+/// (`phase6_0150`'s `".*\\.nl"`) working unchanged. Anything else is
+/// compiled as a glob via [`crate::mini_regex::compile_glob`] (`*`/`**`/`?`
+/// wildcards, `[...]` classes, everything else literal).
+fn compile_glob_or_regex(pattern: &str) -> Result<crate::mini_regex::Regex, String> {
+    if pattern.contains(['\\', '^', '$', '|', '+', '(', ')', '{', '}']) {
+        crate::mini_regex::Regex::compile(pattern)
+    } else {
+        crate::mini_regex::compile_glob(pattern)
     }
 }
 

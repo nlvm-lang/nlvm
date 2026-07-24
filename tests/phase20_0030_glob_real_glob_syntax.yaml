@@ -1,0 +1,57 @@
+---
+title: "File.glob accepts real glob syntax, not just regex (issue #3)"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "2 top 1 all 2 nl ab"
+---
+
+#NLFILE phase20/globrealsyntax/Main.nl
+namespace phase20.globrealsyntax;
+class Main {
+	public static int main(string[] args) {
+		try {
+			system.io.Directory.create("target/tmp_phase20glob/sub");
+			system.io.Directory.create("target/tmp_phase20glob/src/deep");
+
+			system.io.File.writeAllText("target/tmp_phase20glob/a.txt", "a");
+			system.io.File.writeAllText("target/tmp_phase20glob/b.txt", "b");
+			system.io.File.writeAllText("target/tmp_phase20glob/sub/c.txt", "c");
+			system.io.File.writeAllText("target/tmp_phase20glob/src/one.nl", "1");
+			system.io.File.writeAllText("target/tmp_phase20glob/src/deep/two.nl", "2");
+
+			// `*` does not cross directories: only the two top-level .txt files.
+			string[] topTxt = system.io.File.glob("target/tmp_phase20glob", "*.txt");
+			system.Out.print(system.Int.toString(topTxt.length()));
+			system.Out.print(" top ");
+
+			// `**` does cross directories: the one .txt file nested under `sub`
+			// (unlike `src/**/*.nl` below, `**/` requires an actual `/` in the
+			// match, so it doesn't also pick up the top-level .txt files).
+			string[] allTxt = system.io.File.glob("target/tmp_phase20glob", "**/*.txt");
+			system.Out.print(system.Int.toString(allTxt.length()));
+			system.Out.print(" all ");
+
+			// Regex syntax (backslash escape) still compiles as a regex, unchanged.
+			string[] nlFiles = system.io.File.glob("target/tmp_phase20glob", ".*\\.nl");
+			system.Out.print(system.Int.toString(nlFiles.length()));
+			system.Out.print(" nl ");
+
+			// Character class, glob mode: matches both a.txt and b.txt, not sub/c.txt.
+			string[] abTxt = system.io.File.glob("target/tmp_phase20glob", "[ab].txt");
+			bool hasA = false;
+			bool hasB = false;
+			for (int i = 0; i < abTxt.length(); i++) {
+				if (abTxt[i] == "target/tmp_phase20glob/a.txt") {
+					hasA = true;
+				}
+				if (abTxt[i] == "target/tmp_phase20glob/b.txt") {
+					hasB = true;
+				}
+			}
+			system.Out.print(abTxt.length() == 2 && hasA && hasB ? "ab" : "notab");
+			return 0;
+		} catch (system.io.IOException e) {
+			return 1;
+		}
+	}
+}

@@ -30,3 +30,7 @@ Détails projet/install/usage → [README.md](README.md). Version specs ciblée 
 ## Maintenance de ce fichier
 
 À tenir à jour par Claude quand la structure change (ajout/suppression de crate, changement d'organisation des tests, etc.) — garder concis, ne pas dupliquer le contenu des fichiers référencés.
+
+## Comportement
+
+Ne commit jamais sauf si explicitement demandé.
