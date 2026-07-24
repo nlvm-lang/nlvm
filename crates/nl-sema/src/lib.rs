@@ -1,3 +1,4 @@
+mod auto_box;
 mod checker;
 mod class_table;
 pub mod error;
@@ -26,7 +27,7 @@ fn decl_line_of(file: &SourceFile) -> u32 {
 /// (objects, `new`, arrays, interfaces — milestone 5) are checked leniently:
 /// an unresolved class/field/method defers to nl-codegen's harder error,
 /// same as unresolved calls already did before this phase.
-pub fn check_compile(files: &[SourceFile]) -> Result<(), LocatedError> {
+pub fn check_compile(files: &mut [SourceFile]) -> Result<(), LocatedError> {
     check_compile_with_warnings(files).map(|_| ())
 }
 
@@ -34,8 +35,14 @@ pub fn check_compile(files: &[SourceFile]) -> Result<(), LocatedError> {
 /// diagnostic collected along the way (currently just W001 — compiler.md §
 /// Warnings, specs.md § Nodiscard) instead of discarding them. Warnings never
 /// turn a successful compile into an `Err`.
+///
+/// Takes `files` mutably for issue #15: a captured-and-mutated `auto` local
+/// needs its inferred type patched back into the caller's own AST (see
+/// `checker::AutoBoxFix`/`auto_box::apply`) before `nl_codegen::compile_program`
+/// — which the caller always calls next, on this same `files` — runs its own
+/// independent expansion pass. Every other check here is still read-only.
 pub fn check_compile_with_warnings(
-    files: &[SourceFile],
+    files: &mut [SourceFile],
 ) -> Result<Vec<LocatedWarning>, LocatedError> {
     // Built-in exception classes (nl_syntax::prelude) are implicitly part of
     // every program — see class_table::import_map, which seeds their simple
@@ -76,9 +83,16 @@ pub fn check_compile_with_warnings(
     // concrete type argument satisfies its bound.
     check_template_bounds(&unexpanded[prelude_len..], &classes)?;
     let mut warnings = Vec::new();
+    let mut auto_box_fixes = Vec::new();
     for file in &all_files {
-        warnings.extend(checker::check_source_file(file, &all_files, &classes)?);
+        let (file_warnings, file_fixes) = checker::check_source_file(file, &all_files, &classes)?;
+        warnings.extend(file_warnings);
+        auto_box_fixes.extend(file_fixes);
     }
+    // Issue #15 — patch every `auto` capture's inferred type back into the
+    // caller's own AST now that checking succeeded (see
+    // `check_compile_with_warnings`'s doc comment and `auto_box::apply`).
+    auto_box::apply(files, &auto_box_fixes);
     Ok(warnings)
 }
 

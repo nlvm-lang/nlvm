@@ -5,6 +5,11 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.3]
+
+### Fixed
+- A mutated closure capture is now boxed even when the captured local is declared with `auto` rather than an explicit type (e.g. `auto n = 0; auto inc = () => { n++; };`). Previously this crashed the compiler outright (`boxed captures are always explicitly typed`): `nl_syntax::monomorphize`'s `Box<T>` instantiation pass runs on bare AST before any type checking, so it could only ever recover a concrete type for an *explicitly*-typed declaration, while nl-codegen's (type-blind) capture analysis still expected every such capture to be boxed. `nl-sema` now detects this exact case — an `auto` local that's captured by a closure and mutated (inside the closure or by the enclosing scope) anywhere in the method — using the type it already resolves for the declaration, and patches that type back into the caller's own AST before nl-codegen ever runs, so nl-codegen needs no change at all. The shared "captured ∩ mutated" name analysis (previously duplicated only in `nl-codegen`) moved to `nl_syntax::capture` so `nl-sema` can reuse it without a cross-crate dependency. A template method where two instantiations disagree on the concrete type of such a variable (e.g. `Holder<int>` vs. `Holder<string>`) is a known follow-up gap: patching the shared template source would silently miscompile whichever instantiation didn't "win", so that specific combination is detected and left unfixed, deterministically falling back to the pre-existing compiler crash rather than risk a wrong answer. See [issue #15](https://github.com/nlvm-lang/nlvm/issues/15).
+
 ## [0.14.2]
 
 ### Fixed

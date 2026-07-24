@@ -105,7 +105,7 @@ fn main() -> Result<()> {
         files.push(file);
     }
 
-    match nl_sema::check_compile_with_warnings(&files) {
+    match nl_sema::check_compile_with_warnings(&mut files) {
         Ok(warnings) => {
             // compiler.md § Warnings: reported, never fail the build.
             for w in &warnings {

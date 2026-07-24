@@ -212,10 +212,21 @@ fn collect_ref_box_requests(class: &ClassDecl, out: &mut HashMap<String, (String
 /// best-effort like the rest of this module: only variables with an
 /// *explicit* declared type are ever registered here — a captured `auto`
 /// local's type can't be recovered without a real type checker at this
-/// stage. `nl_codegen::closure`'s boxing decision is symmetric with this
-/// limitation: it only ever boxes an explicitly-typed declaration, so an
-/// `auto`-declared capture simply keeps today's by-value snapshot behavior
-/// rather than referencing a `Box<T>` that was never instantiated here.
+/// stage, and `nl_codegen::closure`'s boxing decision is symmetric with this
+/// limitation (it only ever boxes an explicitly-typed declaration).
+///
+/// This is why issue #15's fix lives in `nl_sema` rather than here:
+/// `nl_sema::check_compile_with_warnings` already resolves an `auto`
+/// declaration's type while checking it, and — when that declaration turns
+/// out to need boxing — patches the concrete type directly into the
+/// caller's own AST *before* `nl_codegen::compile_program` ever runs its own
+/// `expand`. By the time this function sees such a declaration, it's
+/// already indistinguishable from one the programmer wrote explicitly, so
+/// no change was needed here at all. The one gap that doesn't cover: a
+/// template method whose instantiations disagree on the concrete type of
+/// such a variable (`nl_sema::auto_box` detects that and deliberately
+/// leaves it unfixed rather than risk silently patching in the wrong one),
+/// which still hits today's by-value/panic limitation.
 fn collect_closure_box_requests(class: &ClassDecl, out: &mut HashMap<String, (String, Vec<Type>)>) {
     for m in &class.methods {
         // Whole-method, not just "mutated inside the closure that captured
