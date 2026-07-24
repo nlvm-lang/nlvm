@@ -856,9 +856,15 @@ fn exec_step(
             }
             // Not necessarily declared on `runtime_class` itself — walk
             // the `extends` chain for an inherited-but-not-overridden
-            // method (vm.md § Method dispatch, Instance methods).
+            // method (vm.md § Method dispatch, Instance methods). Matches
+            // on name + parameter types only (`resolve_virtual_covariant`),
+            // not the full descriptor — see its doc comment: this is the
+            // one dispatch site reachable through an interface-typed
+            // static receiver, whose method ref may carry a `Self`-return
+            // descriptor that never matches the concrete runtime class's
+            // own.
             let (target_module, target) =
-                resolve_virtual(program, &runtime_class, &name, &descriptor)
+                resolve_virtual_covariant(program, &runtime_class, &name, &descriptor)
                     .ok_or_else(|| VmError::MethodNotFound(format!("{runtime_class}.{name}")))?;
             if let Some(result) =
                 call_instance(program, target_module, target, receiver, call_args)?
@@ -1266,6 +1272,36 @@ pub(crate) fn resolve_virtual<'m>(
     loop {
         let module = program.get(&current)?;
         if let Some(target) = module.find_method_by_descriptor(name, descriptor) {
+            return Some((module, target));
+        }
+        if module.super_class == 0 {
+            return None;
+        }
+        current = module
+            .constant_pool
+            .class_name_at(module.super_class)?
+            .to_string();
+    }
+}
+
+/// Like `resolve_virtual`, but matches on name + parameter types only,
+/// ignoring the descriptor's return-type component (see
+/// `nl_bytecode::Module::find_method_by_name_and_params`'s doc comment) —
+/// used by `INVOKE_INSTANCE`'s ordinary (non-native) dispatch, the one path
+/// that can legitimately be reached through an interface-typed static
+/// receiver whose `Self`-returning method descriptor never matches the
+/// concrete runtime class's own.
+pub(crate) fn resolve_virtual_covariant<'m>(
+    program: &'m Arc<Program>,
+    start_fqcn: &str,
+    name: &str,
+    descriptor: &str,
+) -> Option<(&'m Module, &'m MethodDescriptor)> {
+    let params_desc = descriptor.split(" -> ").next().unwrap_or(descriptor);
+    let mut current = start_fqcn.to_string();
+    loop {
+        let module = program.get(&current)?;
+        if let Some(target) = module.find_method_by_name_and_params(name, params_desc) {
             return Some((module, target));
         }
         if module.super_class == 0 {

@@ -2327,7 +2327,37 @@ impl<'a> Emitter<'a> {
                         &method.defaults,
                         args,
                     );
-                    (method.params, method.return_ty, method.is_ref, positional)
+                    // specs.md § Self in interfaces — issue #11: `method`
+                    // may have been found directly on an *interface*
+                    // (`fqcn` itself, when the receiver is interface-typed
+                    // rather than a concrete class), in which case its
+                    // params/return type can still carry the literal
+                    // `Type::Named("Self")` placeholder (a concrete class's
+                    // own methods already had it substituted for the class
+                    // name at parse time — see
+                    // `nl_syntax::parser::parse_interface_decl`'s doc
+                    // comment). Resolving it against `fqcn` here is a no-op
+                    // in the concrete-class case and, in the interface
+                    // case, turns it into the interface's own name — the
+                    // soundest available answer given the concrete
+                    // implementing class isn't statically known through an
+                    // interface-typed reference. Left unresolved, "Self"
+                    // would leak into the method descriptor built below,
+                    // which could never match any concrete implementer's
+                    // own descriptor (`() -> Point`, not `() -> Self`) —
+                    // `nl_vm::interpreter::resolve_virtual_covariant` is the
+                    // other half of this fix, matching virtual dispatch on
+                    // name + parameter types only so a per-implementer
+                    // return type (`Self` resolved differently for each
+                    // class) never has to match a single call-site
+                    // descriptor in the first place.
+                    let params: Vec<Type> = method
+                        .params
+                        .iter()
+                        .map(|p| crate::class_table::substitute_self(p, &fqcn))
+                        .collect();
+                    let return_ty = crate::class_table::substitute_self(&method.return_ty, &fqcn);
+                    (params, return_ty, method.is_ref, positional)
                 };
                 let param_tys: Vec<ExprTy> = params.iter().map(expr_ty_of).collect();
                 let boxes = self.compile_call_args(&positional, &param_tys, &is_ref, name)?;

@@ -5,6 +5,11 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.2]
+
+### Fixed
+- `Self` in an interface method (e.g. `Cloneable.clone()`) now works when called through an **interface-typed** receiver (`Cloneable c = new Point(...); c.clone()`), not just a concrete-typed one. Previously this crashed at runtime with `method '<Class>.<method>' not found` — even on code with no further use of the result — because the call site's method descriptor was built from the interface's own declaration (return type `Self`, unresolved), which can never match the concrete implementing class's own descriptor (each implementer resolves `Self` to itself, e.g. `Point.clone(): Point`), and virtual dispatch matched on the full descriptor including return type. Instance-method dispatch now matches on name and parameter types only (return-type-only overloading isn't supported by this language, so this can't introduce ambiguity); separately, the static type of such a call now resolves `Self` to the receiver's own static type (the interface) instead of leaking the internal `Self` placeholder, so further use of the result (an explicit downcast to recover the concrete type, assignment, etc.) type-checks correctly instead of surfacing that placeholder in an unrelated error. See [issue #11](https://github.com/nlvm-lang/nlvm/issues/11).
+
 ## [0.14.1]
 
 ### Fixed

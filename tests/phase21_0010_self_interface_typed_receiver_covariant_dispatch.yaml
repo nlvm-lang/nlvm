@@ -1,0 +1,100 @@
+---
+title: "issue #11 — `Self` in an interface method called through an interface-typed receiver (`Spawner s = new Sparrow(); s.spawn()`), not just a concrete-typed one (`phase10_0010`'s `Sparrow s = ...`). Two implementers share the same interface-typed call site/descriptor, each must still dispatch to its own `spawn()` (proving virtual dispatch, not just static typing); a downcast recovers the concrete class to call a class-specific method."
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: |
+  tweet
+  bark
+  1
+  1
+  99
+expected_stderr: ""
+---
+
+#NLFILE phase21/selfifacereceiver/Spawner.nl
+namespace phase21.selfifacereceiver;
+interface Spawner {
+	public Self spawn();
+}
+
+#NLFILE phase21/selfifacereceiver/Sparrow.nl
+namespace phase21.selfifacereceiver;
+class Sparrow implements Spawner {
+	public construct() {}
+
+	public Self spawn() {
+		return new type();
+	}
+
+	public string sound() {
+		return "tweet";
+	}
+}
+
+#NLFILE phase21/selfifacereceiver/Labrador.nl
+namespace phase21.selfifacereceiver;
+class Labrador implements Spawner {
+	public construct() {}
+
+	public Self spawn() {
+		return new type();
+	}
+
+	public string sound() {
+		return "bark";
+	}
+}
+
+#NLFILE phase21/selfifacereceiver/Point.nl
+namespace phase21.selfifacereceiver;
+class Point implements Cloneable {
+	public int x;
+	public int y;
+
+	public construct(int x, int y) {
+		this.x = x;
+		this.y = y;
+	}
+
+	public Self clone() {
+		return new Point(this.x, this.y);
+	}
+}
+
+#NLFILE phase21/selfifacereceiver/Main.nl
+namespace phase21.selfifacereceiver;
+class Main {
+	public static int main(string[] args) {
+		// Two different implementers, called through the *same* interface
+		// type — both calls share one call-site method descriptor, so this
+		// only passes if dispatch is genuinely virtual (keyed off each
+		// receiver's own runtime class), not accidentally hardcoded to
+		// whichever descriptor the interface itself declares.
+		Spawner a = new Sparrow();
+		Spawner b = new Labrador();
+		auto a2 = a.spawn();
+		auto b2 = b.spawn();
+		Sparrow a3 = (Sparrow) a2;
+		Labrador b3 = (Labrador) b2;
+		system.Out.println(a3.sound());
+		system.Out.println(b3.sound());
+
+		// `Cloneable.clone()` through an interface-typed receiver: the
+		// result's static type is `Cloneable` (the receiver's own static
+		// type — the concrete implementer isn't statically known through
+		// an interface reference), recovered via an explicit downcast, same
+		// as any other covariant-through-an-upper-bound value. Mutating the
+		// downcast copy must not affect `original` — same independent-copy
+		// property `phase10_0020_cloneable_interface.yaml` checks through a
+		// concrete-typed receiver.
+		Point original = new Point(1, 2);
+		Cloneable c = original;
+		Cloneable copyIface = c.clone();
+		Point copy = (Point) copyIface;
+		system.Out.println(system.Int.toString(original.x));
+		copy.x = 99;
+		system.Out.println(system.Int.toString(original.x));
+		system.Out.println(system.Int.toString(copy.x));
+		return 0;
+	}
+}

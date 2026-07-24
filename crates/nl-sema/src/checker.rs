@@ -1427,7 +1427,15 @@ impl<'a> MethodChecker<'a> {
                 m.name == name
                     && class_table::arity_in_range(m.required_count, m.params.len(), argc)
             }) {
-                return Some(m.return_ty.clone());
+                // specs.md § Self in interfaces — `fqcn` (not `current`) is
+                // the receiver's own static type, which is what `Self`
+                // resolves against here: calling through an interface-typed
+                // receiver only ever knows the interface itself, never the
+                // concrete implementing class (see the `Expr::MethodCall`
+                // arm of `check_expr` below for the same substitution, and
+                // its doc comment for why the interface is the soundest
+                // available answer).
+                return Some(class_table::substitute_self(&m.return_ty, fqcn));
             }
             current = info.extends.as_deref()?;
         }
@@ -2448,7 +2456,27 @@ impl<'a> MethodChecker<'a> {
                                     self.require_handled(&exc_fqcn)?;
                                 }
                             }
-                            Ok(method.return_ty.clone())
+                            // specs.md § Self in interfaces — issue #11:
+                            // `fqcn` here is the receiver's own static type
+                            // (`Cloneable`, not `Point`, for `Cloneable c =
+                            // new Point(); c.clone()`). Resolving `Self`
+                            // against it is a no-op for a concrete class
+                            // (whose own methods already had `Self`
+                            // substituted for the class name at parse time —
+                            // see `class_table::substitute_self`'s doc
+                            // comment), but for an interface method found
+                            // directly on an interface-typed receiver, it
+                            // turns the otherwise-inert `Type::Named("Self")`
+                            // placeholder into `Cloneable` — a sound
+                            // over-approximation given the concrete
+                            // implementing class isn't statically known
+                            // through an interface-typed reference. Without
+                            // this, `Self` leaked as a literal, unresolvable
+                            // type name past this point (e.g. into a further
+                            // field access), which nl-codegen could only
+                            // reject with an opaque "unsupported construct"
+                            // error instead of a real diagnostic.
+                            Ok(class_table::substitute_self(&method.return_ty, fqcn))
                         } else {
                             Ok(Type::Void)
                         }

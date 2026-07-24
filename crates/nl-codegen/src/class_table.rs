@@ -274,6 +274,39 @@ pub fn resolve_type(ty: &Type, imports: &HashMap<String, String>) -> Type {
     }
 }
 
+/// Rewrites every `Type::Named("Self")` inside `ty` to `Type::Named(fqcn)`
+/// (recursively through arrays, unions, generics, function types) — mirrors
+/// `nl_sema::class_table::substitute_self` (this crate keeps its own
+/// independent class table, see the module doc comment, so the two copies
+/// don't share code). See `crate::expr::Emitter::compile_method_call`'s
+/// `ExprTy::Object` arm for the use site: an interface method's `MethodInfo`
+/// stores `Self` as the literal placeholder `Type::Named("Self")`, which
+/// only means something once resolved against the receiver's own static
+/// type at the call site.
+pub fn substitute_self(ty: &Type, fqcn: &str) -> Type {
+    match ty {
+        Type::Named(name) if name == "Self" => Type::Named(fqcn.to_string()),
+        Type::Array(inner) => Type::Array(Box::new(substitute_self(inner, fqcn))),
+        Type::Union(members) => {
+            Type::Union(members.iter().map(|m| substitute_self(m, fqcn)).collect())
+        }
+        Type::Generic(name, args) => Type::Generic(
+            name.clone(),
+            args.iter().map(|a| substitute_self(a, fqcn)).collect(),
+        ),
+        Type::Function {
+            params,
+            return_type,
+            throws,
+        } => Type::Function {
+            params: params.iter().map(|p| substitute_self(p, fqcn)).collect(),
+            return_type: Box::new(substitute_self(return_type, fqcn)),
+            throws: throws.clone(),
+        },
+        other => other.clone(),
+    }
+}
+
 pub fn build_class_table(files: &[SourceFile]) -> HashMap<String, ClassInfo> {
     let mut table = HashMap::with_capacity(files.len());
     for file in files {

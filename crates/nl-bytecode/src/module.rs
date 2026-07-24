@@ -177,6 +177,38 @@ impl Module {
         })
     }
 
+    /// Like `find_method_by_descriptor`, but compares only the parameter
+    /// portion of the descriptor (everything before `" -> "`), ignoring the
+    /// return type — specs.md § Self in interfaces / vm.md § Interface
+    /// dispatch: a call reached through an interface-typed receiver bakes
+    /// the *interface's* declared descriptor into its `MethodRef`, whose
+    /// return type is at best the interface itself (`Self` resolved against
+    /// the receiver's static type — see `nl_codegen::class_table
+    /// ::substitute_self`), never the concrete implementing class's own
+    /// return type (e.g. `Point`, `Sparrow`, `Labrador` — each implementer
+    /// resolves `Self` to itself, per specs.md, so their descriptors
+    /// legitimately differ from each other and from the interface's). A
+    /// full-descriptor match can therefore never succeed for this call
+    /// shape. Dropping the return type from the comparison is safe: this
+    /// language never overloads by return type alone (overload resolution —
+    /// `nl_sema`/`nl_codegen`'s `find_method_owner_overload` — always
+    /// resolves on parameter types), so no two methods sharing a name on
+    /// the same class can differ only in return type.
+    pub fn find_method_by_name_and_params(
+        &self,
+        name: &str,
+        params_desc: &str,
+    ) -> Option<&MethodDescriptor> {
+        self.methods.iter().find(|m| {
+            self.constant_pool.utf8_at(m.name_index) == Some(name)
+                && self
+                    .constant_pool
+                    .type_desc_at(m.descriptor_index)
+                    .and_then(|d| d.split(" -> ").next())
+                    == Some(params_desc)
+        })
+    }
+
     pub fn encode(&self) -> Vec<u8> {
         let mut buf = Vec::new();
         buf.extend_from_slice(&MAGIC.to_be_bytes());
