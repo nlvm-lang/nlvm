@@ -163,11 +163,11 @@ fn apply_expr(path: &str, expr: &mut Expr, fixes: &HashMap<FixKey, Type>) {
         | Expr::NullLit
         | Expr::This
         | Expr::Super
-        | Expr::Ident(_)
-        | Expr::PostIncr(_)
-        | Expr::PostDecr(_)
-        | Expr::PreIncr(_)
-        | Expr::PreDecr(_) => {}
+        | Expr::Ident(_) => {}
+        Expr::PostIncr(target)
+        | Expr::PostDecr(target)
+        | Expr::PreIncr(target)
+        | Expr::PreDecr(target) => apply_lvalue(path, target, fixes),
         Expr::Assign(target, value) => {
             apply_lvalue(path, target, fixes);
             apply_expr(path, value, fixes);

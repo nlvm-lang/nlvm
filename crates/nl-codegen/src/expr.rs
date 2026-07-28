@@ -881,10 +881,10 @@ impl<'a> Emitter<'a> {
             Expr::Index(target, index) => self.compile_index(target, index),
             Expr::InstanceOf(target, type_name) => self.compile_instanceof(target, type_name),
             Expr::Cast(ty, inner) => self.compile_cast(ty, inner),
-            Expr::PostIncr(name) => self.compile_incr(name, 1, false),
-            Expr::PostDecr(name) => self.compile_incr(name, -1, false),
-            Expr::PreIncr(name) => self.compile_incr(name, 1, true),
-            Expr::PreDecr(name) => self.compile_incr(name, -1, true),
+            Expr::PostIncr(target) => self.compile_incr(target, 1, false),
+            Expr::PostDecr(target) => self.compile_incr(target, -1, false),
+            Expr::PreIncr(target) => self.compile_incr(target, 1, true),
+            Expr::PreDecr(target) => self.compile_incr(target, -1, true),
             Expr::Unary(op, inner) => self.compile_unary(*op, inner),
             Expr::Binary(op, lhs, rhs) => self.compile_binary(*op, lhs, rhs),
             Expr::Match(subject, arms) => self.compile_match(subject, arms),
@@ -1570,7 +1570,34 @@ impl<'a> Emitter<'a> {
     /// § Overloadable operators ("Postfix note") both forms are identical:
     /// the method mutates `this` and both evaluate to the same mutated
     /// reference.
-    fn compile_incr(&mut self, name: &str, delta: i16, is_prefix: bool) -> Result<ExprTy, CodegenError> {
+    ///
+    /// The target is any assignable form (`LValue`, same as `=`); each arm
+    /// below reads the current value, applies the mutation and writes it
+    /// back, evaluating the target's own sub-expressions (an object
+    /// receiver, an array and its index) exactly once.
+    fn compile_incr(
+        &mut self,
+        target: &LValue,
+        delta: i16,
+        is_prefix: bool,
+    ) -> Result<ExprTy, CodegenError> {
+        match target {
+            LValue::Local(name) => self.compile_incr_local(name, delta, is_prefix),
+            LValue::Field(target_expr, field_name) => {
+                self.compile_incr_field(target_expr, field_name, delta, is_prefix)
+            }
+            LValue::Index(target_expr, index_expr) => {
+                self.compile_incr_index(target_expr, index_expr, delta, is_prefix)
+            }
+        }
+    }
+
+    fn compile_incr_local(
+        &mut self,
+        name: &str,
+        delta: i16,
+        is_prefix: bool,
+    ) -> Result<ExprTy, CodegenError> {
         let slot = match self.resolve_ident(name)? {
             IdentRef::Local(slot) => slot,
             // `IINC` operates on a local-variable slot by index; a captured
@@ -1679,6 +1706,209 @@ impl<'a> Emitter<'a> {
             self.op_iinc(slot.index, delta);
         }
         Ok(ExprTy::Int)
+    }
+
+    /// `target.field++` / `++Class.staticField` — read-modify-write through
+    /// `GetField`/`SetField` (or `GetStatic`/`SetStatic`). The receiver is
+    /// compiled once and `Dup`ed, so a side-effecting receiver
+    /// (`next().count++`) runs exactly one time.
+    fn compile_incr_field(
+        &mut self,
+        target_expr: &Expr,
+        field_name: &str,
+        delta: i16,
+        is_prefix: bool,
+    ) -> Result<ExprTy, CodegenError> {
+        // `Counter.instances++` — a plain (non-enum) class's `static` field,
+        // reached through its class name rather than an instance. Same
+        // recognize-before-`compile_expr` shape as `compile_assign`'s
+        // `LValue::Field` arm: `target_expr` (e.g. `Ident("Counter")`) isn't
+        // a value.
+        if let Some(path) = dotted_path(target_expr) {
+            let leading = path.split('.').next().expect("dotted_path is never empty");
+            if self.lookup_local(leading).is_err() {
+                let fqcn = self.resolve_class_name(leading);
+                if let Some((owner, field)) = find_field_owner(self.classes, &fqcn, field_name) {
+                    if field.is_static {
+                        let field_ty = field.ty.clone();
+                        let class_index = self.cp.add_class(&owner);
+                        let name_index = self.cp.add_utf8(field_name.to_string());
+                        let type_index = self.cp.add_type_desc(&type_descriptor(&field_ty));
+                        let field_ref = self.cp.add_field_ref(class_index, name_index, type_index);
+                        let expr_field_ty = expr_ty_of(&field_ty);
+                        self.op_u16(Opcode::GetStatic, field_ref, 1);
+                        if let ExprTy::Object(fqcn) = &expr_field_ty {
+                            let fqcn = fqcn.clone();
+                            let return_expr_ty = self.emit_incr_operator_call(&fqcn, delta)?;
+                            // Both forms evaluate to the same mutated
+                            // reference (see this function's doc comment), so
+                            // a single `Dup` serves prefix and postfix alike.
+                            self.op(Opcode::Dup, 1);
+                            self.op_u16(Opcode::SetStatic, field_ref, -1);
+                            return Ok(return_expr_ty);
+                        }
+                        self.require_int_incr_target(&expr_field_ty)?;
+                        // `GetStatic`/`SetStatic` take no receiver, so unlike
+                        // the instance cases there is nothing to keep under
+                        // the result: duplicate the value that is *not* being
+                        // stored (the old one for postfix, the new one for
+                        // prefix) and let `SetStatic` consume the other.
+                        if is_prefix {
+                            self.emit_int_const(delta as i64);
+                            self.op(Opcode::IAdd, -1);
+                            self.op(Opcode::Dup, 1);
+                        } else {
+                            self.op(Opcode::Dup, 1);
+                            self.emit_int_const(delta as i64);
+                            self.op(Opcode::IAdd, -1);
+                        }
+                        self.op_u16(Opcode::SetStatic, field_ref, -1);
+                        return Ok(ExprTy::Int);
+                    }
+                }
+            }
+        }
+        let target_ty = self.compile_expr(target_expr)?;
+        let ExprTy::Object(fqcn) = &target_ty else {
+            return Err(CodegenError::Unsupported(format!(
+                "field access on non-object type {target_ty:?}"
+            )));
+        };
+        let fqcn = fqcn.clone();
+        let field = self.lookup_field(&fqcn, field_name)?;
+        let field_ty = expr_ty_of(&field);
+        let class_index = self.cp.add_class(&fqcn);
+        let name_index = self.cp.add_utf8(field_name.to_string());
+        let type_index = self.cp.add_type_desc(&type_descriptor(&field));
+        let field_ref = self.cp.add_field_ref(class_index, name_index, type_index);
+        // Stack is [obj] here; `Dup` keeps one copy for the write-back, so
+        // `GetField` leaves [obj, old]. From there the shape is identical to
+        // `compile_incr_local`'s boxed cases: `DupX1` inserts the retained
+        // result two slots down — before the add for postfix (keeping `old`),
+        // after it for prefix (keeping `new`) — leaving `SetField` exactly
+        // the `[obj, value]` pair it pops.
+        self.op(Opcode::Dup, 1);
+        self.op_u16(Opcode::GetField, field_ref, 0);
+        if let ExprTy::Object(field_fqcn) = &field_ty {
+            let field_fqcn = field_fqcn.clone();
+            let return_expr_ty = self.emit_incr_operator_call(&field_fqcn, delta)?;
+            self.op(Opcode::DupX1, 1);
+            self.op_u16(Opcode::SetField, field_ref, -2);
+            return Ok(return_expr_ty);
+        }
+        self.require_int_incr_target(&field_ty)?;
+        if is_prefix {
+            self.emit_int_const(delta as i64);
+            self.op(Opcode::IAdd, -1);
+            self.op(Opcode::DupX1, 1);
+        } else {
+            self.op(Opcode::DupX1, 1);
+            self.emit_int_const(delta as i64);
+            self.op(Opcode::IAdd, -1);
+        }
+        self.op_u16(Opcode::SetField, field_ref, -2);
+        Ok(ExprTy::Int)
+    }
+
+    /// `array[i]++` — read-modify-write through `ArrayLoad`/`ArrayStore`.
+    /// Both the array and the index expression are compiled once into
+    /// scratch locals and reloaded for the store: `ArrayStore` pops
+    /// `[array, index, value]` as a unit, and there is no stack op that can
+    /// re-materialize a pair buried under the loaded element, so keeping
+    /// them in slots is also what guarantees a side-effecting index
+    /// (`a[next()]++`) is evaluated a single time.
+    fn compile_incr_index(
+        &mut self,
+        target_expr: &Expr,
+        index_expr: &Expr,
+        delta: i16,
+        is_prefix: bool,
+    ) -> Result<ExprTy, CodegenError> {
+        let target_ty = self.compile_expr(target_expr)?;
+        let ExprTy::Array(elem) = target_ty.clone() else {
+            return Err(CodegenError::Unsupported(format!(
+                "indexed '++'/'--' on non-array type {target_ty:?}"
+            )));
+        };
+        let elem_ty = *elem;
+        let array_tmp = self.declare_scratch_local(target_ty);
+        self.emit_store(array_tmp);
+        let index_ty = self.compile_expr(index_expr)?;
+        if index_ty != ExprTy::Int {
+            return Err(CodegenError::Unsupported(
+                "array index must be int".to_string(),
+            ));
+        }
+        let index_tmp = self.declare_scratch_local(ExprTy::Int);
+        self.emit_store(index_tmp);
+
+        self.op_u16(Opcode::Load, array_tmp, 1);
+        self.op_u16(Opcode::Load, index_tmp, 1);
+        self.op(Opcode::ArrayLoad, -1);
+        if let ExprTy::Object(fqcn) = &elem_ty {
+            let fqcn = fqcn.clone();
+            let return_expr_ty = self.emit_incr_operator_call(&fqcn, delta)?;
+            let result_tmp = self.declare_scratch_local(return_expr_ty.clone());
+            self.op(Opcode::Dup, 1);
+            self.emit_store(result_tmp);
+            self.op_u16(Opcode::Load, array_tmp, 1);
+            self.op_u16(Opcode::Load, index_tmp, 1);
+            self.op_u16(Opcode::Load, result_tmp, 1);
+            self.op(Opcode::ArrayStore, -3);
+            return Ok(return_expr_ty);
+        }
+        self.require_int_incr_target(&elem_ty)?;
+        // The value left below the store sequence is this expression's
+        // result: `Dup` the old value *before* the add for postfix, the new
+        // one *after* it for prefix. `emit_store` then parks the value to
+        // write in `value_tmp`, so `ArrayStore` pops its three operands and
+        // uncovers exactly that retained copy.
+        let value_tmp = self.declare_scratch_local(ExprTy::Int);
+        if is_prefix {
+            self.emit_int_const(delta as i64);
+            self.op(Opcode::IAdd, -1);
+            self.op(Opcode::Dup, 1);
+        } else {
+            self.op(Opcode::Dup, 1);
+            self.emit_int_const(delta as i64);
+            self.op(Opcode::IAdd, -1);
+        }
+        self.emit_store(value_tmp);
+        self.op_u16(Opcode::Load, array_tmp, 1);
+        self.op_u16(Opcode::Load, index_tmp, 1);
+        self.op_u16(Opcode::Load, value_tmp, 1);
+        self.op(Opcode::ArrayStore, -3);
+        Ok(ExprTy::Int)
+    }
+
+    /// Dispatches `operator++`/`operator--` on the object currently on top
+    /// of the stack, replacing it with the call's result — the object-typed
+    /// half of every `compile_incr_*` arm (specs.md § Overloadable
+    /// operators). `nl-sema` rejects a missing overload with E009; this
+    /// mirrors `compile_incr_local`'s message for anything that still gets
+    /// here (e.g. the prelude's own generated code, which skips sema).
+    fn emit_incr_operator_call(&mut self, fqcn: &str, delta: i16) -> Result<ExprTy, CodegenError> {
+        let method_name = if delta > 0 {
+            "operator++"
+        } else {
+            "operator--"
+        };
+        let Some(method) = find_operator_method(self.classes, fqcn, method_name, &[]) else {
+            return Err(CodegenError::Unsupported(format!(
+                "'++'/'--' on '{fqcn}' requires an '{method_name}' overload"
+            )));
+        };
+        let return_ty = method.return_ty.clone();
+        Ok(self.emit_operator_call(fqcn, method_name, &[], &return_ty))
+    }
+
+    fn require_int_incr_target(&self, ty: &ExprTy) -> Result<(), CodegenError> {
+        if ty != &ExprTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "'++'/'--' only supported on int, found {ty:?}"
+            )));
+        }
+        Ok(())
     }
 
     fn compile_call(&mut self, name: &str, args: &[Arg]) -> Result<ExprTy, CodegenError> {

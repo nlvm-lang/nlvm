@@ -1,0 +1,27 @@
+---
+title: "Compile E014 — `++` writes to its target, so a `readonly` property rejects `p.x++` exactly as it rejects `p.x = ...` (issue #10)"
+file_separator: "#NLFILE"
+expected_compile_error: "E014"
+---
+
+#NLFILE phase23/incrreadonly/Point.nl
+namespace phase23.incrreadonly;
+class Point {
+	public readonly int x;
+	public int y;
+
+	public construct(int x, int y) {
+		this.x = x;
+		this.y = y;
+	}
+}
+
+#NLFILE phase23/incrreadonly/Main.nl
+namespace phase23.incrreadonly;
+class Main {
+	public static int main(string[] args) {
+		auto p = new Point(1, 2);
+		p.x++;
+		return 0;
+	}
+}

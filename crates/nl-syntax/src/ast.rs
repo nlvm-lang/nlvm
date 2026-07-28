@@ -448,15 +448,18 @@ pub enum Expr {
     /// members included), unlike `InstanceOf`'s bare name, since a cast
     /// target can be any type, not just a class/interface.
     Cast(Box<Type>, Box<Expr>),
-    PostIncr(String),
-    PostDecr(String),
-    /// `++name` / `--name` — specs.md § Operator precedence, level 2
+    /// `lvalue++` / `lvalue--` — specs.md § Operator precedence, level 1
+    /// (postfix). The target is any assignable form (`LValue`: local, field,
+    /// array element), same as the left-hand side of `=`; the expression
+    /// value is the *pre-mutation* value/reference.
+    PostIncr(LValue),
+    PostDecr(LValue),
+    /// `++lvalue` / `--lvalue` — specs.md § Operator precedence, level 2
     /// (unary/prefix), distinct from the postfix forms above: same target
-    /// restriction (a plain identifier — see `PostIncr`/`PostDecr`), but the
-    /// expression value is the *mutated* value/reference rather than the
-    /// pre-mutation one.
-    PreIncr(String),
-    PreDecr(String),
+    /// forms, but the expression value is the *mutated* value/reference
+    /// rather than the pre-mutation one.
+    PreIncr(LValue),
+    PreDecr(LValue),
     Unary(UnOp, Box<Expr>),
     Binary(BinOp, Box<Expr>, Box<Expr>),
     /// `match(subject) { pattern: value, ..., default: value }` — specs.md §

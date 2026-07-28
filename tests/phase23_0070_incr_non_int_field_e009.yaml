@@ -1,0 +1,25 @@
+---
+title: "Compile E009 — the value rule for `++`/`--` (int, or a type overloading `operator++`) applies to a field target too: `p.name++` on a `string` field is rejected by nl-sema, not by nl-codegen (issue #10)"
+file_separator: "#NLFILE"
+expected_compile_error: "E009"
+---
+
+#NLFILE phase23/incrnonint/Person.nl
+namespace phase23.incrnonint;
+class Person {
+	public string name;
+
+	public construct(string name) {
+		this.name = name;
+	}
+}
+
+#NLFILE phase23/incrnonint/Main.nl
+namespace phase23.incrnonint;
+class Main {
+	public static int main(string[] args) {
+		auto p = new Person("bob");
+		p.name++;
+		return 0;
+	}
+}

@@ -461,11 +461,11 @@ fn rewrite_expr(expr: &Expr, ns_key: &str, flat: &HashMap<String, Type>) -> Expr
         | Expr::NullLit
         | Expr::This
         | Expr::Super
-        | Expr::Ident(_)
-        | Expr::PostIncr(_)
-        | Expr::PostDecr(_)
-        | Expr::PreIncr(_)
-        | Expr::PreDecr(_) => expr.clone(),
+        | Expr::Ident(_) => expr.clone(),
+        Expr::PostIncr(target) => Expr::PostIncr(rewrite_lvalue(target, ns_key, flat)),
+        Expr::PostDecr(target) => Expr::PostDecr(rewrite_lvalue(target, ns_key, flat)),
+        Expr::PreIncr(target) => Expr::PreIncr(rewrite_lvalue(target, ns_key, flat)),
+        Expr::PreDecr(target) => Expr::PreDecr(rewrite_lvalue(target, ns_key, flat)),
         Expr::Assign(target, value) => Expr::Assign(
             rewrite_lvalue(target, ns_key, flat),
             Box::new(rewrite_expr(value, ns_key, flat)),

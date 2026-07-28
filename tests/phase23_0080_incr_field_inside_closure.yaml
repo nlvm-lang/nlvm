@@ -1,0 +1,38 @@
+---
+title: "`++` on a captured object's field inside a closure — the object reference itself is never reassigned, so capture analysis must not box it, and the mutation is visible to the enclosing scope (issue #10)"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "3 11"
+---
+
+#NLFILE phase23/incrclosure/Counter.nl
+namespace phase23.incrclosure;
+class Counter {
+	public int value;
+	public int[] slots;
+
+	public construct(int value) {
+		this.value = value;
+		this.slots = new int[2];
+	}
+}
+
+#NLFILE phase23/incrclosure/Main.nl
+namespace phase23.incrclosure;
+class Main {
+	public static int main(string[] args) {
+		auto c = new Counter(5);
+		int[] a = new int[]{ 0, 0 };
+		auto bump = () => {
+			c.value++;
+			c.value++;
+			a[1]--;
+			--c.slots[0];
+		};
+		bump();
+		bump();
+		bump();
+		system.Out.print((0 - a[1]) + " " + c.value);
+		return 0;
+	}
+}

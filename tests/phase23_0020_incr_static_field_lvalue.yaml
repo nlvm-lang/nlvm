@@ -1,0 +1,32 @@
+---
+title: "`++`/`--` on a `static` field reached through its class name (`Counter.instances++`) — read-modify-write via `GetStatic`/`SetStatic` (issue #10)"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "0 1 3 2"
+---
+
+#NLFILE phase23/incrstatic/Counter.nl
+namespace phase23.incrstatic;
+class Counter {
+	public static int instances;
+
+	public construct() {
+		Counter.instances++;
+	}
+}
+
+#NLFILE phase23/incrstatic/Main.nl
+namespace phase23.incrstatic;
+class Main {
+	public static int main(string[] args) {
+		system.Out.print(Counter.instances + " ");
+		auto a = new Counter();
+		system.Out.print(Counter.instances + " ");
+		auto b = new Counter();
+		auto c = new Counter();
+		// Prefix yields the mutated value, postfix the previous one.
+		auto after = Counter.instances--;
+		system.Out.print(after + " " + Counter.instances);
+		return 0;
+	}
+}

@@ -1,0 +1,30 @@
+---
+title: "Compile E010 — a `const` method may not mutate a property, and `this.value++` is such a mutation (issue #10)"
+file_separator: "#NLFILE"
+expected_compile_error: "E010"
+---
+
+#NLFILE phase23/incrconstmethod/Counter.nl
+namespace phase23.incrconstmethod;
+class Counter {
+	public int value;
+
+	public construct(int value) {
+		this.value = value;
+	}
+
+	public int peek() const {
+		this.value++;
+		return this.value;
+	}
+}
+
+#NLFILE phase23/incrconstmethod/Main.nl
+namespace phase23.incrconstmethod;
+class Main {
+	public static int main(string[] args) {
+		auto c = new Counter(1);
+		system.Out.print(c.peek());
+		return 0;
+	}
+}

@@ -1798,30 +1798,20 @@ impl Parser {
             return Ok(Expr::Unary(UnOp::Not, Box::new(expr)));
         }
         // Prefix `++`/`--` — specs.md § Operator precedence, level 2. Like
-        // the postfix forms (`parse_primary`'s `Ident` arm), the target is
-        // restricted to a plain identifier: parse the operand at the same
-        // precedence level and require it to have parsed down to a bare
-        // `Expr::Ident`, rather than widening the AST to a general lvalue
-        // (field access, indexing) that no other part of the pipeline
-        // (closure capture analysis, monomorphize, typedef expansion) is
-        // set up to treat as a mutation target.
+        // the postfix forms (`parse_postfix`), the target is any assignable
+        // form: parse the operand at the same precedence level and require
+        // it to convert to an `LValue` (local, field access, indexing) —
+        // the same conversion assignment uses.
         if self.is_punct(Punct::PlusPlus) || self.is_punct(Punct::MinusMinus) {
             let is_incr = self.is_punct(Punct::PlusPlus);
             let (line, col) = (self.line(), self.col());
             self.bump();
             let operand = self.parse_unary()?;
-            let Expr::Ident(name) = operand else {
-                let sym = if is_incr { "++" } else { "--" };
-                return Err(SyntaxError::Parse(
-                    format!("prefix '{sym}' can only be applied to a variable name"),
-                    line,
-                    col,
-                ));
-            };
+            let target = to_incr_target(operand, is_incr, "prefix", line, col)?;
             return Ok(if is_incr {
-                Expr::PreIncr(name)
+                Expr::PreIncr(target)
             } else {
-                Expr::PreDecr(name)
+                Expr::PreDecr(target)
             });
         }
         // `(T) expr` — specs.md § Operator precedence puts cast at the same
@@ -1902,10 +1892,26 @@ impl Parser {
     }
 
     /// Primary / postfix precedence level: `.` member access (field or
-    /// method call), `[]` indexing, chained after any primary expression.
+    /// method call), `[]` indexing, chained after any primary expression,
+    /// then optionally a trailing `++`/`--` (specs.md § Operator precedence,
+    /// level 1) applied to whatever the chain produced — which must be an
+    /// assignable form (`to_incr_target`).
     fn parse_postfix(&mut self) -> Result<Expr, SyntaxError> {
         let mut expr = self.parse_primary()?;
         loop {
+            if self.is_punct(Punct::PlusPlus) || self.is_punct(Punct::MinusMinus) {
+                let is_incr = self.is_punct(Punct::PlusPlus);
+                let (line, col) = (self.line(), self.col());
+                self.bump();
+                let target = to_incr_target(expr, is_incr, "postfix", line, col)?;
+                // `x++` is not itself assignable, so nothing can follow it at
+                // this precedence level (`x++.f`, `x++[i]`, `x++++`).
+                return Ok(if is_incr {
+                    Expr::PostIncr(target)
+                } else {
+                    Expr::PostDecr(target)
+                });
+            }
             if self.is_punct(Punct::Dot) {
                 self.bump();
                 let name = self.eat_ident_or_keyword()?;
@@ -1964,12 +1970,6 @@ impl Parser {
                     let args = self.parse_args()?;
                     self.eat_punct(Punct::RParen)?;
                     Ok(Expr::Call(name, args))
-                } else if self.is_punct(Punct::PlusPlus) {
-                    self.bump();
-                    Ok(Expr::PostIncr(name))
-                } else if self.is_punct(Punct::MinusMinus) {
-                    self.bump();
-                    Ok(Expr::PostDecr(name))
                 } else {
                     Ok(Expr::Ident(name))
                 }
@@ -2244,6 +2244,29 @@ fn enum_from_method(
         body,
         decl_line,
     }
+}
+
+/// The target of a `++`/`--`, which per specs.md § Operator precedence is
+/// the same set of assignable forms as the left-hand side of `=`. Kept
+/// separate from `to_lvalue` only for the diagnostic wording, which names
+/// the operator and its position rather than "assignment target".
+fn to_incr_target(
+    expr: Expr,
+    is_incr: bool,
+    position: &str,
+    line: u32,
+    col: u32,
+) -> Result<LValue, SyntaxError> {
+    let sym = if is_incr { "++" } else { "--" };
+    to_lvalue(expr, line, col).map_err(|_| {
+        SyntaxError::Parse(
+            format!(
+                "{position} '{sym}' can only be applied to a variable, a field or an array element"
+            ),
+            line,
+            col,
+        )
+    })
 }
 
 fn to_lvalue(expr: Expr, line: u32, col: u32) -> Result<LValue, SyntaxError> {

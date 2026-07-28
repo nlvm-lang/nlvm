@@ -2595,52 +2595,16 @@ impl<'a> MethodChecker<'a> {
                 self.check_cast(&value_ty, &target_ty)?;
                 Ok(target_ty)
             }
-            Expr::PostIncr(name) | Expr::PostDecr(name) | Expr::PreIncr(name) | Expr::PreDecr(name) => {
-                let Some((id, ty)) = self.resolve(name) else {
-                    return Ok(Type::Int);
-                };
-                if !assigned.contains(&id) {
-                    return Err(SemaError::NotDefinitelyAssigned(name.clone()));
-                }
-                if self.readonly_loop_vars.contains(&id) {
-                    return Err(SemaError::ConstLoopVariableModification(name.clone()));
-                }
-                if self.const_vars.contains(&id) {
-                    return Err(SemaError::ConstModification(name.clone()));
-                }
+            Expr::PostIncr(target)
+            | Expr::PostDecr(target)
+            | Expr::PreIncr(target)
+            | Expr::PreDecr(target) => {
                 let op_symbol = if matches!(expr, Expr::PostIncr(_) | Expr::PreIncr(_)) {
                     "++"
                 } else {
                     "--"
                 };
-                // Operator overloading — specs.md § Overloadable operators:
-                // `++`/`--` overloads take no parameters (`public Self
-                // operator++()`) and mutate `this`. Mirrors `Expr::Unary`'s
-                // handling of `operator-`/`operator!` just below — `nl-vm`
-                // only actually knows how to mutate a plain `int` slot
-                // (`IINC`) or dispatch to `operator++`/`operator--` on an
-                // object (`nl_codegen::expr::compile_incr`); every other
-                // static type (string, bool, float, byte, array, a Named
-                // type without the overload) reached codegen unchecked
-                // before this, surfacing as an opaque `CodegenError`
-                // instead of a proper E009 at the right layer.
-                if let Type::Named(fqcn) = &ty {
-                    let method_name = if op_symbol == "++" { "operator++" } else { "operator--" };
-                    if let Some(return_ty) = self.resolve_operator_call(fqcn, method_name, &[])? {
-                        return Ok(return_ty);
-                    }
-                    return Err(SemaError::BadUnaryOperator(
-                        op_symbol.to_string(),
-                        types::display(&ty),
-                    ));
-                }
-                if !matches!(ty, Type::Int) {
-                    return Err(SemaError::BadUnaryOperator(
-                        op_symbol.to_string(),
-                        types::display(&ty),
-                    ));
-                }
-                Ok(ty)
+                self.check_incr(target, op_symbol, assigned)
             }
             Expr::Unary(op, inner) => {
                 let ty = self.check_expr(inner, assigned)?;
@@ -3064,6 +3028,134 @@ impl<'a> MethodChecker<'a> {
                 Ok(*elem)
             }
         }
+    }
+
+    /// `++`/`--` on any assignable form — specs.md § Operator precedence.
+    /// The target is the same `LValue` set as `=`, so the *write*
+    /// permission checks are the ones `check_assign` performs for that same
+    /// form (const local/loop variable, `const` method writing `this.x`,
+    /// `readonly` property, member accessibility); what differs is the
+    /// value rule, which `incr_result_ty` applies to the target's type
+    /// instead of `check_assignable` comparing against a right-hand side.
+    fn check_incr(
+        &mut self,
+        target: &LValue,
+        op_symbol: &str,
+        assigned: &mut HashSet<u32>,
+    ) -> Result<Type, SemaError> {
+        match target {
+            LValue::Local(name) => {
+                let Some((id, ty)) = self.resolve(name) else {
+                    return Ok(Type::Int);
+                };
+                if !assigned.contains(&id) {
+                    return Err(SemaError::NotDefinitelyAssigned(name.clone()));
+                }
+                if self.readonly_loop_vars.contains(&id) {
+                    return Err(SemaError::ConstLoopVariableModification(name.clone()));
+                }
+                if self.const_vars.contains(&id) {
+                    return Err(SemaError::ConstModification(name.clone()));
+                }
+                self.incr_result_ty(&ty, op_symbol)
+            }
+            LValue::Field(target_expr, name) => {
+                // compiler.md § Const methods — E010, same unconditional
+                // rejection as `check_assign`'s `LValue::Field` arm:
+                // `this.count++` mutates a property just as `this.count = n`
+                // does.
+                if self.is_const_method && matches!(**target_expr, Expr::This) {
+                    return Err(SemaError::ConstMethodPropertyModification(name.clone()));
+                }
+                // `Counter.instances++` — a plain class's `static` field
+                // written through its class name; `target_expr` is a dotted
+                // path, not a value (mirrors `check_assign`).
+                if let Some(path) = dotted_path(target_expr) {
+                    let leading = path.split('.').next().expect("dotted_path is never empty");
+                    if self.resolve(leading).is_none() {
+                        let fqcn = self.class_fqcn(&path);
+                        if let Some((owner, field)) =
+                            class_table::find_field_owner(self.classes, &fqcn, name)
+                        {
+                            if field.is_static {
+                                if !class_table::is_accessible(
+                                    self.classes,
+                                    field.visibility,
+                                    &owner,
+                                    &self.this_fqcn,
+                                ) {
+                                    return Err(SemaError::MemberNotAccessible(
+                                        name.to_string(),
+                                        self.this_fqcn.clone(),
+                                        visibility_str(field.visibility),
+                                    ));
+                                }
+                                if field.readonly {
+                                    return Err(SemaError::ReadonlyPropertyModification(
+                                        name.to_string(),
+                                    ));
+                                }
+                                let field_ty = field.ty.clone();
+                                return self.incr_result_ty(&field_ty, op_symbol);
+                            }
+                        }
+                    }
+                }
+                let target_ty = self.check_expr(target_expr, assigned)?;
+                let Type::Named(fqcn) = &target_ty else {
+                    return Ok(Type::Int);
+                };
+                let Some(field_ty) = self.field_ty(fqcn, name) else {
+                    return Ok(Type::Int);
+                };
+                self.check_field_access(fqcn, name)?;
+                self.check_readonly(target_expr, fqcn, name)?;
+                self.incr_result_ty(&field_ty, op_symbol)
+            }
+            LValue::Index(target_expr, index_expr) => {
+                let target_ty = self.check_expr(target_expr, assigned)?;
+                self.check_expr(index_expr, assigned)?;
+                let Type::Array(elem) = target_ty else {
+                    return Ok(Type::Int);
+                };
+                self.incr_result_ty(&elem, op_symbol)
+            }
+        }
+    }
+
+    /// The type of a `++`/`--` expression given its target's type — E009 for
+    /// anything else. Operator overloading — specs.md § Overloadable
+    /// operators: `++`/`--` overloads take no parameters (`public Self
+    /// operator++()`) and mutate `this`. Mirrors `Expr::Unary`'s handling of
+    /// `operator-`/`operator!` — `nl-vm` only actually knows how to mutate an
+    /// `int` (`IINC` / an explicit read-add-write) or dispatch to
+    /// `operator++`/`operator--` on an object (`nl_codegen::expr::
+    /// compile_incr`); every other static type (string, bool, float, byte,
+    /// array, a Named type without the overload) would otherwise reach
+    /// codegen unchecked and surface as an opaque `CodegenError` instead of a
+    /// proper E009 at the right layer.
+    fn incr_result_ty(&self, ty: &Type, op_symbol: &str) -> Result<Type, SemaError> {
+        if let Type::Named(fqcn) = ty {
+            let method_name = if op_symbol == "++" {
+                "operator++"
+            } else {
+                "operator--"
+            };
+            if let Some(return_ty) = self.resolve_operator_call(fqcn, method_name, &[])? {
+                return Ok(return_ty);
+            }
+            return Err(SemaError::BadUnaryOperator(
+                op_symbol.to_string(),
+                types::display(ty),
+            ));
+        }
+        if !matches!(ty, Type::Int) {
+            return Err(SemaError::BadUnaryOperator(
+                op_symbol.to_string(),
+                types::display(ty),
+            ));
+        }
+        Ok(ty.clone())
     }
 
     /// Looks up `fqcn.<method_name>(param_ty)` (an operator overload — see

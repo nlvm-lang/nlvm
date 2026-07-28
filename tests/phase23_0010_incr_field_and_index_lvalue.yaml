@@ -1,0 +1,58 @@
+---
+title: "`++`/`--` on a general lvalue — specs.md § Operator precedence: `obj.field`, `this.field` and `arr[i]` are valid targets, prefix yielding the new value and postfix the old one (issue #10)"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "10 12 12 3 5 5 8 2 41 1 99"
+---
+
+#NLFILE phase23/incrlvalue/Counter.nl
+namespace phase23.incrlvalue;
+class Counter {
+	public int value;
+	public int[] slots;
+
+	public construct(int value) {
+		this.value = value;
+		this.slots = new int[3];
+	}
+
+	public int bumpOwn() {
+		this.value++;
+		++this.slots[0];
+		return this.value;
+	}
+}
+
+#NLFILE phase23/incrlvalue/Main.nl
+namespace phase23.incrlvalue;
+class Main {
+	public static int main(string[] args) {
+		auto c = new Counter(10);
+		// Postfix on a field yields the pre-mutation value, prefix the
+		// mutated one — same rule as on a plain local.
+		auto post = c.value++;
+		auto pre = ++c.value;
+		system.Out.print(post + " " + pre + " " + c.value + " ");
+
+		int[] a = new int[]{ 3, 9 };
+		auto ipost = a[0]++;
+		auto ipre = ++a[0];
+		system.Out.print(ipost + " " + ipre + " " + a[0] + " ");
+
+		// The index expression is evaluated exactly once: `a[idx++]`
+		// increments `a[1]` and leaves `idx` at 2, not 3.
+		int idx = 1;
+		a[idx++]--;
+		system.Out.print(a[1] + " " + idx + " ");
+
+		// `this.field++` / `++this.arr[i]` from inside a method.
+		auto d = new Counter(40);
+		system.Out.print(d.bumpOwn() + " " + d.slots[0]);
+
+		// `--` on a nested field path.
+		auto e = new Counter(100);
+		e.value--;
+		system.Out.print(" " + e.value);
+		return 0;
+	}
+}

@@ -1,0 +1,18 @@
+---
+title: "Parse error — `++`/`--` widened to a general lvalue still rejects a non-assignable target such as a method call result (issue #10)"
+file_separator: "#NLFILE"
+expected_parse_error: true
+---
+
+#NLFILE phase23/incrnonlvalue/Main.nl
+namespace phase23.incrnonlvalue;
+class Main {
+	public static int value() {
+		return 1;
+	}
+
+	public static int main(string[] args) {
+		value()++;
+		return 0;
+	}
+}

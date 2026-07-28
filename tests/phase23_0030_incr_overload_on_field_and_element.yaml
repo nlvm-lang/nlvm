@@ -1,0 +1,57 @@
+---
+title: "`++`/`--` on an object-typed field or array element dispatches to `operator++`/`operator--` and writes the returned reference back (issue #10)"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "6 4 9"
+---
+
+#NLFILE phase23/incroverloadlvalue/Counter.nl
+namespace phase23.incroverloadlvalue;
+class Counter {
+	public int value;
+
+	public construct(int value) {
+		this.value = value;
+	}
+
+	public Self operator++() {
+		this.value = this.value + 1;
+		return this;
+	}
+
+	public Self operator--() {
+		this.value = this.value - 1;
+		return this;
+	}
+}
+
+#NLFILE phase23/incroverloadlvalue/Holder.nl
+namespace phase23.incroverloadlvalue;
+class Holder {
+	public Counter counter;
+
+	public construct(Counter counter) {
+		this.counter = counter;
+	}
+}
+
+#NLFILE phase23/incroverloadlvalue/Main.nl
+namespace phase23.incroverloadlvalue;
+class Main {
+	public static int main(string[] args) {
+		auto h = new Holder(new Counter(5));
+		h.counter++;
+		system.Out.print(h.counter.value + " ");
+
+		Counter[] cs = new Counter[]{ new Counter(5) };
+		cs[0]--;
+		system.Out.print(cs[0].value + " ");
+
+		// Per specs.md § Overloadable operators ("Postfix note") both
+		// forms evaluate to the same mutated reference.
+		auto r = ++h.counter;
+		r.value = r.value + 2;
+		system.Out.print(h.counter.value);
+		return 0;
+	}
+}

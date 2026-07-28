@@ -424,11 +424,13 @@ fn scan_expr_for_box_requests(
         | Expr::NullLit
         | Expr::This
         | Expr::Super
-        | Expr::Ident(_)
-        | Expr::PostIncr(_)
-        | Expr::PostDecr(_)
-        | Expr::PreIncr(_)
-        | Expr::PreDecr(_) => {}
+        | Expr::Ident(_) => {}
+        Expr::PostIncr(target)
+        | Expr::PostDecr(target)
+        | Expr::PreIncr(target)
+        | Expr::PreDecr(target) => {
+            scan_lvalue_for_box_requests(target, scopes, mutated_in_method, out)
+        }
         Expr::Assign(target, value) => {
             scan_lvalue_for_box_requests(target, scopes, mutated_in_method, out);
             scan_expr_for_box_requests(value, scopes, mutated_in_method, out);
@@ -591,13 +593,13 @@ fn collect_referenced_in_stmt(stmt: &Stmt, names: &mut HashSet<String>) {
 
 fn collect_referenced_in_expr(expr: &Expr, names: &mut HashSet<String>) {
     match expr {
-        Expr::Ident(name)
-        | Expr::PostIncr(name)
-        | Expr::PostDecr(name)
-        | Expr::PreIncr(name)
-        | Expr::PreDecr(name) => {
+        Expr::Ident(name) => {
             names.insert(name.clone());
         }
+        Expr::PostIncr(target)
+        | Expr::PostDecr(target)
+        | Expr::PreIncr(target)
+        | Expr::PreDecr(target) => collect_referenced_in_lvalue(target, names),
         Expr::Assign(target, value) => {
             collect_referenced_in_lvalue(target, names);
             collect_referenced_in_expr(value, names);
@@ -779,9 +781,10 @@ fn collect_mutated_in_stmt(stmt: &Stmt, names: &mut HashSet<String>) {
 
 fn collect_mutated_in_expr(expr: &Expr, names: &mut HashSet<String>) {
     match expr {
-        Expr::PostIncr(name) | Expr::PostDecr(name) | Expr::PreIncr(name) | Expr::PreDecr(name) => {
-            names.insert(name.clone());
-        }
+        Expr::PostIncr(target)
+        | Expr::PostDecr(target)
+        | Expr::PreIncr(target)
+        | Expr::PreDecr(target) => collect_mutated_in_lvalue(target, names),
         Expr::Assign(target, value) => {
             collect_mutated_in_lvalue(target, names);
             collect_mutated_in_expr(value, names);
@@ -1194,11 +1197,11 @@ fn collect_expr(
         | Expr::NullLit
         | Expr::This
         | Expr::Super
-        | Expr::Ident(_)
-        | Expr::PostIncr(_)
-        | Expr::PostDecr(_)
-        | Expr::PreIncr(_)
-        | Expr::PreDecr(_) => {}
+        | Expr::Ident(_) => {}
+        Expr::PostIncr(target)
+        | Expr::PostDecr(target)
+        | Expr::PreIncr(target)
+        | Expr::PreDecr(target) => collect_lvalue(target, imports, templates, out),
         Expr::Assign(target, value) => {
             collect_lvalue(target, imports, templates, out);
             collect_expr(value, imports, templates, out);
@@ -1599,11 +1602,11 @@ fn rewrite_expr(
         | Expr::NullLit
         | Expr::This
         | Expr::Super
-        | Expr::Ident(_)
-        | Expr::PostIncr(_)
-        | Expr::PostDecr(_)
-        | Expr::PreIncr(_)
-        | Expr::PreDecr(_) => expr.clone(),
+        | Expr::Ident(_) => expr.clone(),
+        Expr::PostIncr(target) => Expr::PostIncr(rewrite_lvalue(target, imports, templates)),
+        Expr::PostDecr(target) => Expr::PostDecr(rewrite_lvalue(target, imports, templates)),
+        Expr::PreIncr(target) => Expr::PreIncr(rewrite_lvalue(target, imports, templates)),
+        Expr::PreDecr(target) => Expr::PreDecr(rewrite_lvalue(target, imports, templates)),
         Expr::Assign(target, value) => Expr::Assign(
             rewrite_lvalue(target, imports, templates),
             Box::new(rewrite_expr(value, imports, templates)),
@@ -1966,11 +1969,11 @@ fn subst_expr(expr: &Expr, subst: &HashMap<String, Type>) -> Expr {
         | Expr::NullLit
         | Expr::This
         | Expr::Super
-        | Expr::Ident(_)
-        | Expr::PostIncr(_)
-        | Expr::PostDecr(_)
-        | Expr::PreIncr(_)
-        | Expr::PreDecr(_) => expr.clone(),
+        | Expr::Ident(_) => expr.clone(),
+        Expr::PostIncr(target) => Expr::PostIncr(subst_lvalue(target, subst)),
+        Expr::PostDecr(target) => Expr::PostDecr(subst_lvalue(target, subst)),
+        Expr::PreIncr(target) => Expr::PreIncr(subst_lvalue(target, subst)),
+        Expr::PreDecr(target) => Expr::PreDecr(subst_lvalue(target, subst)),
         Expr::Assign(target, value) => Expr::Assign(
             subst_lvalue(target, subst),
             Box::new(subst_expr(value, subst)),

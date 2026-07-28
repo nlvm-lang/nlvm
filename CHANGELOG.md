@@ -5,6 +5,11 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.0]
+
+### Added
+- `++`/`--` (prefix and postfix) now accept any assignable target, not just a plain variable name: `obj.field++`, `this.field++`, `Class.staticField++` and `arr[i]++` all work, as do their `--` and prefix counterparts. Previously only a bare identifier parsed at all (`obj.field++` was a parse error), because the AST modelled the operand as a `String`; it is now the same `LValue` the left-hand side of `=` uses, so field/element targets get the same write-permission checks as an assignment (`E010` inside a `const` method, `E014` on a `readonly` property, member accessibility) and the same value rule as before (`int`, or a type overloading `operator++`/`operator--`, otherwise `E009` — now reported by nl-sema for field/element targets instead of surfacing as an opaque nl-codegen error). Codegen evaluates the target's sub-expressions exactly once, so a side-effecting receiver or index (`a[i++]--`) behaves as written. See [issue #10](https://github.com/nlvm-lang/nlvm/issues/10).
+
 ## [0.14.4]
 
 ### Fixed
