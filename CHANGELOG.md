@@ -5,6 +5,11 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.4]
+
+### Fixed
+- Closure target typing (specs.md § Return type deduction rules, point 5) is now implemented: a closure literal assigned directly to an explicitly typed function-type local, with its own return type omitted, is now checked and compiled against the target's return type instead of its own body-deduced one — e.g. `(int) => float k = (int n) => n;` now compiles (`int` widens to `float`) instead of failing with `E004`-eluding leniency at nl-sema followed by a hard `cannot assign Closure { ... }` error at nl-codegen (the closure's own deduced `(int) => int` never matched the target's `(int) => float` descriptor). This covers both an expression body (`(int n) => n` — the grammar has no slot to write an explicit return type there at all) and a block body with omitted return type; `nl-sema`'s `check_closure` and `nl-codegen`'s `compile_closure`/`Emitter::expected_return_ty` now both thread the target's return type into the closure literal instead of leaving it as a "no dedicated type" leniency case. See [issue #14](https://github.com/nlvm-lang/nlvm/issues/14).
+
 ## [0.14.3]
 
 ### Fixed

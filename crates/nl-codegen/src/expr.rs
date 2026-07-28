@@ -334,6 +334,17 @@ pub struct Emitter<'a> {
     /// block-bodied closure with no explicit return type to deduce one
     /// (specs.md's `() => { return 42; }` — deduced `int`).
     pub(crate) inferred_return_ty: Option<ExprTy>,
+    /// specs.md § Return type deduction rules, point 5 (target typing): set
+    /// by `compile_closure` before compiling a closure literal's body when
+    /// it's being assigned directly to an explicitly typed function target
+    /// and the closure itself omits a return type — e.g. `(int) => float k
+    /// = (int n) => n;`. When set, every `return` statement's value (and,
+    /// for an expression body, its own result) is coerced to this type
+    /// (numeric widening) instead of left as whatever the body happens to
+    /// produce, so the closure's compiled `invoke` descriptor matches the
+    /// target's shape. `None` for ordinary methods and untargeted closures —
+    /// `Stmt::Return` leaves the value uncoerced then, same as before.
+    pub(crate) expected_return_ty: Option<ExprTy>,
     /// `"{this_fqcn}$m{method_index}"` — base for this method's synthetic
     /// closure class names (`$closure0`, `$closure1`, ...). Keyed by
     /// position in `class.methods` rather than just the method's name so
@@ -374,6 +385,7 @@ impl<'a> Emitter<'a> {
             closures: Vec::new(),
             closure_counter: 0,
             inferred_return_ty: None,
+            expected_return_ty: None,
             closure_name_prefix,
         }
     }
@@ -886,7 +898,7 @@ impl<'a> Emitter<'a> {
                 body,
             } => {
                 let _ = throws; // parsed only — see PLAN.md's closures gap (checked-exception verification not extended into closure bodies).
-                self.compile_closure(params, return_type, body)
+                self.compile_closure(params, return_type, body, None)
             }
         }
     }
@@ -897,11 +909,26 @@ impl<'a> Emitter<'a> {
     /// creation site: `NEW` + one `SET_FIELD` per capture, copying each
     /// captured variable's *current* value (by-value capture — see
     /// `ExprTy::Closure`'s doc comment for the boxing gap versus the spec).
-    fn compile_closure(
+    ///
+    /// `target_return` is `Some` exactly when this literal is being compiled
+    /// directly against an explicit function-typed target (currently only
+    /// `stmt::compile_stmt`'s `VarDecl` arm — specs.md § Return type
+    /// deduction rules, point 5: target typing) *and* the literal itself
+    /// omits a return type. When so, the target's return type — rather than
+    /// whatever the body's own values happen to produce — becomes this
+    /// closure's deduced return type, with every returned value coerced to
+    /// it (`Emitter::expected_return_ty`, numeric widening only, same as
+    /// `coerce_value` everywhere else). This is what makes `(int) => float k
+    /// = (int n) => n;` compile: the `invoke` method's own descriptor ends
+    /// up `(int) => float`, matching what `coerce_value`'s closure-shape
+    /// check at the assignment site expects, instead of the mismatched
+    /// `(int) => int` a plain body-only deduction would produce.
+    pub(crate) fn compile_closure(
         &mut self,
         params: &[nl_syntax::ast::Param],
         return_type: &Option<Type>,
         body: &nl_syntax::ast::ClosureBody,
+        target_return: Option<&ExprTy>,
     ) -> Result<ExprTy, CodegenError> {
         let param_names: std::collections::HashSet<&str> =
             params.iter().map(|p| p.name.as_str()).collect();
@@ -976,6 +1003,13 @@ impl<'a> Emitter<'a> {
                 synth_fqcn.clone(),
             );
             inner.captured_fields = captured_fields;
+            // Only takes effect when this literal has no explicit return
+            // type of its own — an explicit one always wins, same
+            // precedence `Stmt::Return`'s check in nl-sema's `check_closure`
+            // gives it.
+            if return_type.is_none() {
+                inner.expected_return_ty = target_return.cloned();
+            }
             // A closure nested inside this one may itself capture-and-mutate
             // one of *this* closure's own locals/params — same analysis as
             // `compile_method`'s, scoped to this closure's own body.
@@ -998,9 +1032,20 @@ impl<'a> Emitter<'a> {
                     for stmt in block {
                         inner.compile_stmt(stmt)?;
                     }
+                    // Every `Stmt::Return` inside `block` already coerced its
+                    // own value to `expected_return_ty` and recorded it as
+                    // `inferred_return_ty` (see `stmt::compile_stmt`), so
+                    // reading `expected_return_ty` back here (rather than
+                    // `inferred_return_ty`) also covers a body with no
+                    // `return` at all reaching this point — nl-sema's own
+                    // `check_closure` already requires one whenever the
+                    // target's return type isn't `void`.
                     let ret = match return_type {
                         Some(t) => expr_ty_of(&resolve_type(t, self.imports)),
-                        None => inner.inferred_return_ty.clone().unwrap_or(ExprTy::Void),
+                        None => inner
+                            .expected_return_ty
+                            .clone()
+                            .unwrap_or_else(|| inner.inferred_return_ty.clone().unwrap_or(ExprTy::Void)),
                     };
                     if ret == ExprTy::Void {
                         inner.op(Opcode::Return, 0);
@@ -1018,11 +1063,22 @@ impl<'a> Emitter<'a> {
                     // `Expr` carries no source position of its own.
                     inner.record_line(self.last_line);
                     let value_ty = inner.compile_expr(e)?;
-                    inner.op(Opcode::ReturnValue, 0);
-                    match return_type {
+                    let final_ty = match return_type {
                         Some(t) => expr_ty_of(&resolve_type(t, self.imports)),
-                        None => value_ty,
-                    }
+                        None => match inner.expected_return_ty.clone() {
+                            // specs.md's target-typing rule 5 — no grammar
+                            // slot exists to write an explicit return type
+                            // before an expression body, so this is the only
+                            // way such a body's result ever gets widened.
+                            Some(expected) => {
+                                inner.coerce_value(&value_ty, &expected, "closure return value")?;
+                                expected
+                            }
+                            None => value_ty,
+                        },
+                    };
+                    inner.op(Opcode::ReturnValue, 0);
+                    final_ty
                 }
             };
             inner.pop_scope();

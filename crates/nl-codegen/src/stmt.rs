@@ -1,5 +1,5 @@
 use nl_bytecode::{ExceptionTableEntry, Opcode};
-use nl_syntax::ast::{Block, CatchClause, Stmt, StmtKind, Type};
+use nl_syntax::ast::{Block, CatchClause, Expr, Stmt, StmtKind, Type};
 
 use crate::class_table::resolve_type;
 use crate::error::CodegenError;
@@ -20,7 +20,18 @@ impl<'a> Emitter<'a> {
         match &stmt.kind {
             StmtKind::Return(Some(expr)) => {
                 let ty = self.compile_expr(expr)?;
-                self.inferred_return_ty = Some(ty);
+                // specs.md § Return type deduction rules, point 5 (target
+                // typing) — `Emitter::expected_return_ty`'s doc comment.
+                // `None` for every ordinary method and untargeted closure,
+                // so this is a no-op there, same as before.
+                let recorded_ty = match self.expected_return_ty.clone() {
+                    Some(expected) => {
+                        self.coerce_value(&ty, &expected, "return value")?;
+                        expected
+                    }
+                    None => ty,
+                };
+                self.inferred_return_ty = Some(recorded_ty);
                 self.replay_finally_blocks(0)?;
                 self.code.push(Opcode::ReturnValue as u8);
             }
@@ -52,7 +63,32 @@ impl<'a> Emitter<'a> {
                     ));
                     self.compile_boxed_var_decl(declared_ty, name, init)?;
                 } else {
-                    let init_ty = self.compile_expr(init)?;
+                    // specs.md § Return type deduction rules, point 5
+                    // (target typing): a closure literal assigned *directly*
+                    // to an explicit function-typed local compiles through
+                    // `compile_closure`'s `target_return` parameter instead
+                    // of the generic `compile_expr` dispatch, so an omitted
+                    // return type on the closure widens to the target's
+                    // rather than being deduced from the body alone (see
+                    // `Emitter::expected_return_ty`'s doc comment).
+                    let init_ty = if let (
+                        Some(Type::Function {
+                            return_type: target_ret,
+                            ..
+                        }),
+                        Expr::Closure {
+                            params,
+                            return_type,
+                            body,
+                            ..
+                        },
+                    ) = (ty, init)
+                    {
+                        let target_return_ty = expr_ty_of(&resolve_type(target_ret, self.imports));
+                        self.compile_closure(params, return_type, body, Some(&target_return_ty))?
+                    } else {
+                        self.compile_expr(init)?
+                    };
                     let declared_ty = match ty {
                         Some(t) => expr_ty_of(&resolve_type(t, self.imports)),
                         None => init_ty.clone(),

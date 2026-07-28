@@ -1647,6 +1647,24 @@ impl<'a> MethodChecker<'a> {
                 is_const,
             } => {
                 let value_ty = match init {
+                    // specs.md § Return type deduction rules, point 5
+                    // (target typing): a closure literal assigned *directly*
+                    // to an explicitly typed local propagates that type into
+                    // `check_closure` instead of going through the generic
+                    // `check_expr` dispatch below — needed so the target's
+                    // return type is available to check the closure's body
+                    // against, particularly for an expression body (no
+                    // grammar slot exists to write an explicit return type
+                    // there at all — see `nl_syntax::parser::parse_closure`).
+                    Some(Expr::Closure {
+                        params,
+                        return_type,
+                        body,
+                        ..
+                    }) => {
+                        let target = ty.as_ref().map(|t| self.resolve_ty(t));
+                        Some(self.check_closure(params, return_type, body, target, &mut assigned)?)
+                    }
                     Some(e) => Some(self.check_expr(e, &mut assigned)?),
                     None => None,
                 };
@@ -2702,49 +2720,84 @@ impl<'a> MethodChecker<'a> {
                 body,
                 return_type,
                 ..
-            } => {
-                self.push_scope();
-                let mut inner_assigned = assigned.clone();
-                for p in params {
-                    let ty = self.resolve_ty(&p.ty);
-                    let id = self.declare(&p.name, ty);
-                    if p.is_const {
-                        self.const_vars.insert(id);
-                    }
-                    if let Some(default) = &p.default {
-                        if !is_const_expr(default) {
-                            return Err(SemaError::DefaultNotConstant(p.name.clone()));
-                        }
-                    }
-                    inner_assigned.insert(id);
-                }
-                // A closure's `return` statements must be checked against
-                // *its own* declared/deduced return type, not whatever
-                // `self.return_ty` holds for the enclosing method.
-                let saved_return_ty = std::mem::replace(&mut self.return_ty, Type::Void);
-                let saved_skip = self.skip_return_check;
-                match return_type {
-                    Some(t) => {
-                        self.return_ty = self.resolve_ty(t);
-                        self.skip_return_check = false;
-                    }
-                    None => self.skip_return_check = true,
-                }
-                let body_result = match body {
-                    nl_syntax::ast::ClosureBody::Block(block) => {
-                        self.check_stmts(block, inner_assigned).map(|_| ())
-                    }
-                    nl_syntax::ast::ClosureBody::Expr(e) => {
-                        self.check_expr(e, &mut inner_assigned).map(|_| ())
-                    }
-                };
-                self.return_ty = saved_return_ty;
-                self.skip_return_check = saved_skip;
-                self.pop_scope();
-                body_result?;
-                Ok(Type::Void)
-            }
+            } => self.check_closure(params, return_type, body, None, assigned),
         }
+    }
+
+    /// Checks a closure literal's body — shared by a bare `Expr::Closure`
+    /// (`target: None`, specs.md's return-type deduction rules 1-4) and a
+    /// closure assigned directly to an explicitly typed local (`target:
+    /// Some(fn_ty)`, rule 5 — target typing). When the closure omits its own
+    /// return type *and* `target` is a `Type::Function`, the target's return
+    /// type takes precedence over deduction from the body: `return`
+    /// statements (and, for an expression body, the expression itself) are
+    /// checked against it — allowing e.g. numeric widening (`(int) => float
+    /// k = (int n) => n;`) — instead of going unchecked altogether the way a
+    /// same-shaped closure with no target does. Always returns `Type::Void`
+    /// for the closure literal's own static type — see this arm's previous
+    /// doc comment (now on `Expr::Closure` above) for why.
+    fn check_closure(
+        &mut self,
+        params: &[nl_syntax::ast::Param],
+        return_type: &Option<Type>,
+        body: &nl_syntax::ast::ClosureBody,
+        target: Option<Type>,
+        assigned: &mut HashSet<u32>,
+    ) -> Result<Type, SemaError> {
+        self.push_scope();
+        let mut inner_assigned = assigned.clone();
+        for p in params {
+            let ty = self.resolve_ty(&p.ty);
+            let id = self.declare(&p.name, ty);
+            if p.is_const {
+                self.const_vars.insert(id);
+            }
+            if let Some(default) = &p.default {
+                if !is_const_expr(default) {
+                    return Err(SemaError::DefaultNotConstant(p.name.clone()));
+                }
+            }
+            inner_assigned.insert(id);
+        }
+        // A closure's `return` statements must be checked against *its own*
+        // declared/deduced/target-derived return type, not whatever
+        // `self.return_ty` holds for the enclosing method.
+        let saved_return_ty = std::mem::replace(&mut self.return_ty, Type::Void);
+        let saved_skip = self.skip_return_check;
+        let target_return = target.and_then(|t| match t {
+            Type::Function { return_type, .. } => Some(*return_type),
+            _ => None,
+        });
+        match return_type {
+            Some(t) => {
+                self.return_ty = self.resolve_ty(t);
+                self.skip_return_check = false;
+            }
+            None => match target_return {
+                Some(t) => {
+                    self.return_ty = t;
+                    self.skip_return_check = false;
+                }
+                None => self.skip_return_check = true,
+            },
+        }
+        let body_result = match body {
+            nl_syntax::ast::ClosureBody::Block(block) => {
+                self.check_stmts(block, inner_assigned).map(|_| ())
+            }
+            nl_syntax::ast::ClosureBody::Expr(e) => {
+                let ety = self.check_expr(e, &mut inner_assigned)?;
+                if !self.skip_return_check {
+                    self.check_assignable(&ety, &self.return_ty.clone())?;
+                }
+                Ok(())
+            }
+        };
+        self.return_ty = saved_return_ty;
+        self.skip_return_check = saved_skip;
+        self.pop_scope();
+        body_result?;
+        Ok(Type::Void)
     }
 
     /// compiler.md § Match exhaustiveness — E047. Exhaustive without a
