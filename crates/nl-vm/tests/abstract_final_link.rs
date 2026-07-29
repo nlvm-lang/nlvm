@@ -16,8 +16,13 @@ fn compile(sources: &[&str]) -> Vec<nl_bytecode::Module> {
     nl_codegen::compile_program(&files).expect("codegen")
 }
 
+/// `NEW` of an abstract class in code `main` really reaches. Both guards
+/// cover this one — `verify_link`'s static sweep gets there first and is
+/// what actually produces the failure now (see `new_target_verifier.rs`,
+/// nlvm issue #16); `Opcode::New`'s runtime check remains behind it for
+/// bytecode that never went through linking.
 #[test]
-fn new_rejects_abstract_class_at_runtime() {
+fn new_rejects_abstract_class() {
     let shape = r#"
 namespace test.abstract.runtime;
 abstract class Shape {

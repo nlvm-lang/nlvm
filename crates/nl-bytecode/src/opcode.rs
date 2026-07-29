@@ -182,4 +182,27 @@ impl Opcode {
         };
         Some(op)
     }
+
+    /// How many operand bytes follow this opcode in a code array. Every
+    /// instruction in this encoding is fixed-width (no `tableswitch`-style
+    /// variable-length or aligned operands), so a linear sweep over a code
+    /// array only needs this — see `crate::disasm`.
+    ///
+    /// Must stay in sync with `nl_vm::interpreter::exec_step`'s `read_u8!`/
+    /// `read_i8!`/`read_u16!`/`read_i16!` calls per arm, and with the
+    /// `op*` emitters in `nl_codegen`; `nl-vm`'s `operand_len_matches_
+    /// generated_code_boundaries` test pins the two together.
+    pub fn operand_len(self) -> usize {
+        use Opcode::*;
+        match self {
+            BiPush => 1,
+            SiPush | Ldc | Load | Store | IfTrue | IfFalse | Goto | New | InstanceOf
+            | CheckCast | NewArray | GetField | SetField | GetStatic | SetStatic | InvokeStatic
+            | InvokeInstance | InvokeSpecial | InvokeClosure => 2,
+            // IINC: local index (u16) + delta (i16); NEW_ARRAY_INIT: element
+            // type index (u16) + element count (u16); GOTO_W: offset (i32).
+            IInc | NewArrayInit | GotoW => 4,
+            _ => 0,
+        }
+    }
 }

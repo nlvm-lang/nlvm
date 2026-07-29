@@ -395,17 +395,20 @@ impl Program {
     }
 }
 
-/// vm.md § Class flag bits / § Method descriptor — the two `FINAL`
-/// guarantees the spec phrases as checked "at link time": a `super_class`
-/// naming a `FINAL` class is rejected outright, and a method that redeclares
-/// the same name+descriptor as an ancestor's `FINAL` method is rejected as
-/// an illegal override. Both need every module of the program to be loaded
-/// at once (a single `Module` only knows its own `super_class` *index*, not
-/// whether the class it names is `FINAL`), unlike `nl_bytecode::Module::
-/// validate`'s single-module invariants (also run here, once per module,
-/// so a program built in memory by `nl-codegen` — see `nl-test-runner`,
-/// which never round-trips through `encode`/`decode` — gets the same
-/// enforcement `Module::decode` already gives a `.nlm` loaded from disk).
+/// vm.md § Class flag bits / § Method descriptor — the whole-program checks
+/// the spec phrases as happening "at link time": a `super_class` naming a
+/// `FINAL` class is rejected outright, a method that redeclares the same
+/// name+descriptor as an ancestor's `FINAL` method is rejected as an illegal
+/// override, and a `NEW` targeting an `ABSTRACT` class is rejected wherever
+/// it appears in a code array (`verify_new_targets`). All three need every
+/// module of the program to be loaded at once (a single `Module` only knows
+/// its own `super_class`/`NEW` operand as a constant-pool *index*, not
+/// whether the class it names carries a given flag), unlike
+/// `nl_bytecode::Module::validate`'s single-module invariants (also run
+/// here, once per module, so a program built in memory by `nl-codegen` —
+/// see `nl-test-runner`, which never round-trips through `encode`/`decode`
+/// — gets the same enforcement `Module::decode` already gives a `.nlm`
+/// loaded from disk).
 pub fn verify_link(modules: &[Module]) -> Result<(), VmError> {
     let by_name: HashMap<&str, &Module> = modules
         .iter()
@@ -471,6 +474,61 @@ pub fn verify_link(modules: &[Module]) -> Result<(), VmError> {
                     .constant_pool
                     .class_name_at(anc.super_class)
                     .and_then(|n| by_name.get(n).copied());
+            }
+        }
+
+        verify_new_targets(module, name, &by_name)?;
+    }
+    Ok(())
+}
+
+/// vm.md § Class flag bits, `ABSTRACT`: "The VM must reject `NEW` targeting
+/// a class with this flag". The rejection the spec asks for is *static* —
+/// it doesn't depend on the `NEW` being reached — so this sweeps every one
+/// of `module`'s code arrays and resolves each `NEW`'s class operand,
+/// catching the ones sitting in a branch that never executes. (`Opcode::New`
+/// re-checks the same flag at runtime; that check is now a backstop for
+/// programs that reached the interpreter without going through
+/// `verify_link` at all, rather than the only enforcement point.)
+///
+/// The sweep is a plain linear decode (`nl_bytecode::disasm`) — sound here
+/// because every instruction in this encoding is fixed-width with no inline
+/// data, so "no `NEW` of an abstract class was found" really does mean
+/// there is none. Code that doesn't decode cleanly (unknown opcode byte,
+/// operands running off the end) is rejected rather than skipped: a method
+/// whose instruction boundaries can't be recovered is one whose `NEW`s
+/// can't be enumerated, so passing it would be an unverified claim.
+///
+/// A `NEW` naming a class the program doesn't contain is *not* an error
+/// here: that's how the native no-backing-`Module` classes appear
+/// (`system.List`, `system.Random`, `system.thread.Thread`, ... — see
+/// `crate::native`), and `Opcode::New` handles them explicitly.
+fn verify_new_targets(
+    module: &Module,
+    name: &str,
+    by_name: &HashMap<&str, &Module>,
+) -> Result<(), VmError> {
+    for method in &module.methods {
+        for instruction in nl_bytecode::instructions(&method.code) {
+            let instruction = instruction?;
+            if instruction.opcode != nl_bytecode::Opcode::New {
+                continue;
+            }
+            let target = instruction
+                .operand_u16(0)
+                .and_then(|idx| module.constant_pool.class_name_at(idx))
+                .ok_or(VmError::Malformed("bad class index on NEW"))?;
+            if by_name
+                .get(target)
+                .is_some_and(|t| t.class_flags & class_flags::ABSTRACT != 0)
+            {
+                let method_name = module
+                    .constant_pool
+                    .utf8_at(method.name_index)
+                    .unwrap_or("?");
+                return Err(VmError::Link(format!(
+                    "method '{method_name}' in class '{name}' cannot instantiate abstract class '{target}'"
+                )));
             }
         }
     }

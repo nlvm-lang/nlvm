@@ -32,12 +32,15 @@ pub enum VmError {
     #[error("link error: {0}")]
     Link(String),
     /// vm.md line 160: "The VM must reject `NEW` targeting a class with
-    /// this flag ... if reached at runtime, the VM aborts execution with
-    /// an error." This project has no static bytecode verifier that scans
-    /// every `NEW` target ahead of time (see IMPLEMENTATION_STATUS.md § VM
-    /// / bytecode — linear dispatch, no vtable), so the "reached at
-    /// runtime" fallback is the actual enforcement point: `Opcode::New`
-    /// raises this the moment it would instantiate an `ABSTRACT` class.
+    /// this flag (verification error at link time; if reached at runtime,
+    /// the VM aborts execution with an error)." The link-time half is
+    /// `program::verify_new_targets` (which reports `Link` instead, since
+    /// it can name the offending method too); this variant is the runtime
+    /// half — `Opcode::New` raising it the moment it would instantiate an
+    /// `ABSTRACT` class. Now only reachable for bytecode that got to the
+    /// interpreter without passing through `verify_link` (an embedder
+    /// calling `call_static` directly), the link-time scan being
+    /// exhaustive otherwise.
     #[error("cannot instantiate abstract class '{0}'")]
     InstantiateAbstractClass(String),
     /// `system.ps.Process.exit(code)` (stdlib.md: "Terminal statement: does

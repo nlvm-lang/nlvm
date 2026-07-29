@@ -5,6 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.0]
+
+### Added
+- The VM now performs the **link-time** rejection of `NEW` targeting an `ABSTRACT` class that vm.md § Class flag bits prescribes, instead of only the runtime one. `verify_link` sweeps every loaded method's code array before anything executes (including `<clinit>`) and rejects the program if any `NEW` instruction — reachable or not — names a class flagged `ABSTRACT`; the error names the offending method and class. Previously a `NEW` sitting in a never-called method or a branch that never runs went undetected, and a program containing one exited `0`. `nl-sema`'s `E032` already rejects this at compile time, so this only changes behaviour for bytecode that reached the VM without it (a hand-written or third-party `.nlm`, or an in-memory program built by an embedder). `Opcode::New` keeps its runtime check as the spec's own fallback. See [issue #16](https://github.com/nlvm-lang/nlvm/issues/16).
+- `nl-bytecode` gained a `disasm` module (`instructions(code)`) that decodes a code array into instructions, plus `Opcode::operand_len` — the shared, reusable basis for the sweep above and for any future bytecode-walking tool (disassembler, static analysis).
+
 ## [0.15.0]
 
 ### Added

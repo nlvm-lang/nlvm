@@ -491,12 +491,12 @@ fn exec_step(
             }
             // vm.md § Class flag bits, `ABSTRACT`: "The VM must reject `NEW`
             // targeting a class with this flag ... if reached at runtime,
-            // the VM aborts execution with an error." `nl_vm::program::
-            // verify_link` already runs once at load time, but doesn't
-            // (and can't, without a full bytecode verifier scanning every
-            // `NEW` target ahead of time — see IMPLEMENTATION_STATUS.md §
-            // VM / bytecode) prove a given `NEW` is unreachable; this is
-            // the actual enforcement point once execution gets here.
+            // the VM aborts execution with an error." The spec's link-time
+            // rejection is `nl_vm::program::verify_new_targets`, which
+            // statically sweeps every code array before anything runs — so
+            // any program started through `run_program` is already clear of
+            // this. Kept as the spec's own runtime fallback, for bytecode
+            // an embedder hands straight to `call_static` without linking.
             if program
                 .get(&fqcn)
                 .is_some_and(|m| m.class_flags & class_flags::ABSTRACT != 0)
