@@ -5,6 +5,13 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.0]
+
+### Changed
+- Virtual dispatch now goes through a **precomputed vtable** (vm.md § Method dispatch) instead of searching for the method by name + descriptor up the `extends` chain at every call. `verify_link` — already the one pass that holds every module at once — flattens each class's own methods together with everything it inherits into one table per class, and `INVOKE_INSTANCE`/`INVOKE_CLOSURE`/`INVOKE_SPECIAL`, destructor lookup and the native-side dispatch helpers all resolve against it. Results are unchanged (nearest declaration still wins, for full-descriptor, parameters-only and name-only lookups alike); the cost of a call no longer grows with the depth of the hierarchy, and a resolved call allocates nothing where the walk allocated one `String` per level. On a 4M-call benchmark: −14% total runtime for a method inherited five levels up, −3% for a flat class, and dispatch time is now the same whatever the depth. See [issue #12](https://github.com/nlvm-lang/nlvm/issues/12).
+- `verify_link` now rejects a class hierarchy whose `extends` chain loops back on itself, with a `cyclic class hierarchy above class 'X'` link error. Such bytecode previously made the VM spin forever in one of its chain walks. `nl-sema` rejects it long before, so this only affects bytecode that reached the VM without going through the compiler.
+- **Breaking (embedders only)**: `nl_vm::verify_link` returns the computed `VTables` instead of `()`, and `Program::new` takes them as its second argument. `run_program`/`run_program_with_stdin` are unaffected.
+
 ## [0.16.1]
 
 ### Fixed
