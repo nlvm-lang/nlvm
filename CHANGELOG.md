@@ -5,6 +5,15 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.1]
+
+### Fixed
+- The cycle collector now reclaims a cycle as soon as the last variable pointing into it is reassigned, instead of waiting for the enclosing function to return. An assignment used as a bare statement no longer produces its own value: `compile_assign` used to keep a copy of the assigned value (for `a = b = 1;` to work) in a compiler-generated scratch local even when nothing consumed it, and that hidden local kept whatever it referenced reachable until the frame returned. Statement-position assignments are now compiled in value-discarding mode, which also emits shorter bytecode (no `DUP`/store/reload triple, one less local slot per field, element or `static` assignment). See [issue #17](https://github.com/nlvm-lang/nlvm/issues/17).
+- Values dropped from the *operand stack* — a discarded call result (`POP`), and everything an exception unwind discards on its way to a handler — are now registered as cycle-collector candidates like any other reference drop. Previously only durable slots (field, array element, local, `static`) were, so such a drop relied on a later unrelated event to trigger the pass that would notice it. Operand drops are far too frequent to collect on individually, so they only trigger a pass in batches; a compute-heavy benchmark shows no measurable slowdown. See [issue #17](https://github.com/nlvm-lang/nlvm/issues/17).
+
+### Changed
+- The cycle collector no longer runs a pass while a `system.thread.Thread` started by the program is still running. Trial deletion reads reference counts and fields as a series of snapshots, so a concurrent mutator could in principle make a live object look collectible and get its destructor called; passes now wait until the calling thread is provably the only one mutating. Candidates noted meanwhile are not lost — the first pass after the last thread is joined picks them up, as does the end-of-program sweep. A program that abandons a still-running thread and returns from `main` (which vm.md says is not waited for) now exits without reclaiming its cycles. See [issue #17](https://github.com/nlvm-lang/nlvm/issues/17).
+
 ## [0.16.0]
 
 ### Added

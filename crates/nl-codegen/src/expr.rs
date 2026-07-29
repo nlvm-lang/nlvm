@@ -794,7 +794,23 @@ impl<'a> Emitter<'a> {
     /// Compiles `expr` as a statement: evaluates it and discards any value
     /// it leaves on the stack. Used for expression statements and for-loop
     /// step expressions.
+    ///
+    /// An assignment gets compiled in value-discarding mode rather than
+    /// compiled-then-`POP`ed: `compile_assign` keeps the assigned value
+    /// alive for the expression's own result (`a = b = 1;`), which for a
+    /// field/element/static target means parking a copy in a scratch local
+    /// — a *durable* slot that outlives the statement and keeps whatever
+    /// was assigned reachable until the frame returns. That defeated the
+    /// cycle collector's promptness (`nl_vm::gc`): after `a.next = b;`, the
+    /// scratch copy of `b` kept the cycle externally reachable even once
+    /// every user-visible variable pointing into it was reassigned. In
+    /// statement position the result is discarded anyway, so not producing
+    /// it at all is both shorter bytecode and the fix.
     pub fn compile_expr_stmt(&mut self, expr: &Expr) -> Result<(), CodegenError> {
+        if let Expr::Assign(target, value) = expr {
+            self.compile_assign(target, value, false)?;
+            return Ok(());
+        }
         let ty = self.compile_expr(expr)?;
         if ty != ExprTy::Void {
             self.op(Opcode::Pop, -1);
@@ -871,7 +887,7 @@ impl<'a> Emitter<'a> {
                     Ok(field.ty)
                 }
             },
-            Expr::Assign(target, value) => self.compile_assign(target, value),
+            Expr::Assign(target, value) => self.compile_assign(target, value, true),
             Expr::Call(name, args) => self.compile_call(name, args),
             Expr::New(class_name, _type_args, args) => self.compile_new(class_name, args),
             Expr::NewArray(elem_ty, dims) => self.compile_new_array(elem_ty, dims),
@@ -1356,7 +1372,19 @@ impl<'a> Emitter<'a> {
         Ok(result_ty.unwrap_or(ExprTy::Void))
     }
 
-    fn compile_assign(&mut self, target: &LValue, value: &Expr) -> Result<ExprTy, CodegenError> {
+    /// `want_value` is `false` when the assignment is used as a bare
+    /// statement (`compile_expr_stmt`), where its result is discarded: every
+    /// `Dup`/scratch-local/reload triple below then collapses to the plain
+    /// store, leaving nothing on the stack (the arm returns `ExprTy::Void`,
+    /// so no caller mistakes it for a value-producing expression). See
+    /// `compile_expr_stmt`'s doc comment for why the scratch copy is worth
+    /// avoiding rather than just popping.
+    fn compile_assign(
+        &mut self,
+        target: &LValue,
+        value: &Expr,
+        want_value: bool,
+    ) -> Result<ExprTy, CodegenError> {
         match target {
             LValue::Local(name) => match self.resolve_ident(name)? {
                 IdentRef::Local(slot) => {
@@ -1398,6 +1426,10 @@ impl<'a> Emitter<'a> {
                                                     std::slice::from_ref(&rhs_ast_ty),
                                                     &return_ty,
                                                 );
+                                                if !want_value {
+                                                    self.op_u16(Opcode::Store, slot.index, -1);
+                                                    return Ok(ExprTy::Void);
+                                                }
                                                 self.op(Opcode::Dup, 1);
                                                 self.op_u16(Opcode::Store, slot.index, -1);
                                                 return Ok(result_ty);
@@ -1415,17 +1447,29 @@ impl<'a> Emitter<'a> {
                     // slot directly (which holds the box reference itself).
                     if let Some(inner_ty) = slot.boxed.clone() {
                         self.coerce_value(&value_ty, &inner_ty, name)?;
-                        self.op(Opcode::Dup, 1);
-                        let tmp = self.declare_scratch_local(inner_ty.clone());
-                        self.emit_store(tmp);
+                        let tmp = if want_value {
+                            self.op(Opcode::Dup, 1);
+                            let tmp = self.declare_scratch_local(inner_ty.clone());
+                            self.emit_store(tmp);
+                            Some(tmp)
+                        } else {
+                            None
+                        };
                         self.op_u16(Opcode::Load, slot.index, 1);
                         self.op(Opcode::Swap, 0);
                         let field_ref = self.box_value_field_ref(&inner_ty);
                         self.op_u16(Opcode::SetField, field_ref, -2);
+                        let Some(tmp) = tmp else {
+                            return Ok(ExprTy::Void);
+                        };
                         self.op_u16(Opcode::Load, tmp, 1);
                         return Ok(inner_ty);
                     }
                     self.coerce_value(&value_ty, &slot.ty, name)?;
+                    if !want_value {
+                        self.op_u16(Opcode::Store, slot.index, -1);
+                        return Ok(ExprTy::Void);
+                    }
                     // Leave a copy as the expression's own value (assignment
                     // is an expression, e.g. usable as `a = b = 1;`).
                     self.op(Opcode::Dup, 1);
@@ -1436,9 +1480,14 @@ impl<'a> Emitter<'a> {
                     let field_ty = field.ty;
                     let value_ty = self.compile_expr(value)?;
                     self.coerce_value(&value_ty, &field_ty, name)?;
-                    self.op(Opcode::Dup, 1);
-                    let tmp = self.declare_scratch_local(field_ty.clone());
-                    self.emit_store(tmp);
+                    let tmp = if want_value {
+                        self.op(Opcode::Dup, 1);
+                        let tmp = self.declare_scratch_local(field_ty.clone());
+                        self.emit_store(tmp);
+                        Some(tmp)
+                    } else {
+                        None
+                    };
                     self.op_u16(Opcode::Load, 0, 1);
                     if field.boxed {
                         // vm.md § Variable capture and boxing — `this.name`
@@ -1455,6 +1504,9 @@ impl<'a> Emitter<'a> {
                         let field_ref = self.captured_field_ref(name, &field_ty, false);
                         self.op_u16(Opcode::SetField, field_ref, -2);
                     }
+                    let Some(tmp) = tmp else {
+                        return Ok(ExprTy::Void);
+                    };
                     self.op_u16(Opcode::Load, tmp, 1);
                     Ok(field_ty)
                 }
@@ -1476,15 +1528,23 @@ impl<'a> Emitter<'a> {
                                 let expr_field_ty = expr_ty_of(&field_ty);
                                 let value_ty = self.compile_expr(value)?;
                                 self.coerce_value(&value_ty, &expr_field_ty, field_name)?;
-                                self.op(Opcode::Dup, 1);
-                                let tmp = self.declare_scratch_local(expr_field_ty.clone());
-                                self.emit_store(tmp);
+                                let tmp = if want_value {
+                                    self.op(Opcode::Dup, 1);
+                                    let tmp = self.declare_scratch_local(expr_field_ty.clone());
+                                    self.emit_store(tmp);
+                                    Some(tmp)
+                                } else {
+                                    None
+                                };
                                 let class_index = self.cp.add_class(&owner);
                                 let name_index = self.cp.add_utf8(field_name.clone());
                                 let type_index = self.cp.add_type_desc(&type_descriptor(&field_ty));
                                 let field_ref =
                                     self.cp.add_field_ref(class_index, name_index, type_index);
                                 self.op_u16(Opcode::SetStatic, field_ref, -1);
+                                let Some(tmp) = tmp else {
+                                    return Ok(ExprTy::Void);
+                                };
                                 self.op_u16(Opcode::Load, tmp, 1);
                                 return Ok(expr_field_ty);
                             }
@@ -1502,14 +1562,22 @@ impl<'a> Emitter<'a> {
                 let field_ty = expr_ty_of(&field);
                 let value_ty = self.compile_expr(value)?;
                 self.coerce_value(&value_ty, &field_ty, field_name)?;
-                self.op(Opcode::Dup, 1);
-                let tmp = self.declare_scratch_local(field_ty.clone());
-                self.emit_store(tmp);
+                let tmp = if want_value {
+                    self.op(Opcode::Dup, 1);
+                    let tmp = self.declare_scratch_local(field_ty.clone());
+                    self.emit_store(tmp);
+                    Some(tmp)
+                } else {
+                    None
+                };
                 let class_index = self.cp.add_class(&fqcn);
                 let name_index = self.cp.add_utf8(field_name.clone());
                 let type_index = self.cp.add_type_desc(&type_descriptor(&field));
                 let field_ref = self.cp.add_field_ref(class_index, name_index, type_index);
                 self.op_u16(Opcode::SetField, field_ref, -2);
+                let Some(tmp) = tmp else {
+                    return Ok(ExprTy::Void);
+                };
                 self.op_u16(Opcode::Load, tmp, 1);
                 Ok(field_ty)
             }
@@ -1529,10 +1597,18 @@ impl<'a> Emitter<'a> {
                 }
                 let value_ty = self.compile_expr(value)?;
                 self.coerce_value(&value_ty, &elem_ty, "array element")?;
-                self.op(Opcode::Dup, 1);
-                let tmp = self.declare_scratch_local(elem_ty.clone());
-                self.emit_store(tmp);
+                let tmp = if want_value {
+                    self.op(Opcode::Dup, 1);
+                    let tmp = self.declare_scratch_local(elem_ty.clone());
+                    self.emit_store(tmp);
+                    Some(tmp)
+                } else {
+                    None
+                };
                 self.op(Opcode::ArrayStore, -3);
+                let Some(tmp) = tmp else {
+                    return Ok(ExprTy::Void);
+                };
                 self.op_u16(Opcode::Load, tmp, 1);
                 Ok(elem_ty)
             }

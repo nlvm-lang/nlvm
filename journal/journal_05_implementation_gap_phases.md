@@ -206,6 +206,40 @@ Réclamation d'un cycle confirmé : pour chaque objet du lot, `force_destroy` (l
 
 ### Limites documentées
 
+> **Levées depuis** — voir « Phase 7 bis » en fin de document ([issue #17][i17]) : les trois limites ci-dessous décrivent l'état du collecteur à la fin de la phase 7 et sont conservées telles quelles comme trace de ce qui avait été laissé de côté, et pourquoi.
+
 - **Tous les abandons de référence ne sont pas instrumentés.** Seuls les emplacements durables le sont (champ, élément de tableau, variable locale, champ `static`, sortie de frame) — un opérande dépilé par `POP`, ou l'ensemble de la pile d'opérandes vidée par `stack.clear()` lors du déroulement d'une exception, ne le sont pas, puisque former un *cycle* exige nécessairement une affectation dans un emplacement durable en premier lieu. Comme les candidats survivants sont réexaminés à chaque passe ultérieure plutôt qu'oubliés, un cycle dont la dernière racine disparaît par un tel événement non instrumenté reste malgré tout collecté dès qu'un événement quelconque redéclenche une passe, ou au plus tard en fin de programme (`final_sweep`).
 - **La réaffectation ne rend pas toujours un cycle collectible *immédiatement*** — voir « Problèmes rencontrés » ci-dessus pour le mécanisme exact (copie scratch du sucre syntaxique d'affectation). La collecte finit toujours par avoir lieu, simplement pas nécessairement avant l'instruction suivante.
 - **Pas de garantie sous mutation concurrente du même graphe d'objets par un autre thread pendant qu'une passe est en cours.** Chaque passe lit `Arc::strong_count`/les champs comme une série d'instantanés, pas un instantané atomique unique ; un `system.thread.Thread` qui réécrirait le même graphe d'objets en parallèle d'une passe pourrait en théorie faire paraître un objet vivant momentanément inatteignable. Ceci reflète la même position que le reste du récit de threading de cette VM (`Map`/`List` documentés « non thread-safe » sans `system.thread.Mutex` explicite de l'appelant) plutôt qu'un risque d'un genre nouveau — un programme qui partage un même graphe d'objets entre threads sans sa propre synchronisation n'a de toute façon aucune autre garantie de cohérence de cette VM.
+
+---
+
+## Phase 7 bis — Les trois limites documentées du collecteur de cycles : levées ([issue #17][i17])
+
+[i17]: https://github.com/nlvm-lang/nlvm/issues/17
+
+Les trois « Limites documentées » de la phase 7 ci-dessus ont été reprises une par une. 214/214 tests internes (212 + 2 fixtures ajoutées) + 14/14 tests officiels des specs passent (aucune régression), plus deux tests Rust ajoutés à `crates/nl-vm/tests/cycle_collector.rs`.
+
+### (a) Promptitude à la réaffectation — corrigé côté codegen, pas côté collecteur
+
+La limite était réelle mais son origine, contre-intuitive : la copie « fantôme » laissée par le sucre syntaxique d'affectation (voir « Problèmes rencontrés » de la phase 7). La décision d'alors — ne pas toucher à `compile_assign` — reposait sur l'idée qu'y toucher reviendrait à casser la sémantique « affectation = expression ». C'est faux : cette sémantique n'a besoin d'être honorée que là où quelqu'un consomme réellement la valeur. `compile_expr_stmt`, qui compile une expression en *instruction* et jetait donc systématiquement ce résultat au `POP` suivant, reconnaît maintenant `Expr::Assign` et appelle `compile_assign` avec `want_value: false` : chaque triplet `DUP` / rangement dans un local scratch / rechargement s'effondre alors en un simple store. `a = b = 1;` reste compilé comme avant (seule l'affectation *extérieure* est en position d'instruction ; l'intérieure passe toujours par `compile_expr`).
+
+La piste évoquée dans l'issue — émettre le `POP` du scratch plus tôt — aurait été un emplâtre : le local scratch existe et est écrit dans tous les cas, et un `POP` ne libère pas un local. Ne pas produire la valeur du tout est plus simple, strictement plus rapide (une instruction en moins, un slot de local en moins par affectation à un champ/élément/`static`) et supprime la cause plutôt que le symptôme.
+
+**Vérification** : la fixture `phase15_0060` (qui lit le compteur de destructions *à l'intérieur* de la fonction, après `a = null; b = null;`) affiche `2` après le correctif et affichait `0` avant — contrôlé en rétablissant temporairement le code d'origine via `git stash`, comme pour les phases précédentes.
+
+### (b) Instrumentation de la pile d'opérandes — faite, avec déclenchement différé
+
+`POP` et le vidage de la pile d'opérandes lors du déroulement d'une exception (l'ancien `stack.clear()`, devenu un `drain` qui signale chaque valeur) enregistrent désormais leurs valeurs comme candidates, via un nouveau `gc::note_discarded`. La couverture des sites d'abandon de référence est donc complète.
+
+**Problème** : ces deux sites ne peuvent pas déclencher une passe comme le font les emplacements durables. `POP` suit à peu près chaque résultat d'appel jeté ; une passe complète à chaque fois rendrait tout appel de méthode quadratique en la taille de ce qu'il retourne. `note_discarded` note donc toujours, mais ne déclenche une passe que tous les `DEFERRED_PASS_THRESHOLD` (64) abandons — n'importe quelle passe ultérieure vidant de toute façon la totalité du tampon de candidats, un candidat noté n'attend jamais bien longtemps. Mesuré : aucun ralentissement décelable sur un banc de calcul intensif (0,98 s avant comme après, `fib(29)` + boucles sur `system.List`).
+
+**Constat honnête sur l'observabilité** : ce changement est difficile à distinguer par un test de comportement, et les deux tests Rust ajoutés (déroulement d'exception, cycle abandonné pendant qu'un thread tourne) passent aussi bien avant qu'après. Raison : la sortie de *chaque* frame déclenche déjà une passe (`note_locals_and_collect`), et les survivants restent dans le tampon — en pratique tout objet finit noté par ce biais, et le tampon rattrapait déjà ces cas. La valeur du changement est donc structurelle (plus aucun site d'abandon non instrumenté ; la collecte d'un opérande abandonné ne dépend plus du filet « survivants conservés ») et non un changement de comportement mesurable. Les deux tests sont conservés comme tests de non-régression et documentés comme tels.
+
+### (c) Mutation concurrente — refusée plutôt que tolérée
+
+La limite était un vrai risque de *fausse* collecte : une passe lit les `Arc::strong_count` et les champs comme une suite d'instantanés ; un thread qui publierait une nouvelle référence vers un nœud *après* la lecture du compteur de ce nœud ferait « prouver » à la passe qu'un objet vivant est inatteignable — et son destructeur tournerait sur un objet encore utilisé. Contrairement à (a) et (b), il ne s'agit pas de promptitude mais de correction.
+
+Un vrai *stop-the-world* est hors de portée (cette VM n'a pas de safepoints où arrêter les threads ; un verrou global pris par chaque mutateur suspendrait le collecteur indéfiniment derrière un thread qui ne rend jamais la main). **Décision** : ne pas exécuter de passe du tout tant qu'un thread lancé par le programme tourne encore — `Program::no_vm_threads_running` (parcours de la table `threads`, vide dans l'immense majorité des programmes). Les candidats notés entre-temps ne sont pas perdus : la première passe après le dernier `join()` les reprend, `final_sweep` sinon. Le test se trouve être aussi *auto-conservateur* : appelé depuis un thread lancé, il voit forcément son propre handle non terminé, donc seul le thread principal exécute jamais une passe, et seulement quand plus aucun autre ne tourne — ce qui écarte du même coup deux passes concurrentes.
+
+**Conséquence assumée** : un programme qui abandonne un thread encore actif et retourne de `main` (vm.md : les threads en cours ne sont pas attendus) sort maintenant sans réclamer ses cycles, `final_sweep` étant soumise à la même règle. C'est la contrepartie directe de ce qu'abandonner ce thread signifie déjà pour tout ce qu'il manipulait.

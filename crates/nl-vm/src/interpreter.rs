@@ -128,7 +128,14 @@ fn run_frame(
             Err(VmError::Thrown(exc)) => {
                 match find_handler(program, module, method, opcode_pc, &exc) {
                     Some(handler_pc) => {
-                        stack.clear();
+                        // Everything the aborted expression had half-built
+                        // on the operand stack is dropped here; note each
+                        // one for the cycle collector on the way out (same
+                        // deferred treatment as `POP` — this is the same
+                        // kind of drop, just in bulk).
+                        for v in stack.drain(..) {
+                            crate::gc::note_discarded(program, v);
+                        }
                         stack.push(exc);
                         pc = handler_pc;
                     }
@@ -196,7 +203,14 @@ fn exec_step(
     match op {
         Opcode::Nop => {}
         Opcode::Pop => {
-            stack.pop();
+            // A discarded operand is the last reference to its referent
+            // often enough to be worth noting for the cycle collector, but
+            // far too frequent to collect on — `note_discarded` buffers it
+            // and only runs a pass every so often (`crate::gc` § When a
+            // pass runs).
+            if let Some(v) = stack.pop() {
+                crate::gc::note_discarded(program, v);
+            }
         }
         Opcode::Dup => {
             let v = stack

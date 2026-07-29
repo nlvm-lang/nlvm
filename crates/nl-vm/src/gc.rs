@@ -39,43 +39,55 @@
 //!    cleared, breaking the cycle so the normal `Arc`/`Drop` machinery
 //!    reclaims the memory exactly as it would for acyclic garbage.
 //!
-//! ## Known limitations (documented, not fixed here)
+//! ## When a pass runs
 //!
-//! - **Not every reference drop is instrumented.** Only durable slots are
-//!   (see above) — an operand popped off the evaluation stack (`POP`, or
-//!   `stack.clear()` on exception unwinding) isn't, since forming a
-//!   *cycle* requires an assignment into a durable slot in the first
-//!   place. A candidate that survives a pass (still externally reachable
-//!   at the time) is kept and re-checked on the next pass rather than
-//!   discarded, so a cycle whose last root disappears via an
-//!   uninstrumented event still gets collected once *any* later event
-//!   triggers another pass — or, at the latest, `final_sweep` at program
-//!   exit — without needing every possible drop site instrumented.
-//! - **Reassigning a field/local out of a cycle doesn't always make it
-//!   collectible *immediately*.** `nl_codegen::expr::compile_assign` treats
-//!   assignment as an expression (`a = b = 1;`), so `obj.field = x;` also
-//!   leaves a copy of `x` behind — in a compiler-generated scratch local
-//!   for a field/static target, on the operand stack (until the very next
-//!   `POP`) for a plain local target — even when the assignment is used as
-//!   a bare statement. That extra copy is itself a durable reference (for
-//!   the scratch-local case) that keeps the old cycle externally reachable
-//!   until the scratch slot is reused by a later assignment or the frame
-//!   returns. Collection still happens — just not necessarily before the
-//!   *very next* statement — which is within what vm.md's "should call
-//!   destructors promptly... not required to do so immediately" allows.
-//! - **Not safe against concurrent structural mutation of the same
-//!   objects from another thread while a pass is running.** Each pass
-//!   reads `Arc::strong_count`/fields as a series of snapshots, not one
-//!   atomic snapshot; a `system.thread.Thread` concurrently rewriting the
-//!   same object graph mid-pass could in principle make a live object
-//!   look momentarily unreachable. This mirrors the rest of the VM's
-//!   threading story (stdlib `Map`/`List` are documented as "not
-//!   thread-safe" without the caller's own `system.thread.Mutex`) rather
-//!   than a new kind of risk — programs that share one object graph
-//!   across threads without their own synchronization already have no
-//!   other consistency guarantees from this VM.
+//! Two kinds of drop site note candidates, differing only in *when* they
+//! trigger a pass (never in whether the node is recorded):
+//!
+//! - **Durable slots** — a field, an array element, a local variable, a
+//!   `static` field, or a whole frame's locals on return — call
+//!   `note_and_collect`/`note_locals_and_collect`, which run a pass right
+//!   away. A durable slot is where a cycle has to be anchored in the first
+//!   place, so these are the drops that actually make cycles collectible,
+//!   and they're rare enough per instruction to afford eager collection.
+//! - **Operand-stack drops** — `POP`, and the `stack.clear()` that
+//!   discards a frame's operands while unwinding to an exception handler —
+//!   call `note_discarded`, which records the candidate but only triggers a
+//!   pass once `DEFERRED_PASS_THRESHOLD` of them have piled up. Every
+//!   discarded call result goes through `POP`, far too often to pay for a
+//!   graph walk each time; amortizing keeps the cost bounded while still
+//!   making a cycle whose last root left via the operand stack collectible
+//!   without waiting for `final_sweep`. vm.md explicitly allows this
+//!   ("deferring to a GC cycle is conformant").
+//!
+//! A candidate that survives a pass (still externally reachable at the
+//! time) is kept and re-checked on the next pass rather than discarded, so
+//! a cycle whose last root disappears through a path with no
+//! instrumentation at all — an `Object`'s own `Drop` releasing its fields,
+//! say — still gets collected once *any* later event triggers a pass, or
+//! at the latest via `final_sweep` at program exit.
+//!
+//! ## Threads
+//!
+//! Trial deletion reads `Arc::strong_count`s and fields as a series of
+//! snapshots, not one atomic snapshot, so a `system.thread.Thread`
+//! restructuring the same object graph mid-pass could publish a new
+//! reference to a node *after* that node's count was read — and the pass
+//! would then "prove" a live object unreachable and destroy it. Rather
+//! than stopping the world (this VM has no safepoints to stop it at), a
+//! pass simply doesn't run unless `Program::no_vm_threads_running` holds:
+//! the collector only ever works while the calling thread is provably the
+//! only one that can be mutating. Candidates noted meanwhile aren't lost —
+//! they stay buffered and are picked up by the first pass after the last
+//! spawned thread finishes (a `join()`, in a conformant program), or by
+//! `final_sweep`. A program that abandons a still-running thread and
+//! returns from `main` (vm.md: threads still running when `main` returns
+//! are not waited for) therefore just exits with its cycles unreclaimed,
+//! which is what abandoning that thread already means for everything else
+//! it was touching.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, Weak};
 
 use crate::program::Program;
@@ -171,7 +183,15 @@ fn push_candidate(program: &Arc<Program>, value: &Value) {
 /// Drains the pending-candidate buffer and, if it's non-empty, runs one
 /// trial-deletion pass, then restores whatever survived (still externally
 /// reachable) for a future pass to re-check.
+///
+/// Does nothing at all while any spawned VM thread is still running — see
+/// this module's § Threads. The candidates simply stay buffered for a
+/// later pass, so skipping here costs promptness, never correctness.
 fn run_pending_collection(program: &Arc<Program>) {
+    if !program.no_vm_threads_running() {
+        return;
+    }
+    program.gc_deferred.store(0, Ordering::Relaxed);
     let candidates = std::mem::take(&mut *lock(&program.gc_pending));
     if candidates.is_empty() {
         return;
@@ -228,6 +248,38 @@ pub(crate) fn note_locals_and_collect(program: &Arc<Program>, locals: Vec<Value>
     }
     drop(locals);
     run_pending_collection(program);
+}
+
+/// How many operand-stack drops (`note_discarded`) may accumulate before
+/// one of them triggers a pass. Small enough that a cycle abandoned on the
+/// operand stack is reclaimed within a bounded amount of further execution
+/// rather than lingering until `final_sweep`, large enough that the graph
+/// walk is amortized to a small fraction of a `POP`'s cost — `POP` runs
+/// after essentially every discarded call result, so per-`POP` collection
+/// (what the durable-slot sites do) would make method calls quadratic in
+/// the size of whatever they returned.
+const DEFERRED_PASS_THRESHOLD: usize = 64;
+
+/// Notes a value dropped from the *operand stack* — `POP`, or the
+/// `stack.clear()` that discards a frame's operands when an exception
+/// unwinds to a handler. Unlike `note_and_collect`, this only triggers a
+/// pass once `DEFERRED_PASS_THRESHOLD` such drops have accumulated (see
+/// this module's § When a pass runs); any eager durable-slot note in the
+/// meantime picks the buffered candidates up sooner, since every pass
+/// drains the whole buffer.
+///
+/// Takes `value` by ownership, and drops it before any possible pass, for
+/// exactly the reason `note_and_collect` documents.
+pub(crate) fn note_discarded(program: &Arc<Program>, value: Value) {
+    if !matches!(value, Value::Object(_) | Value::Array(_)) {
+        return;
+    }
+    push_candidate(program, &value);
+    drop(value);
+    let seen = program.gc_deferred.fetch_add(1, Ordering::Relaxed) + 1;
+    if seen >= DEFERRED_PASS_THRESHOLD {
+        run_pending_collection(program);
+    }
 }
 
 /// Final chance for whatever's left in the pending buffer, called once as

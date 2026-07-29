@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::io::BufRead;
+use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 
@@ -127,10 +128,16 @@ pub struct Program {
     /// Cycle-collector candidate buffer — see `crate::gc`. Holds `Weak`
     /// handles to `Object`/`Array` nodes noted at every point a strong
     /// reference is dropped from a durable slot (field, array element,
-    /// local variable, `static` field) without necessarily freeing the
-    /// referent; `crate::gc::collect_cycles` drains and re-populates it
-    /// with whatever survives each pass.
+    /// local variable, `static` field) or from the operand stack (`POP`,
+    /// exception unwinding) without necessarily freeing the referent;
+    /// `crate::gc::collect_cycles` drains and re-populates it with whatever
+    /// survives each pass.
     pub(crate) gc_pending: Mutex<Vec<crate::gc::GcNode>>,
+    /// Deferred candidates noted since the last collector pass — see
+    /// `crate::gc::note_discarded`. Operand-stack drops are far too frequent
+    /// to run a pass on each one, so they only trigger one once this
+    /// counter reaches `gc::DEFERRED_PASS_THRESHOLD`.
+    pub(crate) gc_deferred: AtomicUsize,
 }
 
 impl Program {
@@ -181,6 +188,7 @@ impl Program {
             thread_mutexes: Mutex::new(Vec::new()),
             thread_semaphores: Mutex::new(Vec::new()),
             gc_pending: Mutex::new(Vec::new()),
+            gc_deferred: AtomicUsize::new(0),
         }
     }
 
@@ -345,6 +353,26 @@ impl Program {
         let mut threads = lock(&self.threads);
         threads.push(Some(handle));
         (threads.len() - 1) as i64
+    }
+
+    /// True when no `system.thread.Thread` this program started is still
+    /// executing bytecode — i.e. the calling thread is the only one that
+    /// can currently be mutating the object graph. The cycle collector
+    /// (`crate::gc`) refuses to run a pass unless this holds: trial
+    /// deletion reads strong counts and fields as a series of snapshots,
+    /// and a concurrent mutator could publish a new reference to a node
+    /// *after* that node's count was read, making a live object look
+    /// collectible. An empty/all-joined table (the overwhelmingly common
+    /// case — a program that never spawns a thread) makes this a lock plus
+    /// a walk over nothing.
+    ///
+    /// Deliberately also false when called *from* a spawned thread, which
+    /// necessarily sees its own unfinished handle: only the main thread
+    /// ever runs a pass, and only while every spawned thread has finished.
+    pub(crate) fn no_vm_threads_running(&self) -> bool {
+        lock(&self.threads)
+            .iter()
+            .all(|slot| slot.as_ref().is_none_or(JoinHandle::is_finished))
     }
 
     pub(crate) fn thread_is_finished(&self, id: i64) -> bool {

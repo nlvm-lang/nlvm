@@ -1,0 +1,48 @@
+---
+title: "Cycle collector — a cycle whose only remaining root is a discarded call result (dropped by POP off the operand stack, not out of a named slot) is reclaimed during execution, not left to the end-of-program sweep"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: |
+  just after discarding: 0
+  after the next statement: 2
+expected_stderr: ""
+---
+
+#NLFILE phase15/cycle_discard/Node.nl
+namespace phase15.cycle.discard;
+class Node {
+	public static int destroyedCount = 0;
+	public Node|null next;
+
+	public construct() {}
+
+	public destruct() {
+		Node.destroyedCount = Node.destroyedCount + 1;
+	}
+}
+
+#NLFILE phase15/cycle_discard/Main.nl
+namespace phase15.cycle.discard;
+class Main {
+	public static Node makeCycle() {
+		Node a = new Node();
+		Node b = new Node();
+		a.next = b;
+		b.next = a;
+		return a;
+	}
+
+	public static int main(string[] args) {
+		// The returned root is never stored anywhere: it is discarded
+		// straight off the operand stack. That drop is noted, but
+		// operand-stack drops only trigger a pass in batches (see
+		// `nl_vm::gc`), so nothing has been reclaimed yet at this point.
+		Main.makeCycle();
+		system.Out.println("just after discarding: " + system.Int.toString(Node.destroyedCount));
+		// Any later durable-slot event drains the whole candidate buffer,
+		// discarded operands included — here, storing a local.
+		int done = 1;
+		system.Out.println("after the next statement: " + system.Int.toString(Node.destroyedCount * done));
+		return 0;
+	}
+}

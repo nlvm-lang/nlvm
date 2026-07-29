@@ -1,0 +1,44 @@
+---
+title: "Cycle collector — reassigning every local that pointed into a cycle reclaims it right there, mid-function, without waiting for the frame to return (an assignment used as a statement no longer parks a copy of the assigned value in a scratch local)"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: |
+  before: 0
+  inside, after reassign: 2
+  after return: 2
+expected_stderr: ""
+---
+
+#NLFILE phase15/cycle_prompt/Node.nl
+namespace phase15.cycle.prompt;
+class Node {
+	public static int destroyedCount = 0;
+	public Node|null next;
+
+	public construct() {}
+
+	public destruct() {
+		Node.destroyedCount = Node.destroyedCount + 1;
+	}
+}
+
+#NLFILE phase15/cycle_prompt/Main.nl
+namespace phase15.cycle.prompt;
+class Main {
+	public static void makeThenReassign() {
+		Node|null a = new Node();
+		Node|null b = new Node();
+		a.next = b;
+		b.next = a;
+		a = null;
+		b = null;
+		system.Out.println("inside, after reassign: " + system.Int.toString(Node.destroyedCount));
+	}
+
+	public static int main(string[] args) {
+		system.Out.println("before: " + system.Int.toString(Node.destroyedCount));
+		Main.makeThenReassign();
+		system.Out.println("after return: " + system.Int.toString(Node.destroyedCount));
+		return 0;
+	}
+}

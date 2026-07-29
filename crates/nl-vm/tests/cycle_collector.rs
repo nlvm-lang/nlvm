@@ -161,3 +161,116 @@ class Main {
         outcome.stdout, outcome.stderr
     );
 }
+
+/// A cycle whose last root is on the operand stack of an expression that
+/// an exception aborts half-way through: the operands are dropped by
+/// `run_frame`'s unwind path (formerly a bare `stack.clear()`), not by any
+/// named slot going away. Each one is now noted as a collector candidate
+/// on the way out, like a `POP`; this checks the cycle is reclaimed while
+/// the program is still running (the counter is read *before* returning,
+/// so `final_sweep` can't be what did it) and, just as importantly, that
+/// noting mid-unwind doesn't disturb the unwind itself.
+#[test]
+fn cycle_abandoned_by_exception_unwinding_is_collected() {
+    let node = r#"
+namespace test.cycle.unwind;
+class Node {
+	public static int destroyedCount = 0;
+	public Node|null next;
+	public construct() {}
+	public destruct() {
+		Node.destroyedCount = Node.destroyedCount + 1;
+	}
+}
+"#;
+    let main = r#"
+namespace test.cycle.unwind;
+class Main {
+	public static Node makeCycle() {
+		Node a = new Node();
+		Node b = new Node();
+		a.next = b;
+		b.next = a;
+		return a;
+	}
+
+	public static int boom(Node n) throws Exception {
+		throw new Exception("abort");
+	}
+
+	public static int main(string[] args) {
+		try {
+			// `makeCycle()`'s result sits on the operand stack as an
+			// argument of a call that never completes: the handler's
+			// unwind is what drops it.
+			int ignored = Main.boom(Main.makeCycle());
+		} catch (Exception e) {
+			// Any durable-slot event after the unwind drains the noted
+			// candidates; the catch parameter's own store is one.
+		}
+		return Node.destroyedCount;
+	}
+}
+"#;
+    let modules = compile(&[node, main]);
+    let outcome = nl_vm::run_program(&modules, &[]);
+    assert_eq!(
+        outcome.exit_code, 2,
+        "expected the unwound cycle collected before main returned, stdout={:?} stderr={:?}",
+        outcome.stdout, outcome.stderr
+    );
+}
+
+/// The collector refuses to run a pass while a spawned `system.thread.
+/// Thread` could be mutating the same object graph (`crate::gc` §
+/// Threads), so a cycle abandoned while a worker runs stays pending —
+/// and is collected by the first pass after `join()`. This checks the
+/// gate defers collection rather than losing it: the count is read after
+/// the join but still inside `main`, so `final_sweep` can't be what
+/// reclaimed it.
+#[test]
+fn cycle_abandoned_during_a_thread_is_collected_once_it_joins() {
+    let node = r#"
+namespace test.cycle.threaded;
+class Node {
+	public static int destroyedCount = 0;
+	public Node|null next;
+	public construct() {}
+	public destruct() {
+		Node.destroyedCount = Node.destroyedCount + 1;
+	}
+}
+"#;
+    let main = r#"
+namespace test.cycle.threaded;
+class Main {
+	public static void makeCycle() {
+		Node a = new Node();
+		Node b = new Node();
+		a.next = b;
+		b.next = a;
+	}
+
+	public static int main(string[] args) {
+		system.thread.Thread worker = new system.thread.Thread(() => {
+			system.thread.Thread.sleep(20);
+		});
+		worker.start();
+		// Abandoned while the worker is alive: noted, but no pass runs.
+		Main.makeCycle();
+		worker.join();
+		// First durable-slot event after the join — the collector is
+		// unblocked and drains everything noted meanwhile.
+		int done = 1;
+		return Node.destroyedCount * done;
+	}
+}
+"#;
+    let modules = compile(&[node, main]);
+    let outcome = nl_vm::run_program(&modules, &[]);
+    assert_eq!(
+        outcome.exit_code, 2,
+        "expected the deferred cycle collected after join, stdout={:?} stderr={:?}",
+        outcome.stdout, outcome.stderr
+    );
+}
