@@ -1271,31 +1271,20 @@ fn find_handler(
     None
 }
 
-/// Resolves an instance method call starting from `start_fqcn`, walking the
-/// `extends` chain when the method isn't declared directly on that class
-/// (an inherited-but-not-overridden method) — used by both `INVOKE_INSTANCE`
-/// (`start_fqcn` = the receiver's runtime class) and `INVOKE_SPECIAL`
-/// (`start_fqcn` = the exact class named in the method ref).
+/// Resolves an instance method call against `start_fqcn`'s vtable — used by
+/// both `INVOKE_INSTANCE` (`start_fqcn` = the receiver's runtime class) and
+/// `INVOKE_SPECIAL` (`start_fqcn` = the exact class named in the method
+/// ref). Inherited-but-not-overridden methods resolve here like declared
+/// ones: `verify_link` flattened the whole `extends` chain into each
+/// class's table at load time (nlvm issue #12), so no walking happens per
+/// call.
 pub(crate) fn resolve_virtual<'m>(
     program: &'m Arc<Program>,
     start_fqcn: &str,
     name: &str,
     descriptor: &str,
 ) -> Option<(&'m Module, &'m MethodDescriptor)> {
-    let mut current = start_fqcn.to_string();
-    loop {
-        let module = program.get(&current)?;
-        if let Some(target) = module.find_method_by_descriptor(name, descriptor) {
-            return Some((module, target));
-        }
-        if module.super_class == 0 {
-            return None;
-        }
-        current = module
-            .constant_pool
-            .class_name_at(module.super_class)?
-            .to_string();
-    }
+    program.resolve_method(start_fqcn, name, descriptor)
 }
 
 /// Like `resolve_virtual`, but matches on name + parameter types only,
@@ -1311,21 +1300,7 @@ pub(crate) fn resolve_virtual_covariant<'m>(
     name: &str,
     descriptor: &str,
 ) -> Option<(&'m Module, &'m MethodDescriptor)> {
-    let params_desc = descriptor.split(" -> ").next().unwrap_or(descriptor);
-    let mut current = start_fqcn.to_string();
-    loop {
-        let module = program.get(&current)?;
-        if let Some(target) = module.find_method_by_name_and_params(name, params_desc) {
-            return Some((module, target));
-        }
-        if module.super_class == 0 {
-            return None;
-        }
-        current = module
-            .constant_pool
-            .class_name_at(module.super_class)?
-            .to_string();
-    }
+    program.resolve_method_covariant(start_fqcn, name, descriptor)
 }
 
 /// Like `resolve_virtual`, but matches on name alone — for a native caller
@@ -1338,20 +1313,7 @@ pub(crate) fn resolve_virtual_by_name<'m>(
     start_fqcn: &str,
     name: &str,
 ) -> Option<(&'m Module, &'m MethodDescriptor)> {
-    let mut current = start_fqcn.to_string();
-    loop {
-        let module = program.get(&current)?;
-        if let Some(target) = module.find_method(name) {
-            return Some((module, target));
-        }
-        if module.super_class == 0 {
-            return None;
-        }
-        current = module
-            .constant_pool
-            .class_name_at(module.super_class)?
-            .to_string();
-    }
+    program.resolve_method_by_name(start_fqcn, name)
 }
 
 /// Resolves the field named `name`, walking the `extends` chain from

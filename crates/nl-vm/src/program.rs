@@ -69,13 +69,19 @@ impl Counter {
 /// captures), so it needs to *own* a handle to the program, not merely
 /// borrow one tied to the spawning frame's stack.
 pub struct Program {
-    modules: HashMap<String, Module>,
-    /// Every module's FQCN, in the order `Program::new` received them (the
-    /// order `nl_codegen::compile_program` emitted them in — prelude first,
-    /// then each source file). `run_static_initializers` walks this instead
-    /// of `modules` (a `HashMap`, unordered) so `<clinit>` runs happen in a
-    /// deterministic, reproducible sequence.
-    load_order: Vec<String>,
+    /// Every module, in the order `Program::new` received them (the order
+    /// `nl_codegen::compile_program` emitted them in — prelude first, then
+    /// each source file). Indexed rather than keyed by name so a vtable
+    /// slot can point at its method with two array indices and no hashing
+    /// (see `VTableEntry`), and so `run_static_initializers` gets a
+    /// deterministic, reproducible `<clinit>` sequence for free.
+    modules: Vec<Module>,
+    /// FQCN → index into `modules`, for everything that resolves a class by
+    /// name (`NEW`, `GET_STATIC`, `INSTANCEOF`, ...).
+    by_name: HashMap<String, usize>,
+    /// Precomputed method tables — vm.md § Method dispatch. Built once at
+    /// link time by `verify_link`; see `VTables`.
+    vtables: VTables,
     /// Per-class `static` field storage — specs.md § Classes. Keyed by
     /// declaring-class FQCN (never a subclass's, even when a field is
     /// referenced through one — see `nl_codegen::class_table::
@@ -144,11 +150,15 @@ impl Program {
     /// `stdin_data` is `None` to read the real process stdin (the
     /// `run_program` entry point), or `Some(bytes)` to serve `readLine`
     /// calls from an in-memory script instead (`run_program_with_stdin`).
-    pub fn new(modules: Vec<Module>, stdin_data: Option<Vec<u8>>) -> Self {
-        let mut map = HashMap::with_capacity(modules.len());
-        let mut load_order = Vec::with_capacity(modules.len());
+    ///
+    /// `vtables` comes from `verify_link`, which is the only thing that has
+    /// the whole program in view at once; it must have been built from
+    /// exactly this `modules` vector, in this order (its slots index into
+    /// it).
+    pub fn new(modules: Vec<Module>, vtables: VTables, stdin_data: Option<Vec<u8>>) -> Self {
+        let mut by_name = HashMap::with_capacity(modules.len());
         let mut statics: HashMap<String, HashMap<String, Value>> = HashMap::new();
-        for module in modules {
+        for (index, module) in modules.iter().enumerate() {
             if let Some(name) = module.this_class_name() {
                 let mut class_statics = HashMap::new();
                 for f in &module.fields {
@@ -165,8 +175,7 @@ impl Program {
                     class_statics.insert(field_name.to_string(), default_value_for(type_desc));
                 }
                 statics.insert(name.to_string(), class_statics);
-                load_order.push(name.to_string());
-                map.insert(name.to_string(), module);
+                by_name.insert(name.to_string(), index);
             }
         }
         let stdin: Box<dyn BufRead + Send> = match stdin_data {
@@ -174,8 +183,9 @@ impl Program {
             None => Box::new(std::io::BufReader::new(std::io::stdin())),
         };
         Program {
-            modules: map,
-            load_order,
+            modules,
+            by_name,
+            vtables,
             statics: Mutex::new(statics),
             stdout: Mutex::new(String::new()),
             stderr: Mutex::new(String::new()),
@@ -193,13 +203,63 @@ impl Program {
     }
 
     pub fn get(&self, fqcn: &str) -> Option<&Module> {
-        self.modules.get(fqcn)
+        self.modules.get(*self.by_name.get(fqcn)?)
     }
 
     pub fn find_main(&self) -> Option<(&Module, &MethodDescriptor)> {
         self.modules
-            .values()
+            .iter()
             .find_map(|m| m.find_method("main").map(|meth| (m, meth)))
+    }
+
+    /// vm.md § Method dispatch: the vtable slot of `class_fqcn` matching
+    /// `name` + the full descriptor. `class_fqcn` is the receiver's runtime
+    /// class for `INVOKE_INSTANCE`/`INVOKE_CLOSURE`, or the class named in
+    /// the method ref for `INVOKE_SPECIAL` — either way the slot already
+    /// accounts for inheritance, so callers never walk `extends` themselves.
+    /// `None` for a class with no module at all (every native class — see
+    /// `crate::native`), same as the pre-vtable chain walk returned.
+    pub(crate) fn resolve_method(
+        &self,
+        class_fqcn: &str,
+        name: &str,
+        descriptor: &str,
+    ) -> Option<(&Module, &MethodDescriptor)> {
+        let slots = self.vtables.classes.get(class_fqcn)?.get(name)?;
+        self.method_at(slots.iter().find(|slot| slot.descriptor == descriptor)?)
+    }
+
+    /// Like `resolve_method`, but matches the parameter portion of the
+    /// descriptor only, ignoring the return type — see
+    /// `nl_bytecode::Module::find_method_by_name_and_params` for why that
+    /// is the right match for an interface-typed receiver.
+    pub(crate) fn resolve_method_covariant(
+        &self,
+        class_fqcn: &str,
+        name: &str,
+        descriptor: &str,
+    ) -> Option<(&Module, &MethodDescriptor)> {
+        let params_desc = descriptor.split(" -> ").next().unwrap_or(descriptor);
+        let slots = self.vtables.classes.get(class_fqcn)?.get(name)?;
+        self.method_at(slots.iter().find(|slot| slot.params() == params_desc)?)
+    }
+
+    /// Like `resolve_method`, but matches on name alone — for a native
+    /// caller invoking a well-known single-overload method (see
+    /// `crate::interpreter::resolve_virtual_by_name`). Slots are ordered
+    /// nearest-declaration-first, so the first one is the same overload a
+    /// chain walk would have stopped at.
+    pub(crate) fn resolve_method_by_name(
+        &self,
+        class_fqcn: &str,
+        name: &str,
+    ) -> Option<(&Module, &MethodDescriptor)> {
+        self.method_at(self.vtables.classes.get(class_fqcn)?.get(name)?.first()?)
+    }
+
+    fn method_at(&self, slot: &VTableEntry) -> Option<(&Module, &MethodDescriptor)> {
+        let module = self.modules.get(slot.module_index)?;
+        Some((module, module.methods.get(slot.method_index)?))
     }
 
     /// `GET_STATIC` — see `Opcode::GetStatic`'s doc comment in
@@ -423,6 +483,125 @@ impl Program {
     }
 }
 
+/// vm.md § Method dispatch: "each class has a method table (vtable)
+/// computed at link time" — one flattened table per class, holding the
+/// class's own methods *and* every method it inherits, so dispatch is a
+/// lookup instead of a walk up `extends` recomputing the same answer at
+/// every call site (nlvm issue #12).
+///
+/// Built by `verify_link`, which is already the one pass that has every
+/// module in view at once, and handed to `Program::new`. Slots address
+/// their method positionally (`module_index` into the same `Vec<Module>`
+/// the `Program` is built from, then `method_index` into that module's
+/// `methods`), so a resolved call costs two hashes (class, then method
+/// name) and no string allocation at all — the pre-vtable walk allocated
+/// one `String` per hop just to key the next lookup.
+#[derive(Debug, Default)]
+pub struct VTables {
+    classes: HashMap<String, ClassVTable>,
+}
+
+/// Method name → the slots declared under it, ordered
+/// nearest-declaration-first: a class's own methods (in declaration order)
+/// before its superclass's, and so on up. Overloads legitimately share a
+/// name, hence a `Vec` per name rather than one slot; the descriptor
+/// discriminates them, exactly like the linear scan it replaces.
+type ClassVTable = HashMap<String, Vec<VTableEntry>>;
+
+#[derive(Debug)]
+struct VTableEntry {
+    descriptor: String,
+    /// `descriptor[..params_len]` is the parameter portion, i.e. everything
+    /// before the `" -> "` — precomputed here so a covariant lookup
+    /// (`Program::resolve_method_covariant`) doesn't re-split the string on
+    /// every candidate at every call.
+    params_len: usize,
+    module_index: usize,
+    method_index: usize,
+}
+
+impl VTableEntry {
+    fn params(&self) -> &str {
+        &self.descriptor[..self.params_len]
+    }
+}
+
+/// One flattened table per class. Ordering makes "nearest declaration
+/// wins" — the rule the chain walk enforced by *stopping* at the first
+/// match — hold for all three lookup shapes at once (full descriptor,
+/// parameters only, name only): a subclass's slots are simply pushed
+/// before its ancestors'. A slot whose name+descriptor a nearer class
+/// already occupies is dropped rather than pushed: it is an override, and
+/// the two share one vtable slot (the sense in which vm.md § Class flag
+/// bits speaks of "a vtable slot occupied by" a `FINAL` method).
+fn build_vtables(
+    modules: &[Module],
+    by_name: &HashMap<&str, usize>,
+) -> Result<HashMap<String, ClassVTable>, VmError> {
+    let mut classes = HashMap::with_capacity(by_name.len());
+    for (&name, &index) in by_name {
+        classes.insert(name.to_string(), build_class_vtable(modules, by_name, index)?);
+    }
+    Ok(classes)
+}
+
+fn build_class_vtable(
+    modules: &[Module],
+    by_name: &HashMap<&str, usize>,
+    start: usize,
+) -> Result<ClassVTable, VmError> {
+    let mut table = ClassVTable::new();
+    let mut current = Some(start);
+    let mut hops = 0usize;
+    while let Some(index) = current {
+        // A hierarchy that loops back on itself would make the walk below
+        // (and every chain walk elsewhere in the VM) run forever; more
+        // classes visited than the program contains means it does. Rejected
+        // rather than truncated: a class whose ancestry can't be enumerated
+        // is one whose vtable can't be claimed to be complete.
+        if hops > by_name.len() {
+            let name = modules[start].this_class_name().unwrap_or("?");
+            return Err(VmError::Link(format!(
+                "cyclic class hierarchy above class '{name}'"
+            )));
+        }
+        hops += 1;
+
+        let module = &modules[index];
+        for (method_index, method) in module.methods.iter().enumerate() {
+            let (Some(name), Some(descriptor)) = (
+                module.constant_pool.utf8_at(method.name_index),
+                module.constant_pool.type_desc_at(method.descriptor_index),
+            ) else {
+                continue;
+            };
+            let slots = table.entry(name.to_string()).or_default();
+            if slots.iter().any(|slot| slot.descriptor == descriptor) {
+                continue;
+            }
+            slots.push(VTableEntry {
+                params_len: descriptor.find(" -> ").unwrap_or(descriptor.len()),
+                descriptor: descriptor.to_string(),
+                module_index: index,
+                method_index,
+            });
+        }
+
+        current = if module.super_class == 0 {
+            None
+        } else {
+            // An unknown super class ends the walk instead of failing: the
+            // native classes (`system.List`, ...) have no module, and the
+            // walk this replaces stopped there too.
+            module
+                .constant_pool
+                .class_name_at(module.super_class)
+                .and_then(|n| by_name.get(n).copied())
+        };
+    }
+    Ok(table)
+}
+
 /// vm.md § Class flag bits / § Method descriptor — the whole-program checks
 /// the spec phrases as happening "at link time": a `super_class` naming a
 /// `FINAL` class is rejected outright, a method that redeclares the same
@@ -437,11 +616,22 @@ impl Program {
 /// see `nl-test-runner`, which never round-trips through `encode`/`decode`
 /// — gets the same enforcement `Module::decode` already gives a `.nlm`
 /// loaded from disk).
-pub fn verify_link(modules: &[Module]) -> Result<(), VmError> {
-    let by_name: HashMap<&str, &Module> = modules
+///
+/// Also the point where each class's `VTables` entry is computed, for the
+/// same reason: it is the one pass holding every module at once. The
+/// returned tables index into `modules` positionally and belong to the
+/// `Program` built from that exact vector.
+pub fn verify_link(modules: &[Module]) -> Result<VTables, VmError> {
+    let by_name: HashMap<&str, usize> = modules
         .iter()
-        .filter_map(|m| m.this_class_name().map(|name| (name, m)))
+        .enumerate()
+        .filter_map(|(i, m)| m.this_class_name().map(|name| (name, i)))
         .collect();
+
+    // First, because it is what rejects a hierarchy that loops back on
+    // itself — the `extends` walks below (and everywhere else in the VM)
+    // assume an acyclic one and would otherwise spin forever.
+    let classes = build_vtables(modules, &by_name)?;
 
     for module in modules {
         module.validate()?;
@@ -457,7 +647,7 @@ pub fn verify_link(modules: &[Module]) -> Result<(), VmError> {
                 .ok_or(VmError::Malformed("bad super_class index"))?;
             if by_name
                 .get(super_name)
-                .is_some_and(|s| s.class_flags & class_flags::FINAL != 0)
+                .is_some_and(|&s| modules[s].class_flags & class_flags::FINAL != 0)
             {
                 return Err(VmError::Link(format!(
                     "class '{name}' cannot extend final class '{super_name}'"
@@ -487,7 +677,8 @@ pub fn verify_link(modules: &[Module]) -> Result<(), VmError> {
             let mut ancestor = module
                 .constant_pool
                 .class_name_at(module.super_class)
-                .and_then(|n| by_name.get(n).copied());
+                .and_then(|n| by_name.get(n).copied())
+                .map(|i| &modules[i]);
             while let Some(anc) = ancestor {
                 if let Some(anc_method) = anc.find_method_by_descriptor(method_name, descriptor) {
                     if anc_method.flags & method_flags::FINAL != 0 {
@@ -501,13 +692,15 @@ pub fn verify_link(modules: &[Module]) -> Result<(), VmError> {
                 ancestor = anc
                     .constant_pool
                     .class_name_at(anc.super_class)
-                    .and_then(|n| by_name.get(n).copied());
+                    .and_then(|n| by_name.get(n).copied())
+                    .map(|i| &modules[i]);
             }
         }
 
-        verify_new_targets(module, name, &by_name)?;
+        verify_new_targets(module, name, modules, &by_name)?;
     }
-    Ok(())
+
+    Ok(VTables { classes })
 }
 
 /// vm.md § Class flag bits, `ABSTRACT`: "The VM must reject `NEW` targeting
@@ -534,7 +727,8 @@ pub fn verify_link(modules: &[Module]) -> Result<(), VmError> {
 fn verify_new_targets(
     module: &Module,
     name: &str,
-    by_name: &HashMap<&str, &Module>,
+    modules: &[Module],
+    by_name: &HashMap<&str, usize>,
 ) -> Result<(), VmError> {
     for method in &module.methods {
         for instruction in nl_bytecode::instructions(&method.code) {
@@ -548,7 +742,7 @@ fn verify_new_targets(
                 .ok_or(VmError::Malformed("bad class index on NEW"))?;
             if by_name
                 .get(target)
-                .is_some_and(|t| t.class_flags & class_flags::ABSTRACT != 0)
+                .is_some_and(|&t| modules[t].class_flags & class_flags::ABSTRACT != 0)
             {
                 let method_name = module
                     .constant_pool
@@ -604,15 +798,18 @@ fn run_program_impl(
     // vm.md § Class flag bits / § Method descriptor — whole-program
     // structural checks, run once before anything (not even `<clinit>`)
     // executes, exactly like the "link time" wording in the spec implies.
-    if let Err(e) = verify_link(modules) {
-        return RunOutcome {
-            exit_code: 1,
-            stdout: String::new(),
-            stderr: format!("{e}"),
-        };
-    }
+    let vtables = match verify_link(modules) {
+        Ok(vtables) => vtables,
+        Err(e) => {
+            return RunOutcome {
+                exit_code: 1,
+                stdout: String::new(),
+                stderr: format!("{e}"),
+            }
+        }
+    };
 
-    let program = Arc::new(Program::new(modules.to_vec(), stdin_data));
+    let program = Arc::new(Program::new(modules.to_vec(), vtables, stdin_data));
 
     // vm.md § Program startup happens after every class's `static` storage
     // is in place — see `run_static_initializers`'s doc comment for why
@@ -678,20 +875,21 @@ fn run_program_impl(
 }
 
 /// Runs every loaded class's `<clinit>` (see `nl_codegen`'s
-/// `compile_file`), in `Program::load_order` — a fixed, deterministic
-/// sequence rather than Java-style lazy-on-first-use initialization,
-/// documented simplification like this codebase's other approximations
-/// (e.g. reference-counting GC, linear virtual dispatch — see
-/// `IMPLEMENTATION_STATUS.md`). A class with no static field carrying a
-/// declared initializer has no `<clinit>` at all (`nl_codegen` only emits
-/// one when needed), so this is a no-op for the overwhelming majority of
-/// classes.
+/// `compile_file`), in load order — a fixed, deterministic sequence rather
+/// than Java-style lazy-on-first-use initialization, a documented
+/// simplification like this codebase's other approximations (e.g.
+/// reference-counting GC with a cycle collector rather than a tracing one).
+/// A class with no static field carrying a declared initializer has no
+/// `<clinit>` at all (`nl_codegen` only emits one when needed), so this is
+/// a no-op for the overwhelming majority of classes.
 fn run_static_initializers(program: &Arc<Program>) -> Result<(), VmError> {
-    for fqcn in &program.load_order {
-        let module = program
-            .modules
-            .get(fqcn)
-            .expect("load_order only ever names classes present in `modules`");
+    for module in &program.modules {
+        // A module the constant pool doesn't name is one nothing can refer
+        // to (`Program::new` gives it no `by_name` entry either) — skipped
+        // rather than initialized.
+        if module.this_class_name().is_none() {
+            continue;
+        }
         if let Some(clinit) = module.find_method("<clinit>") {
             call_static(program, module, clinit, Vec::new())?;
         }

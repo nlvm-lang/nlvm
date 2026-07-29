@@ -1,0 +1,88 @@
+---
+title: "issue #12 — dispatch through a precomputed vtable must answer exactly what the old `extends`-walking search did: a method inherited across several levels, the *nearest* override winning over a farther one, and an overload set split between a class and its ancestors with only one member overridden. (Inherited destructors, resolved the same way, are covered by phase7_0270.)"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: |
+  A.ping
+  C.ping
+  A.tag(int)=7
+  C.tag(string)=[x]
+  A.tag(int)=7
+  A.tag(string)=(y)
+  D.only
+expected_stderr: ""
+---
+
+#NLFILE phase24/vtabledispatch/A.nl
+namespace phase24.vtabledispatch;
+class A {
+	public construct() {}
+
+	public string ping() {
+		return "A.ping";
+	}
+
+	public string tag(int n) {
+		return "A.tag(int)=" + n;
+	}
+
+	public string tag(string s) {
+		return "A.tag(string)=(" + s + ")";
+	}
+}
+
+#NLFILE phase24/vtabledispatch/B.nl
+namespace phase24.vtabledispatch;
+class B extends A {
+	public construct() { super(); }
+}
+
+#NLFILE phase24/vtabledispatch/C.nl
+namespace phase24.vtabledispatch;
+class C extends B {
+	public construct() { super(); }
+
+	public string ping() {
+		return "C.ping";
+	}
+
+	public string tag(string s) {
+		return "C.tag(string)=[" + s + "]";
+	}
+}
+
+#NLFILE phase24/vtabledispatch/D.nl
+namespace phase24.vtabledispatch;
+class D extends C {
+	public construct() { super(); }
+
+	public string only() {
+		return "D.only";
+	}
+}
+
+#NLFILE phase24/vtabledispatch/Main.nl
+namespace phase24.vtabledispatch;
+class Main {
+	public static int main(string[] args) {
+		// `B` declares nothing at all: both calls resolve two levels up.
+		A b = new B();
+		system.Out.println(b.ping());
+
+		// `D` declares only `only()`; `ping()` comes from `C` (the nearest
+		// override, not `A`'s), `tag(int)` from `A` (three levels up),
+		// `tag(string)` from `C` — one overload overridden, the other not.
+		A d = new D();
+		system.Out.println(d.ping());
+		system.Out.println(d.tag(7));
+		system.Out.println(d.tag("x"));
+
+		// Same overload set reached on an instance that overrides neither.
+		system.Out.println(b.tag(7));
+		system.Out.println(b.tag("y"));
+
+		D concrete = new D();
+		system.Out.println(concrete.only());
+		return 0;
+	}
+}
