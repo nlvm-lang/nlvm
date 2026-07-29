@@ -1,0 +1,83 @@
+---
+title: "issue #1 — stdlib.md § system.text.json: building a document with `new JsonObject()`/`new JsonString(...)` and serializing it both ways (`Json.stringify(v)` compact, `Json.stringify(v, indent)` pretty), including string escaping, whole-vs-fractional number rendering, empty containers and a parse/stringify round-trip."
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: |
+  {"name":"Ada","active":true}
+  {
+    "name": "Ada",
+    "active": true
+  }
+  {"tab":"a\tb","quote":"say \"hi\"","backslash":"a\\b","newline":"l1\nl2"}
+  [1,2.5,-3,1000,0]
+  {"empty-obj":{},"empty-arr":[]}
+  [
+    1,
+    {
+      "k": [
+        true
+      ]
+    }
+  ]
+  {"a":[1,{"b":null}],"c":"x"}
+expected_stderr: ""
+---
+
+#NLFILE phase25/jsonbuild/Main.nl
+namespace phase25.jsonbuild;
+class Main {
+	public static int main(string[] args) {
+		// stdlib.md's own "Building and serializing" example.
+		auto obj = new system.text.json.JsonObject();
+		obj.set("name", new system.text.json.JsonString("Ada"));
+		obj.set("active", new system.text.json.JsonBool(true));
+		string compact = system.text.json.Json.stringify(obj);
+		string pretty = system.text.json.Json.stringify(obj, 2);
+		system.Out.println(compact);
+		system.Out.println(pretty);
+
+		// RFC 8259 § 7 escaping, on the way out.
+		auto escapes = new system.text.json.JsonObject();
+		escapes.set("tab", new system.text.json.JsonString("a\tb"));
+		escapes.set("quote", new system.text.json.JsonString("say \"hi\""));
+		escapes.set("backslash", new system.text.json.JsonString("a\\b"));
+		escapes.set("newline", new system.text.json.JsonString("l1\nl2"));
+		system.Out.println(system.text.json.Json.stringify(escapes));
+
+		// JSON has one numeric type: a whole float is written without a
+		// fractional part, so `parse(stringify(x))` is stable.
+		auto nums = new system.text.json.JsonArray();
+		nums.add(new system.text.json.JsonNumber(1.0));
+		nums.add(new system.text.json.JsonNumber(2.5));
+		nums.add(new system.text.json.JsonNumber(-3.0));
+		nums.add(new system.text.json.JsonNumber(1000.0));
+		nums.add(new system.text.json.JsonNumber(0.0));
+		system.Out.println(system.text.json.Json.stringify(nums));
+
+		// Empty containers stay on one line even when pretty-printing has
+		// nothing to indent.
+		auto empties = new system.text.json.JsonObject();
+		empties.set("empty-obj", new system.text.json.JsonObject());
+		empties.set("empty-arr", new system.text.json.JsonArray());
+		system.Out.println(system.text.json.Json.stringify(empties));
+
+		auto inner = new system.text.json.JsonArray();
+		inner.add(new system.text.json.JsonBool(true));
+		auto nestedObj = new system.text.json.JsonObject();
+		nestedObj.set("k", inner);
+		auto nested = new system.text.json.JsonArray();
+		nested.add(new system.text.json.JsonNumber(1.0));
+		nested.add(nestedObj);
+		system.Out.println(system.text.json.Json.stringify(nested, 2));
+
+		try {
+			string text = "{\"a\":[1,{\"b\":null}],\"c\":\"x\"}";
+			system.Out.println(system.text.json.Json.stringify(system.text.json.Json.parse(text)));
+		}
+		catch (system.text.json.JsonFormatException ex) {
+			system.Out.println("unexpected: " + ex.message);
+			return 1;
+		}
+		return 0;
+	}
+}

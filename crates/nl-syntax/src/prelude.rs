@@ -58,6 +58,11 @@ pub const NAMESPACED_ALIASES: &[(&str, &str)] = &[
     ("system.io.FileNotFoundException", "FileNotFoundException"),
     ("system.net.IOException", "IOException"),
     ("system.ps.IOException", "IOException"),
+    // stdlib.md § Exception table places `FormatException` in `system.text`
+    // (`Encoding.base64Decode`, `DateTime.parse`) and `JsonFormatException`
+    // in `system.text.json`.
+    ("system.text.FormatException", "FormatException"),
+    ("system.text.json.JsonFormatException", "JsonFormatException"),
 ];
 
 /// Every built-in exception class, as a namespace-less `SourceFile`.
@@ -72,6 +77,13 @@ pub fn files() -> Vec<SourceFile> {
             path: PRELUDE_PATH.to_string(),
         })
         .collect();
+    files.push(SourceFile {
+        namespace: Vec::new(),
+        uses: Vec::new(),
+        typedefs: Vec::new(),
+        item: SourceItem::Class(json_format_exception_class()),
+        path: PRELUDE_PATH.to_string(),
+    });
     files.push(SourceFile {
         namespace: Vec::new(),
         uses: Vec::new(),
@@ -379,6 +391,95 @@ fn value_equatable() -> InterfaceDecl {
             },
         ],
         decl_line: 0,
+    }
+}
+
+/// stdlib.md § Exception table, `JsonFormatException`: "Extends
+/// `system.text.FormatException`; carries `line`, `column`, `expectedToken`,
+/// `foundToken`." The four extra fields are what sets it apart from the
+/// uniform `exception_class` shape below, so it gets its own builder.
+///
+/// `system.text.json.Json.parse` never runs this constructor — `nl_vm::json`
+/// builds the object and fills all five fields natively, exactly as the VM
+/// does for `NullPointerException` and friends (see this module's doc
+/// comment). It is declared anyway so the class is catchable, its fields are
+/// typed, and user code can `throw` one of its own.
+fn json_format_exception_class() -> ClassDecl {
+    let extra: [(&str, Type); 4] = [
+        ("line", Type::Int),
+        ("column", Type::Int),
+        ("expectedToken", Type::StringT),
+        ("foundToken", Type::StringT),
+    ];
+    let fields = extra
+        .iter()
+        .map(|(name, ty)| FieldDecl {
+            name: (*name).to_string(),
+            visibility: Visibility::Public,
+            visibility_explicit: true,
+            is_static: false,
+            readonly: false,
+            ty: ty.clone(),
+            init: None,
+        })
+        .collect();
+    let mut params = vec![Param {
+        name: "what".to_string(),
+        ty: Type::StringT,
+        is_const: false,
+        default: None,
+        is_ref: false,
+    }];
+    params.extend(extra.iter().map(|(name, ty)| Param {
+        name: (*name).to_string(),
+        ty: ty.clone(),
+        is_const: false,
+        default: None,
+        is_ref: false,
+    }));
+    let mut body: Block = vec![Stmt {
+        kind: StmtKind::SuperCall(vec![Arg {
+            name: None,
+            is_ref: false,
+            value: Expr::Ident("what".to_string()),
+        }]),
+        line: 0,
+    }];
+    body.extend(extra.iter().map(|(name, _)| Stmt {
+        kind: StmtKind::Expr(Expr::Assign(
+            LValue::Field(Box::new(Expr::This), (*name).to_string()),
+            Box::new(Expr::Ident((*name).to_string())),
+        )),
+        line: 0,
+    }));
+    ClassDecl {
+        name: "JsonFormatException".to_string(),
+        type_params: Vec::new(),
+        extends: Some("FormatException".to_string()),
+        implements: Vec::new(),
+        fields,
+        methods: vec![MethodDecl {
+            name: "<construct>".to_string(),
+            kind: MethodKind::Constructor,
+            visibility: Visibility::Public,
+            visibility_explicit: true,
+            is_static: false,
+            is_const: false,
+            is_abstract: false,
+            is_final: false,
+            is_nodiscard: false,
+            return_type: Type::Void,
+            params,
+            throws: Vec::new(),
+            body,
+            decl_line: 0,
+        }],
+        is_readonly: true,
+        is_abstract: false,
+        is_final: false,
+        decl_line: 0,
+        is_enum: false,
+        enum_cases: Vec::new(),
     }
 }
 

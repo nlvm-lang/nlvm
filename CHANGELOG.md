@@ -5,6 +5,14 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.0]
+
+### Added
+- The **`system.text.json`** namespace (stdlib.md § system.text.json) is implemented: the `JsonValue` tree (`JsonNull`, `JsonBool`, `JsonNumber`, `JsonString`, `JsonArray`, `JsonObject`, all constructible with `new` and navigable through the `isX()`/`asX()` accessors), the `Json.parse`/`Json.tryParse`/`Json.stringify` entry points (compact and pretty-printed), and `JsonFormatException` carrying the `line`, `column`, `expectedToken` and `foundToken` of the first offending token. Parsing follows [RFC 8259](https://www.rfc-editor.org/rfc/rfc8259) strictly (no trailing commas, no unquoted keys, no leading `+`/`0`, no unescaped control characters in strings, `\u` escapes including surrogate pairs); `JsonObject` preserves insertion order and distinguishes an absent key (NL `null`) from one holding JSON `null` (a `JsonNull` instance), and `JsonValue` implements `Stringable`, so concatenating or printing one yields its compact serialization. Both the parser and the serializer are depth-limited, so a hostile document cannot exhaust the native stack and a cyclic tree built through `add`/`set` is rejected instead of looping. See [issue #1](https://github.com/nlvm-lang/nlvm/issues/1).
+
+### Fixed
+- Exceptions raised by native stdlib code (`IOException` from `system.io`, `IndexOutOfBoundsException` from `system.List`/`system.String`, `NumberFormatException` from `system.Int.parse`, ...) now carry their `stackTrace` like VM-raised ones already did. Calling `printStackTrace()` on one used to abort the program with `malformed bytecode: ARRAY_LENGTH on non-array`, since the field the prelude declares was never populated. Unhandled-exception output for these now includes the usual `at file:line` frame, which is why two fixtures' expected stderr changed.
+
 ## [0.17.0]
 
 ### Changed

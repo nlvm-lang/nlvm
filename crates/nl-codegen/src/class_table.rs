@@ -454,10 +454,29 @@ pub fn is_subclass_or_same(classes: &HashMap<String, ClassInfo>, sub: &str, sup:
         if current == sup {
             return true;
         }
-        match classes.get(&current).and_then(|c| c.extends.clone()) {
+        let parent = classes
+            .get(&current)
+            .and_then(|c| c.extends.clone())
+            .or_else(|| native_parent(&current).map(str::to_string));
+        match parent {
             Some(parent) => current = parent,
             None => return false,
         }
+    }
+}
+
+/// The `extends` parent of a native stdlib class (`system.text.json`'s
+/// `JsonValue` family is the only one with a hierarchy) — independent copy
+/// of `nl_sema::class_table::native_parent`; see that function's doc
+/// comment. `nl_vm::json::native_parent` is the third copy, used at
+/// runtime.
+pub fn native_parent(fqcn: &str) -> Option<&'static str> {
+    if fqcn == crate::stdlib::JSON_VALUE {
+        Some("Stringable")
+    } else if crate::stdlib::is_json_value_class(fqcn) {
+        Some(crate::stdlib::JSON_VALUE)
+    } else {
+        None
     }
 }
 
@@ -470,7 +489,10 @@ pub fn implements_interface(classes: &HashMap<String, ClassInfo>, fqcn: &str, ta
     let mut current = fqcn;
     loop {
         let Some(info) = classes.get(current) else {
-            return false;
+            // A native stdlib class — its interface is folded into
+            // `native_parent`'s chain (see `nl_sema::class_table`'s copy).
+            return native_parent(current).is_some()
+                && is_subclass_or_same(classes, current, target);
         };
         if interface_closure(classes, &info.implements)
             .iter()

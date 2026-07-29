@@ -111,10 +111,38 @@ pub fn is_subclass_or_same(classes: &ClassTable, sub: &str, sup: &str) -> bool {
         if current == sup {
             return true;
         }
-        match classes.get(&current).and_then(|c| c.extends.clone()) {
+        let parent = classes
+            .get(&current)
+            .and_then(|c| c.extends.clone())
+            .or_else(|| native_parent(&current).map(str::to_string));
+        match parent {
             Some(parent) => current = parent,
             None => return false,
         }
+    }
+}
+
+/// The `extends` parent of a native stdlib class — the classes in
+/// `crate::stdlib` have no `SourceFile` to build a `ClassInfo` from, so the
+/// bits of their type identity that matter to the checker (subtyping,
+/// `Stringable`-ness) are hard-coded here instead. Only
+/// `system.text.json`'s `JsonValue` family has a hierarchy at all; every
+/// other native class is standalone.
+///
+/// Kept in lockstep with `nl_codegen::class_table::native_parent` and
+/// `nl_vm::json::native_parent`, the two independent copies of this same
+/// hierarchy (see this module's doc comment for why they are copies).
+pub fn native_parent(fqcn: &str) -> Option<&'static str> {
+    if fqcn == crate::stdlib::JSON_VALUE {
+        // stdlib.md § JsonValue: "Implements Stringable". Reported as the
+        // parent of the family's root so `is_subclass_or_same`'s single
+        // walk answers the `Stringable` question too — `implements_interface`
+        // defers to it for exactly this reason.
+        Some("Stringable")
+    } else if crate::stdlib::is_json_value_class(fqcn) {
+        Some(crate::stdlib::JSON_VALUE)
+    } else {
+        None
     }
 }
 
@@ -178,7 +206,9 @@ pub fn implements_interface(classes: &ClassTable, fqcn: &str, target: &str) -> b
     let mut current = fqcn;
     loop {
         let Some(info) = classes.get(current) else {
-            return false;
+            // A native stdlib class: its (single) interface is folded into
+            // `native_parent`'s chain, so the same walk answers here.
+            return native_parent(current).is_some() && is_subclass_or_same(classes, current, target);
         };
         if info
             .implements

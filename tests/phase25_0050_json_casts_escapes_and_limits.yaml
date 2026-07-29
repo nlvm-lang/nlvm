@@ -1,0 +1,98 @@
+---
+title: "issue #1 — stdlib.md § JsonValue: the `asX()` accessors throw `InvalidCastException` on the wrong kind and `JsonArray.get` throws `IndexOutOfBoundsException` out of range; plus the scalar wrappers' public `value` field, `\\u` escapes (surrogate pairs included), and the nesting limit that keeps a hostile document from exhausting the native stack."
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: |
+  true 3.25 hi
+  JsonBool is not a JsonString
+  JsonString is not a JsonArray
+  JsonNumber is not a JsonObject
+  index 5, JsonArray length 2
+  A😀<TAB>end
+  "A😀\tend"
+  "\u0000\u001f"
+  too deep
+  cycle rejected
+expected_stderr: ""
+---
+
+#NLFILE phase25/jsonlimits/Main.nl
+namespace phase25.jsonlimits;
+class Main {
+	public static int main(string[] args) {
+		// The three scalar wrappers expose their payload as a public field
+		// as well as through `asX()`.
+		auto b = new system.text.json.JsonBool(true);
+		auto n = new system.text.json.JsonNumber(3.25);
+		auto s = new system.text.json.JsonString("hi");
+		system.Out.println(system.Bool.toString(b.value) + " " + system.Float.toString(n.value) + " " + s.value);
+
+		try {
+			b.asString();
+		}
+		catch (InvalidCastException ex) {
+			system.Out.println(ex.message);
+		}
+		try {
+			s.asArray();
+		}
+		catch (InvalidCastException ex) {
+			system.Out.println(ex.message);
+		}
+		try {
+			n.asObject();
+		}
+		catch (InvalidCastException ex) {
+			system.Out.println(ex.message);
+		}
+
+		auto arr = new system.text.json.JsonArray();
+		arr.add(new system.text.json.JsonNumber(1.0));
+		arr.add(new system.text.json.JsonNumber(2.0));
+		try {
+			arr.get(5);
+		}
+		catch (IndexOutOfBoundsException ex) {
+			system.Out.println(ex.message);
+		}
+
+		// RFC 8259 § 7 `\u` escapes, including the surrogate-pair form for
+		// a character outside the BMP; re-serializing escapes only what has
+		// to be escaped.
+		system.text.json.JsonValue|null decoded = system.text.json.Json.tryParse("\"\\u0041\\ud83d\\ude00\\tend\"");
+		if (decoded != null) {
+			// Printed with the tab spelled out — the fixture format can't
+			// carry a literal tab in its expected output.
+			system.Out.println(system.String.replace(decoded.asString(), "\t", "<TAB>"));
+			system.Out.println(system.text.json.Json.stringify(decoded));
+		}
+		// Control characters have no short escape form and come back out as
+		// `\u00XX`.
+		system.text.json.JsonValue|null controls = system.text.json.Json.tryParse("\"\\u0000\\u001F\"");
+		if (controls != null) {
+			system.Out.println(system.text.json.Json.stringify(controls));
+		}
+
+		// A document nested past the parser's limit is a format error, not
+		// a native stack overflow.
+		string deep = "";
+		int i = 0;
+		while (i < 400) {
+			deep = deep + "[";
+			i = i + 1;
+		}
+		system.Out.println(system.text.json.Json.tryParse(deep) == null ? "too deep" : "parsed");
+
+		// Nothing stops a user from building a cyclic tree; serializing one
+		// is refused rather than looping (or deadlocking) forever.
+		auto cyclic = new system.text.json.JsonArray();
+		cyclic.add(cyclic);
+		try {
+			system.Out.println(system.text.json.Json.stringify(cyclic));
+		}
+		catch (IllegalArgumentException ex) {
+			system.Out.println("cycle rejected");
+		}
+		return 0;
+	}
+}

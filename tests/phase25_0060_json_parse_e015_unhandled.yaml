@@ -1,0 +1,15 @@
+---
+title: "issue #1 — `system.text.json.Json.parse` declares `throws JsonFormatException` (a checked exception), so calling it without a `catch` or a `throws` clause is E015. Its safe counterpart `tryParse` declares nothing, which is what makes it usable on untrusted input without ceremony (see phase25_0040)."
+file_separator: "#NLFILE"
+expected_compile_error: "E015"
+---
+
+#NLFILE phase25/jsone015/Main.nl
+namespace phase25.jsone015;
+class Main {
+	public static int main(string[] args) {
+		system.text.json.JsonValue root = system.text.json.Json.parse("{}");
+		system.Out.println(system.text.json.Json.stringify(root));
+		return 0;
+	}
+}

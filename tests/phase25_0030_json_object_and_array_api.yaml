@@ -1,0 +1,73 @@
+---
+title: "issue #1 — stdlib.md § JsonArray/JsonObject: the full container API (`length`/`get`/`set`/`add`/`values`, `size`/`get`/`set`/`has`/`remove`/`keys`/`entries`), insertion-order preservation across an update, `entries()` yielding `system.MapEntry<string, JsonValue>`, and the snapshot semantics of `values()`."
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: |
+  3
+  first
+  changed
+  ["changed","second",3]
+  snapshot ["changed","second",3]
+  2
+  true false
+  name=Ada
+  role=eng
+  name role
+  true
+  false
+  1
+  role
+  {"role":"admin"}
+expected_stderr: ""
+---
+
+#NLFILE phase25/jsonapi/Main.nl
+namespace phase25.jsonapi;
+class Main {
+	public static int main(string[] args) {
+		auto arr = new system.text.json.JsonArray();
+		arr.add(new system.text.json.JsonString("first"));
+		arr.add(new system.text.json.JsonString("second"));
+		arr.add(new system.text.json.JsonNumber(3.0));
+		system.Out.println(system.Int.toString(arr.length()));
+		system.Out.println(arr.get(0).asString());
+		arr.set(0, new system.text.json.JsonString("changed"));
+		system.Out.println(arr.get(0).asString());
+		system.Out.println(system.text.json.Json.stringify(arr));
+
+		// `values()` is a snapshot (stdlib.md): writing through it must not
+		// reach back into the JsonArray.
+		system.text.json.JsonValue[] snapshot = arr.values();
+		snapshot[1] = new system.text.json.JsonString("detached");
+		system.Out.println("snapshot " + system.text.json.Json.stringify(arr));
+
+		auto obj = new system.text.json.JsonObject();
+		obj.set("name", new system.text.json.JsonString("Ada"));
+		obj.set("role", new system.text.json.JsonString("dev"));
+		system.Out.println(system.Int.toString(obj.size()));
+		system.Out.println(system.Bool.toString(obj.has("name")) + " " + system.Bool.toString(obj.has("nope")));
+
+		// Updating an existing key keeps its original position — stdlib.md:
+		// "Key order follows insertion order".
+		obj.set("role", new system.text.json.JsonString("eng"));
+		for (const auto entry : obj.entries()) {
+			system.Out.println(entry.key + "=" + entry.value.asString());
+		}
+		string joined = "";
+		for (const auto k : obj.keys()) {
+			joined = joined == "" ? k : joined + " " + k;
+		}
+		system.Out.println(joined);
+
+		// `remove` reports whether the key was there.
+		system.Out.println(system.Bool.toString(obj.remove("name")));
+		system.Out.println(system.Bool.toString(obj.remove("name")));
+		system.Out.println(system.Int.toString(obj.size()));
+		for (const auto k : obj.keys()) {
+			system.Out.println(k);
+		}
+		obj.set("role", new system.text.json.JsonString("admin"));
+		system.Out.println(system.text.json.Json.stringify(obj));
+		return 0;
+	}
+}

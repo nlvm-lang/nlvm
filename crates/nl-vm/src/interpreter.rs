@@ -503,6 +503,14 @@ fn exec_step(
                 *pc_ref = pc;
                 return Ok(Step::Continue);
             }
+            // `new system.text.json.JsonString("Ada")` etc. — same
+            // no-backing-Module situation as `system.Random` (see
+            // `crate::json`'s module doc comment).
+            if crate::json::is_json_value_class(&fqcn) {
+                stack.push(crate::json::new_json_object(&fqcn));
+                *pc_ref = pc;
+                return Ok(Step::Continue);
+            }
             // vm.md § Class flag bits, `ABSTRACT`: "The VM must reject `NEW`
             // targeting a class with this flag ... if reached at runtime,
             // the VM aborts execution with an error." The spec's link-time
@@ -972,6 +980,11 @@ fn exec_step(
                 *pc_ref = pc;
                 return Ok(Step::Continue);
             }
+            if crate::json::is_json_value_class(&class_fqcn) {
+                crate::json::construct_json(&receiver, &class_fqcn, call_args)?;
+                *pc_ref = pc;
+                return Ok(Step::Continue);
+            }
             // No virtual dispatch: always the exact class named in the
             // ref (constructors, `super.method(...)`) — but that class
             // may itself only *inherit* the method (e.g. `super(...)`
@@ -1111,6 +1124,13 @@ pub(crate) fn is_instance_of(program: &Arc<Program>, mut current: String, target
         if current == target_fqcn || implements_interface(program, &current, target_fqcn) {
             return true;
         }
+        // `system.text.json.JsonString` extends `JsonValue`, which
+        // implements `Stringable` — a hierarchy no `Module` records, since
+        // these classes have no bytecode of their own (see `crate::json`).
+        if let Some(parent) = crate::json::native_parent(&current) {
+            current = parent.to_string();
+            continue;
+        }
         let Some(module) = program.get(&current) else {
             return false;
         };
@@ -1139,6 +1159,12 @@ pub(crate) fn is_instance_of(program: &Arc<Program>, mut current: String, target
 fn display_string_of(program: &Arc<Program>, v: &Value) -> Result<String, VmError> {
     if let Value::Object(obj) = v {
         let class_name = lock(obj).class_name.clone();
+        // A `JsonValue` implements `Stringable` (stdlib.md § JsonValue), but
+        // its `toString` is native — there is no bytecode method for
+        // `resolve_virtual_by_name` to find, so it is called directly.
+        if crate::json::is_json_value_class(&class_name) {
+            return crate::json::stringify_compact(v);
+        }
         if is_instance_of(program, class_name.clone(), "Stringable") {
             if let Some((module, method)) = resolve_virtual_by_name(program, &class_name, "toString")
             {
@@ -1221,7 +1247,7 @@ fn exception_constructor_chain_depth(program: &Arc<Program>, class_fqcn: &str) -
 /// fully qualified class name, matching the directory layout `nlc` itself
 /// expects (`namespace.Class` -> `namespace/Class.nl`, e.g.
 /// `phase9.coalesceprecedence.Main` -> `phase9/coalesceprecedence/Main.nl`).
-fn build_stack_trace_array(skip: usize) -> Value {
+pub(crate) fn build_stack_trace_array(skip: usize) -> Value {
     let points: Vec<Value> = crate::call_stack::snapshot(skip)
         .into_iter()
         .map(|(class_fqcn, method_name, line)| {

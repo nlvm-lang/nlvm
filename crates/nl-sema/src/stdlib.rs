@@ -70,6 +70,93 @@ fn time_zone() -> Type {
     Type::Named("system.time.TimeZone".to_string())
 }
 
+/// stdlib.md § system.text.json — the FQCNs of the `JsonValue` family. The
+/// hierarchy itself (each concrete class `extends` `JsonValue`, which
+/// `implements` `Stringable`) lives in `class_table::native_parent`, so
+/// assignability, casts and `Stringable` operand checks need no special
+/// case here.
+pub const JSON_VALUE: &str = "system.text.json.JsonValue";
+pub const JSON_NULL: &str = "system.text.json.JsonNull";
+pub const JSON_BOOL: &str = "system.text.json.JsonBool";
+pub const JSON_NUMBER: &str = "system.text.json.JsonNumber";
+pub const JSON_STRING: &str = "system.text.json.JsonString";
+pub const JSON_ARRAY: &str = "system.text.json.JsonArray";
+pub const JSON_OBJECT: &str = "system.text.json.JsonObject";
+
+fn json(fqcn: &str) -> Type {
+    Type::Named(fqcn.to_string())
+}
+
+/// Whether `fqcn` is one of the seven `system.text.json` value classes
+/// (`JsonValue` plus its six concrete subclasses) — everything the family
+/// shares in nl-sema is keyed off this.
+pub fn is_json_value_class(fqcn: &str) -> bool {
+    matches!(
+        fqcn,
+        JSON_VALUE
+            | JSON_NULL
+            | JSON_BOOL
+            | JSON_NUMBER
+            | JSON_STRING
+            | JSON_ARRAY
+            | JSON_OBJECT
+    )
+}
+
+/// Instance methods of the `JsonValue` family — the `JsonValue` base
+/// methods are available on every one of the six concrete classes
+/// (inherited), so they are matched first, whatever the receiver's static
+/// class; `JsonArray`/`JsonObject`'s own methods come after. Mirrored by
+/// `nl_codegen::stdlib::json_instance_signature`.
+fn json_instance_lookup(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>, Type)> {
+    let nullable = |t: Type| Type::Union(vec![t, Type::NullT]);
+    match (name, argc) {
+        ("toString", 0) => return Some((vec![], Type::StringT)),
+        ("isNull" | "isBool" | "isNumber" | "isString" | "isArray" | "isObject", 0) => {
+            return Some((vec![], Type::Bool))
+        }
+        ("asBool", 0) => return Some((vec![], Type::Bool)),
+        ("asNumber", 0) => return Some((vec![], Type::Float)),
+        ("asString", 0) => return Some((vec![], Type::StringT)),
+        ("asArray", 0) => return Some((vec![], json(JSON_ARRAY))),
+        ("asObject", 0) => return Some((vec![], json(JSON_OBJECT))),
+        _ => {}
+    }
+    match (fqcn, name, argc) {
+        (JSON_ARRAY, "length", 0) => Some((vec![], Type::Int)),
+        (JSON_ARRAY, "get", 1) => Some((vec![Type::Int], json(JSON_VALUE))),
+        (JSON_ARRAY, "set", 2) => Some((vec![Type::Int, json(JSON_VALUE)], Type::Void)),
+        (JSON_ARRAY, "add", 1) => Some((vec![json(JSON_VALUE)], Type::Void)),
+        (JSON_ARRAY, "values", 0) => {
+            Some((vec![], Type::Array(Box::new(json(JSON_VALUE)))))
+        }
+        (JSON_OBJECT, "size", 0) => Some((vec![], Type::Int)),
+        // stdlib.md § Absent key vs. JSON `null`: `null` means *absent*, a
+        // key holding JSON `null` yields a `JsonNull` instance.
+        (JSON_OBJECT, "get", 1) => {
+            Some((vec![Type::StringT], nullable(json(JSON_VALUE))))
+        }
+        (JSON_OBJECT, "set", 2) => {
+            Some((vec![Type::StringT, json(JSON_VALUE)], Type::Void))
+        }
+        (JSON_OBJECT, "has", 1) => Some((vec![Type::StringT], Type::Bool)),
+        (JSON_OBJECT, "remove", 1) => Some((vec![Type::StringT], Type::Bool)),
+        (JSON_OBJECT, "keys", 0) => {
+            Some((vec![], Type::Array(Box::new(Type::StringT))))
+        }
+        // `system.MapEntry<string, JsonValue>[]` — the same native generic
+        // result type `system.Map.entries()` produces, spelled with the
+        // mangled instantiation name `crate::native_generics` parses.
+        (JSON_OBJECT, "entries", 0) => Some((
+            vec![],
+            Type::Array(Box::new(Type::Named(format!(
+                "system.MapEntry<string, {JSON_VALUE}>"
+            )))),
+        )),
+        _ => None,
+    }
+}
+
 /// `system.io.FileMode.<name>` — `None` if `fqcn` isn't `"system.io.FileMode"`
 /// or `name` isn't one of the six modes stdlib.md documents. See this
 /// module's doc comment.
@@ -278,6 +365,19 @@ pub fn lookup(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>, Type)> 
         ("system.time.DateTime", "parse", 1) => Some((vec![Type::StringT], date_time())),
         ("system.time.TimeZone", "getDefault", 0) => Some((vec![], time_zone())),
         ("system.time.TimeZone", "get", 1) => Some((vec![Type::StringT], time_zone())),
+        // stdlib.md § system.text.json.Json — the namespace's only
+        // static-only class; everything else in it is instance dispatch on
+        // a `JsonValue` (see `instance_lookup`).
+        ("system.text.json.Json", "parse", 1) => Some((vec![Type::StringT], json(JSON_VALUE))),
+        ("system.text.json.Json", "tryParse", 1) => {
+            Some((vec![Type::StringT], nullable(json(JSON_VALUE))))
+        }
+        ("system.text.json.Json", "stringify", 1) => {
+            Some((vec![json(JSON_VALUE)], Type::StringT))
+        }
+        ("system.text.json.Json", "stringify", 2) => {
+            Some((vec![json(JSON_VALUE), Type::Int], Type::StringT))
+        }
         _ => None,
     }
 }
@@ -313,6 +413,13 @@ pub fn result_field_ty(fqcn: &str, name: &str) -> Option<Type> {
         ("system.io.GrepMatch", "path") => Some(Type::StringT),
         ("system.io.GrepMatch", "lineNumber") => Some(Type::Int),
         ("system.io.GrepMatch", "line") => Some(Type::StringT),
+        // stdlib.md § system.text.json — the three scalar wrappers expose
+        // their payload as a `public` field on top of the `asX()` accessors
+        // (`final class readonly`, so it is read-only in practice: nothing
+        // outside `crate::stdlib` declares it assignable).
+        (JSON_BOOL, "value") => Some(Type::Bool),
+        (JSON_NUMBER, "value") => Some(Type::Float),
+        (JSON_STRING, "value") => Some(Type::StringT),
         _ => None,
     }
 }
@@ -322,6 +429,9 @@ pub fn result_field_ty(fqcn: &str, name: &str) -> Option<Type> {
 /// classes in `lookup`, its methods dispatch through `INVOKE_INSTANCE` on
 /// the receiver's runtime class (see `nl_vm::native`).
 pub fn is_native_instance(fqcn: &str) -> bool {
+    if is_json_value_class(fqcn) {
+        return true;
+    }
     matches!(
         fqcn,
         "system.io.FileHandle"
@@ -344,6 +454,9 @@ pub fn is_native_instance(fqcn: &str) -> bool {
 pub fn instance_lookup(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>, Type)> {
     let nullable = |t: Type| Type::Union(vec![t, Type::NullT]);
     let byte_array = Type::Array(Box::new(Type::Byte));
+    if is_json_value_class(fqcn) {
+        return json_instance_lookup(fqcn, name, argc);
+    }
     match (fqcn, name, argc) {
         ("system.io.FileHandle", "close", 0) => Some((vec![], Type::Void)),
         ("system.io.FileHandle", "read", 3) => {
@@ -430,6 +543,10 @@ pub fn throws(fqcn: &str, name: &str) -> &'static [&'static str] {
         ("system.ps.Process", "run" | "setCwd") => &["IOException"],
         ("system.text.Encoding", "base64Decode") => &["FormatException"],
         ("system.time.DateTime", "parse") => &["FormatException"],
+        // stdlib.md § system.text.json.Json — `parse` is the checked half
+        // of the pair; `tryParse` returns `null` instead of throwing, which
+        // is exactly why it needs no `throws` entry here.
+        ("system.text.json.Json", "parse") => &["JsonFormatException"],
         _ => &[],
     }
 }

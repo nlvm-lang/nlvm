@@ -1,0 +1,72 @@
+---
+title: "issue #1 — stdlib.md § system.text.json: `Json.parse` reports a malformed document as a `JsonFormatException` carrying `line`/`column`/`expectedToken`/`foundToken` (the spec's own \"Precise error reporting\" example), the exception is catchable as its `system.text.FormatException` parent, and `Json.tryParse` returns `null` for the very same inputs instead of throwing."
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: |
+  JSON error at line 1, column 8: expected value but found '}'
+  line 3, column 1: expected value but found '@'
+  line 1, column 4: expected ',' or ']' but found '2'
+  line 1, column 2: expected '"' but found 'a'
+  line 1, column 4: expected end of input but found '{'
+  line 1, column 1: expected value but found end of input
+  line 1, column 5: expected true but found ']'
+  line 1, column 3: expected a digit but found ','
+  caught as FormatException
+  null null null null
+  parsed
+expected_stderr: ""
+---
+
+#NLFILE phase25/jsonerrors/Main.nl
+namespace phase25.jsonerrors;
+class Main {
+	/// Parses `text` expecting failure, printing the exception's four
+	/// location/token fields in stdlib.md's own example format.
+	public static void expectError(string text) {
+		try {
+			system.text.json.Json.parse(text);
+			system.Out.println("unexpectedly parsed: " + text);
+		}
+		catch (system.text.json.JsonFormatException ex) {
+			system.Out.println("line " + ex.line + ", column " + ex.column +
+				": expected " + ex.expectedToken + " but found " + ex.foundToken);
+		}
+	}
+
+	public static int main(string[] args) {
+		// stdlib.md § system.text.json, "Precise error reporting".
+		try {
+			system.text.json.Json.parse("{ \"a\": }");
+		}
+		catch (system.text.json.JsonFormatException ex) {
+			system.Out.println("JSON error at line " + ex.line + ", column " + ex.column +
+				": expected " + ex.expectedToken + " but found " + ex.foundToken);
+		}
+
+		// `line`/`column` track newlines inside the document.
+		Main.expectError("[1,\n2,\n@]");
+		Main.expectError("[1 2]");
+		Main.expectError("{a: 1}");
+		Main.expectError("{} {}");
+		Main.expectError("");
+		Main.expectError("[tru]");
+		Main.expectError("[-,1]");
+
+		// JsonFormatException extends system.text.FormatException.
+		try {
+			system.text.json.Json.parse("nope");
+		}
+		catch (system.text.FormatException ex) {
+			system.Out.println("caught as FormatException");
+		}
+
+		// `tryParse` swallows exactly those failures.
+		system.Out.println("" +
+			(system.text.json.Json.tryParse("nope") == null ? "null" : "value") + " " +
+			(system.text.json.Json.tryParse("{ \"a\": }") == null ? "null" : "value") + " " +
+			(system.text.json.Json.tryParse("") == null ? "null" : "value") + " " +
+			(system.text.json.Json.tryParse("[1,]") == null ? "null" : "value"));
+		system.Out.println(system.text.json.Json.tryParse("[1, 2]") == null ? "null" : "parsed");
+		return 0;
+	}
+}
