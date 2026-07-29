@@ -3,7 +3,7 @@ title: "string.charAt index out of range surfaces as an unhandled IndexOutOfBoun
 file_separator: "#NLFILE"
 expected_exit_code: 1
 expected_stdout: ""
-expected_stderr: "Unhandled exception: IndexOutOfBoundsException: index 5, length 5"
+expected_stderr: "Unhandled exception: IndexOutOfBoundsException: index 5, length 5\n\tat phase6/charat_oob/Main.nl:5"
 ---
 
 #NLFILE phase6/charat_oob/Main.nl

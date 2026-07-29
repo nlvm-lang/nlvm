@@ -3,7 +3,7 @@ title: "system.List<T>.get index out of range surfaces as an unhandled IndexOutO
 file_separator: "#NLFILE"
 expected_exit_code: 1
 expected_stdout: ""
-expected_stderr: "Unhandled exception: IndexOutOfBoundsException: index 2, length 2"
+expected_stderr: "Unhandled exception: IndexOutOfBoundsException: index 2, length 2\n\tat phase6/list_oob/Main.nl:7"
 ---
 
 #NLFILE phase6/list_oob/Main.nl

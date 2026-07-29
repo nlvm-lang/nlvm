@@ -33,7 +33,74 @@ pub fn is_stdlib_class(fqcn: &str) -> bool {
             | "system.text.Encoding"
             | "system.time.DateTime"
             | "system.time.TimeZone"
+            | "system.text.json.Json"
     )
+}
+
+/// stdlib.md § system.text.json — mirrors `nl_sema::stdlib`'s copy of these
+/// FQCNs and of `is_json_value_class`.
+pub const JSON_VALUE: &str = "system.text.json.JsonValue";
+pub const JSON_NULL: &str = "system.text.json.JsonNull";
+pub const JSON_BOOL: &str = "system.text.json.JsonBool";
+pub const JSON_NUMBER: &str = "system.text.json.JsonNumber";
+pub const JSON_STRING: &str = "system.text.json.JsonString";
+pub const JSON_ARRAY: &str = "system.text.json.JsonArray";
+pub const JSON_OBJECT: &str = "system.text.json.JsonObject";
+
+pub fn is_json_value_class(fqcn: &str) -> bool {
+    matches!(
+        fqcn,
+        JSON_VALUE
+            | JSON_NULL
+            | JSON_BOOL
+            | JSON_NUMBER
+            | JSON_STRING
+            | JSON_ARRAY
+            | JSON_OBJECT
+    )
+}
+
+fn json(fqcn: &str) -> Type {
+    Type::Named(fqcn.to_string())
+}
+
+/// Instance methods of the `JsonValue` family — mirrors
+/// `nl_sema::stdlib::json_instance_lookup` (base methods first, whatever
+/// the receiver's static class, then the container-specific ones).
+fn json_instance_signature(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>, Type)> {
+    let nullable = |t: Type| Type::Union(vec![t, Type::NullT]);
+    match (name, argc) {
+        ("toString", 0) => return Some((vec![], Type::StringT)),
+        ("isNull" | "isBool" | "isNumber" | "isString" | "isArray" | "isObject", 0) => {
+            return Some((vec![], Type::Bool))
+        }
+        ("asBool", 0) => return Some((vec![], Type::Bool)),
+        ("asNumber", 0) => return Some((vec![], Type::Float)),
+        ("asString", 0) => return Some((vec![], Type::StringT)),
+        ("asArray", 0) => return Some((vec![], json(JSON_ARRAY))),
+        ("asObject", 0) => return Some((vec![], json(JSON_OBJECT))),
+        _ => {}
+    }
+    match (fqcn, name, argc) {
+        (JSON_ARRAY, "length", 0) => Some((vec![], Type::Int)),
+        (JSON_ARRAY, "get", 1) => Some((vec![Type::Int], json(JSON_VALUE))),
+        (JSON_ARRAY, "set", 2) => Some((vec![Type::Int, json(JSON_VALUE)], Type::Void)),
+        (JSON_ARRAY, "add", 1) => Some((vec![json(JSON_VALUE)], Type::Void)),
+        (JSON_ARRAY, "values", 0) => Some((vec![], Type::Array(Box::new(json(JSON_VALUE))))),
+        (JSON_OBJECT, "size", 0) => Some((vec![], Type::Int)),
+        (JSON_OBJECT, "get", 1) => Some((vec![Type::StringT], nullable(json(JSON_VALUE)))),
+        (JSON_OBJECT, "set", 2) => Some((vec![Type::StringT, json(JSON_VALUE)], Type::Void)),
+        (JSON_OBJECT, "has", 1) => Some((vec![Type::StringT], Type::Bool)),
+        (JSON_OBJECT, "remove", 1) => Some((vec![Type::StringT], Type::Bool)),
+        (JSON_OBJECT, "keys", 0) => Some((vec![], Type::Array(Box::new(Type::StringT)))),
+        (JSON_OBJECT, "entries", 0) => Some((
+            vec![],
+            Type::Array(Box::new(Type::Named(format!(
+                "system.MapEntry<string, {JSON_VALUE}>"
+            )))),
+        )),
+        _ => None,
+    }
 }
 
 fn file_handle() -> Type {
@@ -110,6 +177,9 @@ pub fn enum_const_value(fqcn: &str, name: &str) -> Option<i64> {
 pub fn instance_signature(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>, Type)> {
     let nullable = |t: Type| Type::Union(vec![t, Type::NullT]);
     let byte_array = Type::Array(Box::new(Type::Byte));
+    if is_json_value_class(fqcn) {
+        return json_instance_signature(fqcn, name, argc);
+    }
     match (fqcn, name, argc) {
         ("system.io.FileHandle", "close", 0) => Some((vec![], Type::Void)),
         ("system.io.FileHandle", "read", 3) => {
@@ -187,6 +257,13 @@ pub fn ctor_param_types(fqcn: &str, argc: usize) -> Option<Vec<Type>> {
         ("system.thread.Thread", 1) => Some(vec![Type::Void]),
         ("system.thread.Mutex", 0) => Some(vec![]),
         ("system.thread.Semaphore", 1) => Some(vec![Type::Int]),
+        // stdlib.md § system.text.json — the whole `JsonValue` family is
+        // built with `new` (that is the documented way to compose a
+        // document); only the three scalar wrappers take an argument.
+        (JSON_NULL | JSON_ARRAY | JSON_OBJECT, 0) => Some(vec![]),
+        (JSON_BOOL, 1) => Some(vec![Type::Bool]),
+        (JSON_NUMBER, 1) => Some(vec![Type::Float]),
+        (JSON_STRING, 1) => Some(vec![Type::StringT]),
         _ => None,
     }
 }
@@ -348,6 +425,16 @@ pub fn signature(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>, Type
         ("system.time.DateTime", "parse", 1) => Some((vec![Type::StringT], date_time())),
         ("system.time.TimeZone", "getDefault", 0) => Some((vec![], time_zone())),
         ("system.time.TimeZone", "get", 1) => Some((vec![Type::StringT], time_zone())),
+        // stdlib.md § system.text.json.Json — mirrors
+        // `nl_sema::stdlib::lookup`'s matching entries.
+        ("system.text.json.Json", "parse", 1) => Some((vec![Type::StringT], json(JSON_VALUE))),
+        ("system.text.json.Json", "tryParse", 1) => {
+            Some((vec![Type::StringT], nullable(json(JSON_VALUE))))
+        }
+        ("system.text.json.Json", "stringify", 1) => Some((vec![json(JSON_VALUE)], Type::StringT)),
+        ("system.text.json.Json", "stringify", 2) => {
+            Some((vec![json(JSON_VALUE), Type::Int], Type::StringT))
+        }
         _ => None,
     }
 }
@@ -377,6 +464,9 @@ pub fn result_field_ty(fqcn: &str, name: &str) -> Option<Type> {
         ("system.io.GrepMatch", "path") => Some(Type::StringT),
         ("system.io.GrepMatch", "lineNumber") => Some(Type::Int),
         ("system.io.GrepMatch", "line") => Some(Type::StringT),
+        (JSON_BOOL, "value") => Some(Type::Bool),
+        (JSON_NUMBER, "value") => Some(Type::Float),
+        (JSON_STRING, "value") => Some(Type::StringT),
         _ => None,
     }
 }

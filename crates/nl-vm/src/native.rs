@@ -110,6 +110,7 @@ pub fn is_native_class(fqcn: &str) -> bool {
             | "system.text.Encoding"
             | "system.time.DateTime"
             | "system.time.TimeZone"
+            | "system.text.json.Json"
     )
 }
 
@@ -734,6 +735,10 @@ pub fn dispatch(
                 .map_err(|e| throw_native("IllegalArgumentException", e))?;
             Ok(Some(new_timezone_object(id)))
         }
+        // stdlib.md § system.text.json — `Json.parse`/`tryParse`/`stringify`,
+        // the namespace's only static-only class (the `JsonValue` family it
+        // returns is dispatched through `dispatch_native_instance`).
+        (crate::json::JSON, _) => crate::json::dispatch_static(name, args),
         _ => Err(VmError::MethodNotFound(format!("{fqcn}.{name}"))),
     }
 }
@@ -1137,12 +1142,30 @@ fn array_from_bytes(bytes: Vec<u8>) -> Value {
     )))
 }
 
+/// Builds a stdlib-raised exception object directly, without going through
+/// the class's constructor — the same shortcut `interpreter::throw_native`
+/// takes for VM-raised exceptions, `stackTrace` included: the field is
+/// declared on `Exception` (see `nl_syntax::prelude`), so a caller that
+/// catches one of these and calls `printStackTrace()` must find an array
+/// there and not an unset field.
 pub(crate) fn throw_native(class_name: &str, message: impl Into<String>) -> VmError {
+    VmError::Thrown(Value::Object(Arc::new(Mutex::new(Object::native(
+        class_name,
+        exception_fields(message),
+    )))))
+}
+
+/// `message` + `stackTrace`, the two fields every `Exception` declares —
+/// shared with `crate::json`, which adds `JsonFormatException`'s four extra
+/// fields on top before building the object itself.
+pub(crate) fn exception_fields(message: impl Into<String>) -> HashMap<String, Value> {
     let mut fields = HashMap::new();
     fields.insert("message".to_string(), Value::Str(Arc::new(message.into())));
-    VmError::Thrown(Value::Object(Arc::new(Mutex::new(Object::native(
-        class_name, fields,
-    )))))
+    fields.insert(
+        "stackTrace".to_string(),
+        crate::interpreter::build_stack_trace_array(0),
+    );
+    fields
 }
 
 /// `system.io.FileHandle` and `system.Random` — like the native generic
@@ -1160,6 +1183,12 @@ pub(crate) fn throw_native(class_name: &str, message: impl Into<String>) -> VmEr
 /// `File.open` builds a `FileHandle`), so unlike `Random` they never appear
 /// at `NEW`/`INVOKE_SPECIAL <construct>`.
 pub fn is_native_instance_class(fqcn: &str) -> bool {
+    // The six concrete `system.text.json.JsonValue` subclasses are the same
+    // shape again — state on the object (`value`, or the backing arrays of
+    // `JsonArray`/`JsonObject`), no `program` involvement. See `crate::json`.
+    if crate::json::is_json_value_class(fqcn) {
+        return true;
+    }
     matches!(
         fqcn,
         "system.io.FileHandle"
@@ -1193,6 +1222,9 @@ pub fn dispatch_native_instance(
     // re-lock the same `Mutex` (e.g. `dispatch_random`'s `lock(&obj)`),
     // which would deadlock otherwise.
     let class_name = lock(&obj).class_name.clone();
+    if crate::json::is_json_value_class(&class_name) {
+        return crate::json::dispatch_json_instance(name, receiver, args);
+    }
     match class_name.as_str() {
         "system.Random" => return dispatch_random(name, receiver, args),
         "system.net.TcpListener" => return dispatch_tcp_listener(program, name, receiver, args),

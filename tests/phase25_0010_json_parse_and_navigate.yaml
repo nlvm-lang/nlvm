@@ -1,0 +1,74 @@
+---
+title: "issue #1 — stdlib.md § system.text.json: `Json.parse` builds a `JsonValue` tree (the spec's own example document), navigated through `asObject()`/`asArray()`/`asString()`, with the `isX()` kind predicates and the absent-key-vs-JSON-`null` distinction `JsonObject.get` draws."
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: |
+  Ada
+  eng
+  math
+  true
+  6
+  absent
+  null-value true
+  42 1.5
+  {"name":"Ada","tags":["eng","math"],"active":true,"n":42,"f":1.5,"nil":null}
+expected_stderr: ""
+---
+
+#NLFILE phase25/jsonparse/Main.nl
+namespace phase25.jsonparse;
+class Main {
+	public static int main(string[] args) {
+		try {
+			// stdlib.md's own § system.text.json example document, plus a
+			// number, a float and a JSON `null` to cover all six kinds.
+			system.text.json.JsonValue root = system.text.json.Json.parse(
+				"{\"name\": \"Ada\", \"tags\": [\"eng\", \"math\"], \"active\": true, \"n\": 42, \"f\": 1.5, \"nil\": null}"
+			);
+			system.text.json.JsonObject obj = root.asObject();
+
+			system.text.json.JsonValue|null nameValue = obj.get("name");
+			if (nameValue != null) {
+				system.Out.println(nameValue.asString());
+			}
+
+			system.text.json.JsonValue|null tagsValue = obj.get("tags");
+			if (tagsValue != null) {
+				system.text.json.JsonArray tags = tagsValue.asArray();
+				for (const auto tag : tags.values()) {
+					system.Out.println(tag.asString());
+				}
+			}
+
+			system.text.json.JsonValue|null active = obj.get("active");
+			if (active != null) {
+				system.Out.println(system.Bool.toString(active.asBool()));
+			}
+			system.Out.println(system.Int.toString(obj.size()));
+
+			// stdlib.md § Absent key vs. JSON `null`: NL `null` means the
+			// key is *absent*; a key holding JSON `null` yields a JsonNull
+			// instance, for which `isNull()` is true.
+			system.Out.println(obj.get("missing") == null ? "absent" : "present");
+			system.text.json.JsonValue|null nil = obj.get("nil");
+			system.Out.println("null-value " + (nil != null ? system.Bool.toString(nil.isNull()) : "absent"));
+
+			// JSON has a single numeric type: both come back as `float`,
+			// and a whole one round-trips without a fractional part.
+			system.text.json.JsonValue|null n = obj.get("n");
+			system.text.json.JsonValue|null f = obj.get("f");
+			if (n != null && f != null) {
+				system.Out.println(system.Float.toString(n.asNumber()) + " " + system.Float.toString(f.asNumber()));
+			}
+
+			// `JsonValue` implements Stringable — concatenating it calls
+			// `toString()`, i.e. the compact serialization.
+			system.Out.println("" + root);
+		}
+		catch (system.text.json.JsonFormatException ex) {
+			system.Out.println("unexpected: " + ex.message);
+			return 1;
+		}
+		return 0;
+	}
+}
