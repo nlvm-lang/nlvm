@@ -485,7 +485,11 @@ pub fn native_parent(fqcn: &str) -> Option<&'static str> {
 /// `nl_sema::class_table::implements_interface`, built on `interface_closure`
 /// (already flattens an interface's own `extends` ancestors into
 /// `ClassInfo::implements`, see that field's doc comment).
-pub fn implements_interface(classes: &HashMap<String, ClassInfo>, fqcn: &str, target: &str) -> bool {
+pub fn implements_interface(
+    classes: &HashMap<String, ClassInfo>,
+    fqcn: &str,
+    target: &str,
+) -> bool {
     let mut current = fqcn;
     loop {
         let Some(info) = classes.get(current) else {

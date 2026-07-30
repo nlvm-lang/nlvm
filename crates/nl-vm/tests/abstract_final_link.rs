@@ -86,7 +86,11 @@ class Main {
     // point — this is what actually protects `nlvm`/`nl-test-runner`.
     let outcome = nl_vm::run_program(&modules, &[]);
     assert_eq!(outcome.exit_code, 1);
-    assert!(outcome.stderr.contains("final"), "stderr={:?}", outcome.stderr);
+    assert!(
+        outcome.stderr.contains("final"),
+        "stderr={:?}",
+        outcome.stderr
+    );
 }
 
 #[test]
@@ -119,8 +123,7 @@ class Main {
 "#;
     let modules = compile(&[base, derived, main]);
 
-    let err =
-        nl_vm::verify_link(&modules).expect_err("overriding a final method must be rejected");
+    let err = nl_vm::verify_link(&modules).expect_err("overriding a final method must be rejected");
     assert!(matches!(err, nl_vm::VmError::Link(_)));
     assert!(format!("{err}").contains("final"));
 }

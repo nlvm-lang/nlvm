@@ -991,7 +991,7 @@ impl Parser {
                 return Err(SyntaxError::Parse(
                     format!("expected type, found {other:?}"),
                     self.line(),
-                self.col(),
+                    self.col(),
                 ))
             }
         };
@@ -1256,7 +1256,8 @@ impl Parser {
     /// expression, never an identifier standing alone.
     fn looks_like_function_type_start(&mut self) -> bool {
         let save = self.pos;
-        let result = self.parse_type_atom().is_ok() && matches!(self.peek().kind, TokenKind::Ident(_));
+        let result =
+            self.parse_type_atom().is_ok() && matches!(self.peek().kind, TokenKind::Ident(_));
         self.pos = save;
         result
     }
@@ -1617,7 +1618,7 @@ impl Parser {
                     return Err(SyntaxError::Parse(
                         "compound assignment is only supported on local variables".to_string(),
                         self.line(),
-                self.col(),
+                        self.col(),
                     ));
                 };
                 Expr::Binary(binop, Box::new(Expr::Ident(name.clone())), Box::new(rhs))
@@ -2026,7 +2027,7 @@ impl Parser {
                     return Err(SyntaxError::Parse(
                         "'new' on a primitive type requires array syntax 'new T[size]'".to_string(),
                         self.line(),
-                self.col(),
+                        self.col(),
                     ))
                 }
             };
@@ -2296,7 +2297,9 @@ mod tests {
         let err = crate::parse_source_file(src, "Main.nl").unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("E030 — 'class' is a reserved keyword and cannot be used as an identifier"),
+            msg.contains(
+                "E030 — 'class' is a reserved keyword and cannot be used as an identifier"
+            ),
             "unexpected message: {msg}"
         );
     }

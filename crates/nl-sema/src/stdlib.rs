@@ -93,13 +93,7 @@ fn json(fqcn: &str) -> Type {
 pub fn is_json_value_class(fqcn: &str) -> bool {
     matches!(
         fqcn,
-        JSON_VALUE
-            | JSON_NULL
-            | JSON_BOOL
-            | JSON_NUMBER
-            | JSON_STRING
-            | JSON_ARRAY
-            | JSON_OBJECT
+        JSON_VALUE | JSON_NULL | JSON_BOOL | JSON_NUMBER | JSON_STRING | JSON_ARRAY | JSON_OBJECT
     )
 }
 
@@ -127,23 +121,15 @@ fn json_instance_lookup(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type
         (JSON_ARRAY, "get", 1) => Some((vec![Type::Int], json(JSON_VALUE))),
         (JSON_ARRAY, "set", 2) => Some((vec![Type::Int, json(JSON_VALUE)], Type::Void)),
         (JSON_ARRAY, "add", 1) => Some((vec![json(JSON_VALUE)], Type::Void)),
-        (JSON_ARRAY, "values", 0) => {
-            Some((vec![], Type::Array(Box::new(json(JSON_VALUE)))))
-        }
+        (JSON_ARRAY, "values", 0) => Some((vec![], Type::Array(Box::new(json(JSON_VALUE))))),
         (JSON_OBJECT, "size", 0) => Some((vec![], Type::Int)),
         // stdlib.md § Absent key vs. JSON `null`: `null` means *absent*, a
         // key holding JSON `null` yields a `JsonNull` instance.
-        (JSON_OBJECT, "get", 1) => {
-            Some((vec![Type::StringT], nullable(json(JSON_VALUE))))
-        }
-        (JSON_OBJECT, "set", 2) => {
-            Some((vec![Type::StringT, json(JSON_VALUE)], Type::Void))
-        }
+        (JSON_OBJECT, "get", 1) => Some((vec![Type::StringT], nullable(json(JSON_VALUE)))),
+        (JSON_OBJECT, "set", 2) => Some((vec![Type::StringT, json(JSON_VALUE)], Type::Void)),
         (JSON_OBJECT, "has", 1) => Some((vec![Type::StringT], Type::Bool)),
         (JSON_OBJECT, "remove", 1) => Some((vec![Type::StringT], Type::Bool)),
-        (JSON_OBJECT, "keys", 0) => {
-            Some((vec![], Type::Array(Box::new(Type::StringT))))
-        }
+        (JSON_OBJECT, "keys", 0) => Some((vec![], Type::Array(Box::new(Type::StringT)))),
         // `system.MapEntry<string, JsonValue>[]` — the same native generic
         // result type `system.Map.entries()` produces, spelled with the
         // mangled instantiation name `crate::native_generics` parses.
@@ -206,7 +192,10 @@ pub const FILE_MODES: [&str; 6] = [
 pub fn is_printlike(fqcn: &str, name: &str) -> bool {
     matches!(
         (fqcn, name),
-        ("system.Out", "print") | ("system.Out", "println") | ("system.Err", "print") | ("system.Err", "println")
+        ("system.Out", "print")
+            | ("system.Out", "println")
+            | ("system.Err", "print")
+            | ("system.Err", "println")
     )
 }
 
@@ -372,9 +361,7 @@ pub fn lookup(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>, Type)> 
         ("system.text.json.Json", "tryParse", 1) => {
             Some((vec![Type::StringT], nullable(json(JSON_VALUE))))
         }
-        ("system.text.json.Json", "stringify", 1) => {
-            Some((vec![json(JSON_VALUE)], Type::StringT))
-        }
+        ("system.text.json.Json", "stringify", 1) => Some((vec![json(JSON_VALUE)], Type::StringT)),
         ("system.text.json.Json", "stringify", 2) => {
             Some((vec![json(JSON_VALUE), Type::Int], Type::StringT))
         }

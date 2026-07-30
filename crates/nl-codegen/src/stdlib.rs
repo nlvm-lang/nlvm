@@ -50,13 +50,7 @@ pub const JSON_OBJECT: &str = "system.text.json.JsonObject";
 pub fn is_json_value_class(fqcn: &str) -> bool {
     matches!(
         fqcn,
-        JSON_VALUE
-            | JSON_NULL
-            | JSON_BOOL
-            | JSON_NUMBER
-            | JSON_STRING
-            | JSON_ARRAY
-            | JSON_OBJECT
+        JSON_VALUE | JSON_NULL | JSON_BOOL | JSON_NUMBER | JSON_STRING | JSON_ARRAY | JSON_OBJECT
     )
 }
 

@@ -171,7 +171,12 @@ fn expand_type(
             }
         }
         Type::Array(inner) => Type::Array(Box::new(expand_type(
-            inner, ns_key, declaring_ns, resolved, flat, visiting,
+            inner,
+            ns_key,
+            declaring_ns,
+            resolved,
+            flat,
+            visiting,
         ))),
         Type::Union(members) => Type::Union(
             members
@@ -188,7 +193,14 @@ fn expand_type(
                 .iter()
                 .map(|p| expand_type(p, ns_key, declaring_ns, resolved, flat, visiting))
                 .collect(),
-            return_type: Box::new(expand_type(return_type, ns_key, declaring_ns, resolved, flat, visiting)),
+            return_type: Box::new(expand_type(
+                return_type,
+                ns_key,
+                declaring_ns,
+                resolved,
+                flat,
+                visiting,
+            )),
             throws: throws.clone(),
         },
         other => other.clone(),
@@ -215,9 +227,12 @@ fn apply_type(ty: &Type, ns_key: &str, flat: &HashMap<String, Type>) -> Type {
             }
         }
         Type::Array(inner) => Type::Array(Box::new(apply_type(inner, ns_key, flat))),
-        Type::Union(members) => {
-            Type::Union(members.iter().map(|m| apply_type(m, ns_key, flat)).collect())
-        }
+        Type::Union(members) => Type::Union(
+            members
+                .iter()
+                .map(|m| apply_type(m, ns_key, flat))
+                .collect(),
+        ),
         Type::Function {
             params,
             return_type,
@@ -262,7 +277,11 @@ fn rewrite_interface(
             .map(|m| MethodSig {
                 name: m.name.clone(),
                 return_type: apply_type(&m.return_type, ns_key, flat),
-                params: m.params.iter().map(|p| rewrite_param(p, ns_key, flat)).collect(),
+                params: m
+                    .params
+                    .iter()
+                    .map(|p| rewrite_param(p, ns_key, flat))
+                    .collect(),
                 is_const: m.is_const,
             })
             .collect(),
@@ -325,7 +344,11 @@ fn rewrite_method(m: &MethodDecl, ns_key: &str, flat: &HashMap<String, Type>) ->
         is_final: m.is_final,
         is_nodiscard: m.is_nodiscard,
         return_type: apply_type(&m.return_type, ns_key, flat),
-        params: m.params.iter().map(|p| rewrite_param(p, ns_key, flat)).collect(),
+        params: m
+            .params
+            .iter()
+            .map(|p| rewrite_param(p, ns_key, flat))
+            .collect(),
         throws: m.throws.clone(),
         body: rewrite_block(&m.body, ns_key, flat),
         decl_line: m.decl_line,
@@ -333,7 +356,10 @@ fn rewrite_method(m: &MethodDecl, ns_key: &str, flat: &HashMap<String, Type>) ->
 }
 
 fn rewrite_block(block: &Block, ns_key: &str, flat: &HashMap<String, Type>) -> Block {
-    block.iter().map(|s| rewrite_stmt(s, ns_key, flat)).collect()
+    block
+        .iter()
+        .map(|s| rewrite_stmt(s, ns_key, flat))
+        .collect()
 }
 
 fn rewrite_stmt(stmt: &Stmt, ns_key: &str, flat: &HashMap<String, Type>) -> Stmt {
@@ -504,7 +530,10 @@ fn rewrite_expr(expr: &Expr, ns_key: &str, flat: &HashMap<String, Type>) -> Expr
             }
             Expr::New(
                 name.clone(),
-                type_args.iter().map(|t| apply_type(t, ns_key, flat)).collect(),
+                type_args
+                    .iter()
+                    .map(|t| apply_type(t, ns_key, flat))
+                    .collect(),
                 rewritten_args,
             )
         }
@@ -516,7 +545,10 @@ fn rewrite_expr(expr: &Expr, ns_key: &str, flat: &HashMap<String, Type>) -> Expr
         ),
         Expr::NewArrayInit(elem_ty, elements) => Expr::NewArrayInit(
             Box::new(apply_type(elem_ty, ns_key, flat)),
-            elements.iter().map(|e| rewrite_expr(e, ns_key, flat)).collect(),
+            elements
+                .iter()
+                .map(|e| rewrite_expr(e, ns_key, flat))
+                .collect(),
         ),
         Expr::FieldAccess(target, name) => {
             Expr::FieldAccess(Box::new(rewrite_expr(target, ns_key, flat)), name.clone())
@@ -571,7 +603,10 @@ fn rewrite_expr(expr: &Expr, ns_key: &str, flat: &HashMap<String, Type>) -> Expr
             throws,
             body,
         } => Expr::Closure {
-            params: params.iter().map(|p| rewrite_param(p, ns_key, flat)).collect(),
+            params: params
+                .iter()
+                .map(|p| rewrite_param(p, ns_key, flat))
+                .collect(),
             return_type: return_type.as_ref().map(|t| apply_type(t, ns_key, flat)),
             throws: throws.clone(),
             body: match body {

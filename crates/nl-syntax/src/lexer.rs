@@ -153,7 +153,11 @@ impl<'a> Lexer<'a> {
         let text = std::str::from_utf8(&self.src[start..self.pos]).unwrap();
         if is_float {
             let v: f64 = text.parse().map_err(|_| {
-                SyntaxError::Lex(format!("invalid float literal '{text}'"), self.line, self.col)
+                SyntaxError::Lex(
+                    format!("invalid float literal '{text}'"),
+                    self.line,
+                    self.col,
+                )
             })?;
             Ok(TokenKind::FloatLiteral(v))
         } else {

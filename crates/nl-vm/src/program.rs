@@ -322,7 +322,10 @@ impl Program {
     /// (an nl-codegen bug, since every static field is pre-populated by
     /// `Program::new`), not "field currently unset".
     pub(crate) fn get_static(&self, class_fqcn: &str, field_name: &str) -> Option<Value> {
-        lock(&self.statics).get(class_fqcn)?.get(field_name).cloned()
+        lock(&self.statics)
+            .get(class_fqcn)?
+            .get(field_name)
+            .cloned()
     }
 
     /// `SET_STATIC`. Silently a no-op for an unknown class/field, like
@@ -650,7 +653,10 @@ fn build_vtables(
 ) -> Result<HashMap<String, ClassVTable>, VmError> {
     let mut classes = HashMap::with_capacity(by_name.len());
     for (&name, &index) in by_name {
-        classes.insert(name.to_string(), build_class_vtable(modules, by_name, index)?);
+        classes.insert(
+            name.to_string(),
+            build_class_vtable(modules, by_name, index)?,
+        );
     }
     Ok(classes)
 }

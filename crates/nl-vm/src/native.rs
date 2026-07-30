@@ -79,9 +79,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use crate::error::VmError;
-use crate::interpreter::{
-    call_instance, is_instance_of, resolve_virtual_by_name, values_equal,
-};
+use crate::interpreter::{call_instance, is_instance_of, resolve_virtual_by_name, values_equal};
 use crate::program::Program;
 use crate::value::{lock, Object, Value};
 
@@ -2493,7 +2491,8 @@ fn equatable_equals(program: &Arc<Program>, a: &Value, b: &Value) -> Result<bool
     if let Value::Object(obj) = a {
         let class_name = lock(obj).class_name.clone();
         if is_instance_of(program, class_name.clone(), "ValueEquatable") {
-            if let Some((module, method)) = resolve_virtual_by_name(program, &class_name, "valueEquals")
+            if let Some((module, method)) =
+                resolve_virtual_by_name(program, &class_name, "valueEquals")
             {
                 let result = call_instance(program, module, method, a.clone(), vec![b.clone()])?;
                 return Ok(matches!(result, Some(Value::Bool(true))));
@@ -2696,7 +2695,9 @@ fn dispatch_map(
             let key = args
                 .pop()
                 .ok_or(VmError::Malformed("missing key argument"))?;
-            Ok(Some(Value::Bool(find_key_index(program, &keys, &key)?.is_some())))
+            Ok(Some(Value::Bool(
+                find_key_index(program, &keys, &key)?.is_some(),
+            )))
         }
         "keys" => Ok(Some(Value::Array(Arc::new(Mutex::new(
             lock(&keys).clone(),

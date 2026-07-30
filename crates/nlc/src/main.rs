@@ -4,7 +4,8 @@ use anyhow::{bail, Context, Result};
 
 /// The `nlvm-specs` release this implementation currently targets — bump
 /// `SPECS_VERSION` (repo root) whenever new specs are implemented.
-const SPECS_VERSION: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../SPECS_VERSION"));
+const SPECS_VERSION: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../SPECS_VERSION"));
 
 /// Recursively collects `.nl` files under `dir`, sorted for a deterministic
 /// compilation order regardless of the OS's directory-listing order.

@@ -95,9 +95,7 @@ fn atom_eq(a: &Type, b: &Type) -> bool {
                 ..
             },
         ) => {
-            pa.len() == pb.len()
-                && pa.iter().zip(pb).all(|(x, y)| atom_eq(x, y))
-                && atom_eq(ra, rb)
+            pa.len() == pb.len() && pa.iter().zip(pb).all(|(x, y)| atom_eq(x, y)) && atom_eq(ra, rb)
         }
         _ => a == b,
     }

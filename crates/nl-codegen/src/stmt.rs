@@ -557,7 +557,11 @@ impl<'a> Emitter<'a> {
             self.patch_branch_to(pc, operand, body_starts[i]);
         }
         let (pc, operand) = no_match_patch;
-        self.patch_branch_to(pc, operand, default_index.map_or(end_pc, |i| body_starts[i]));
+        self.patch_branch_to(
+            pc,
+            operand,
+            default_index.map_or(end_pc, |i| body_starts[i]),
+        );
         for (pc, operand) in ctx.break_patches {
             self.patch_branch_to(pc, operand, end_pc);
         }

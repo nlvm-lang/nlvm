@@ -183,14 +183,17 @@ fn compile_file(
                     let descriptor_index = cp.add_type_desc(&descriptor);
                     let method_ref_index =
                         cp.add_method_ref(this_class, name_index, descriptor_index);
-                    static_sigs.entry(m.name.clone()).or_default().push(MethodSig {
-                        param_types: params.iter().map(expr_ty_of).collect(),
-                        param_names: m.params.iter().map(|p| p.name.clone()).collect(),
-                        defaults: m.params.iter().map(|p| p.default.clone()).collect(),
-                        is_ref,
-                        return_ty: expr_ty_of(&return_ty),
-                        method_ref_index,
-                    });
+                    static_sigs
+                        .entry(m.name.clone())
+                        .or_default()
+                        .push(MethodSig {
+                            param_types: params.iter().map(expr_ty_of).collect(),
+                            param_names: m.params.iter().map(|p| p.name.clone()).collect(),
+                            defaults: m.params.iter().map(|p| p.default.clone()).collect(),
+                            is_ref,
+                            return_ty: expr_ty_of(&return_ty),
+                            method_ref_index,
+                        });
                 }
             }
 
@@ -530,9 +533,7 @@ fn interface_method_descriptor(
 /// suitable for `Iterator::filter_map` so a field with no initializer is
 /// silently skipped (it keeps its type's ordinary default value — see
 /// `nl_vm::interpreter::default_value_for`).
-fn field_init_stmt(
-    receiver: Expr,
-) -> impl Fn(&nl_syntax::ast::FieldDecl) -> Option<Stmt> {
+fn field_init_stmt(receiver: Expr) -> impl Fn(&nl_syntax::ast::FieldDecl) -> Option<Stmt> {
     move |f| {
         let init = f.init.clone()?;
         Some(Stmt {

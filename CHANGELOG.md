@@ -5,6 +5,11 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.21.0]
+
+### Changed
+- The whole workspace is now `rustfmt`-clean: `cargo fmt --all` reformatted 22 files that had drifted from the current default style (`nl-codegen/expr.rs`, `nl-sema/checker.rs`, `nl-syntax/typedef.rs`, `nl-syntax/monomorphize.rs`, …). Formatting only — no behaviour change, and the 224 YAML fixtures plus the Rust unit tests pass unchanged. From now on a formatting run produces an empty diff, so it no longer drowns real changes.
+
 ## [0.20.0]
 
 ### Added

@@ -29,7 +29,11 @@ pub fn type_descriptor(ty: &Type) -> String {
             ..
         } => format!(
             "({}) => {}",
-            params.iter().map(type_descriptor).collect::<Vec<_>>().join(", "),
+            params
+                .iter()
+                .map(type_descriptor)
+                .collect::<Vec<_>>()
+                .join(", "),
             type_descriptor(return_type)
         ),
     }

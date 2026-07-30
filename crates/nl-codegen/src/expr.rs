@@ -971,10 +971,20 @@ impl<'a> Emitter<'a> {
             .into_iter()
             .filter_map(|name| {
                 if let Ok(slot) = self.lookup_local(&name) {
-                    return Some((name, slot.ty, CaptureSource::Local(slot.index), slot.boxed.is_some()));
+                    return Some((
+                        name,
+                        slot.ty,
+                        CaptureSource::Local(slot.index),
+                        slot.boxed.is_some(),
+                    ));
                 }
                 self.captured_fields.get(&name).map(|field| {
-                    (name.clone(), field.ty.clone(), CaptureSource::Recaptured, field.boxed)
+                    (
+                        name.clone(),
+                        field.ty.clone(),
+                        CaptureSource::Recaptured,
+                        field.boxed,
+                    )
                 })
             })
             .collect();
@@ -1058,10 +1068,9 @@ impl<'a> Emitter<'a> {
                     // target's return type isn't `void`.
                     let ret = match return_type {
                         Some(t) => expr_ty_of(&resolve_type(t, self.imports)),
-                        None => inner
-                            .expected_return_ty
-                            .clone()
-                            .unwrap_or_else(|| inner.inferred_return_ty.clone().unwrap_or(ExprTy::Void)),
+                        None => inner.expected_return_ty.clone().unwrap_or_else(|| {
+                            inner.inferred_return_ty.clone().unwrap_or(ExprTy::Void)
+                        }),
                     };
                     if ret == ExprTy::Void {
                         inner.op(Opcode::Return, 0);
@@ -1521,7 +1530,8 @@ impl<'a> Emitter<'a> {
                     let leading = path.split('.').next().expect("dotted_path is never empty");
                     if self.lookup_local(leading).is_err() {
                         let fqcn = self.resolve_class_name(leading);
-                        if let Some((owner, field)) = find_field_owner(self.classes, &fqcn, field_name)
+                        if let Some((owner, field)) =
+                            find_field_owner(self.classes, &fqcn, field_name)
                         {
                             if field.is_static {
                                 let field_ty = field.ty.clone();
@@ -1726,13 +1736,18 @@ impl<'a> Emitter<'a> {
             }
         };
         if let ExprTy::Object(fqcn) = &slot.ty {
-            let method_name = if delta > 0 { "operator++" } else { "operator--" };
+            let method_name = if delta > 0 {
+                "operator++"
+            } else {
+                "operator--"
+            };
             if slot.boxed.is_none() {
                 if let Some(method) = find_operator_method(self.classes, fqcn, method_name, &[]) {
                     let return_ty = method.return_ty.clone();
                     let fqcn = fqcn.clone();
                     self.op_u16(Opcode::Load, slot.index, 1);
-                    let return_expr_ty = self.emit_operator_call(&fqcn, method_name, &[], &return_ty);
+                    let return_expr_ty =
+                        self.emit_operator_call(&fqcn, method_name, &[], &return_ty);
                     self.op(Opcode::Dup, 1);
                     self.op_u16(Opcode::Store, slot.index, -1);
                     return Ok(return_expr_ty);
@@ -2018,9 +2033,10 @@ impl<'a> Emitter<'a> {
             }
             Err(_) => {}
         }
-        let candidates = self.static_sigs.get(name).ok_or_else(|| {
-            CodegenError::Unsupported(format!("call to unknown method '{name}'"))
-        })?;
+        let candidates = self
+            .static_sigs
+            .get(name)
+            .ok_or_else(|| CodegenError::Unsupported(format!("call to unknown method '{name}'")))?;
         // Overload resolution mirrors nl-sema's `sigs`-based one — see
         // issue #7. Filter by arity (using `defaults`, whose length matches
         // `param_types` and whose leading non-defaulted count is the
@@ -2057,11 +2073,7 @@ impl<'a> Emitter<'a> {
                 for (i, param) in cand.param_types.iter().enumerate() {
                     let arg = arg_tys.get(i).and_then(|o| o.as_ref());
                     let param_ty = expr_ty_to_type(param);
-                    match crate::class_table::overload_param_score(
-                        self.classes,
-                        arg,
-                        &param_ty,
-                    ) {
+                    match crate::class_table::overload_param_score(self.classes, arg, &param_ty) {
                         Some(s) => total += s,
                         None => {
                             compatible = false;
@@ -2134,19 +2146,15 @@ impl<'a> Emitter<'a> {
                 .iter()
                 .map(|a| self.overload_arg_ty(&a.value).as_ref().map(expr_ty_to_type))
                 .collect();
-            let ctor = crate::class_table::find_ctor_overload(
-                self.classes,
-                &fqcn,
-                args.len(),
-                &arg_tys,
-            )
-            .cloned()
-            .ok_or_else(|| {
-                CodegenError::Unsupported(format!(
-                    "no constructor of '{fqcn}' with {} argument(s)",
-                    args.len()
-                ))
-            })?;
+            let ctor =
+                crate::class_table::find_ctor_overload(self.classes, &fqcn, args.len(), &arg_tys)
+                    .cloned()
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported(format!(
+                            "no constructor of '{fqcn}' with {} argument(s)",
+                            args.len()
+                        ))
+                    })?;
             let positional = crate::class_table::resolve_positional_args(
                 &ctor.param_names,
                 &ctor.defaults,
@@ -2268,19 +2276,15 @@ impl<'a> Emitter<'a> {
             .iter()
             .map(|a| self.overload_arg_ty(&a.value).as_ref().map(expr_ty_to_type))
             .collect();
-        let ctor = crate::class_table::find_ctor_overload(
-            self.classes,
-            &super_fqcn,
-            args.len(),
-            &arg_tys,
-        )
-        .cloned()
-        .ok_or_else(|| {
-            CodegenError::Unsupported(format!(
-                "no constructor of '{super_fqcn}' with {} argument(s) for super(...)",
-                args.len()
-            ))
-        })?;
+        let ctor =
+            crate::class_table::find_ctor_overload(self.classes, &super_fqcn, args.len(), &arg_tys)
+                .cloned()
+                .ok_or_else(|| {
+                    CodegenError::Unsupported(format!(
+                        "no constructor of '{super_fqcn}' with {} argument(s) for super(...)",
+                        args.len()
+                    ))
+                })?;
         let positional =
             crate::class_table::resolve_positional_args(&ctor.param_names, &ctor.defaults, args);
         let param_tys: Vec<ExprTy> = ctor.params.iter().map(expr_ty_of).collect();
@@ -2310,19 +2314,15 @@ impl<'a> Emitter<'a> {
             .map(|a| self.overload_arg_ty(&a.value).as_ref().map(expr_ty_to_type))
             .collect();
         let this_fqcn = self.this_fqcn.clone();
-        let ctor = crate::class_table::find_ctor_overload(
-            self.classes,
-            &this_fqcn,
-            args.len(),
-            &arg_tys,
-        )
-        .cloned()
-        .ok_or_else(|| {
-            CodegenError::Unsupported(format!(
-                "no constructor of '{this_fqcn}' with {} argument(s) for this(...)",
-                args.len()
-            ))
-        })?;
+        let ctor =
+            crate::class_table::find_ctor_overload(self.classes, &this_fqcn, args.len(), &arg_tys)
+                .cloned()
+                .ok_or_else(|| {
+                    CodegenError::Unsupported(format!(
+                        "no constructor of '{this_fqcn}' with {} argument(s) for this(...)",
+                        args.len()
+                    ))
+                })?;
         let positional =
             crate::class_table::resolve_positional_args(&ctor.param_names, &ctor.defaults, args);
         let param_tys: Vec<ExprTy> = ctor.params.iter().map(expr_ty_of).collect();
@@ -2480,9 +2480,10 @@ impl<'a> Emitter<'a> {
                 if let Some(info) = self.classes.get(&fqcn) {
                     if info.is_enum {
                         if let Some(field) = info.fields.iter().find(|f| &f.name == name) {
-                            let init = field.init.clone().expect(
-                                "enum case fields always carry an init expression",
-                            );
+                            let init = field
+                                .init
+                                .clone()
+                                .expect("enum case fields always carry an init expression");
                             self.compile_expr(&init)?;
                             return Ok(ExprTy::Object(fqcn));
                         }
@@ -2905,8 +2906,8 @@ impl<'a> Emitter<'a> {
                 }
                 other => {
                     return Err(CodegenError::Unsupported(format!(
-                        "'{name}' expects a string/int/float/bool/Stringable argument, got {other:?}"
-                    )))
+                    "'{name}' expects a string/int/float/bool/Stringable argument, got {other:?}"
+                )))
                 }
             }
             return self.emit_native_static(fqcn, name, &[Type::StringT], &Type::Void);
@@ -3080,8 +3081,10 @@ impl<'a> Emitter<'a> {
             // uses for a closure's own inferred type — no explicit
             // `Type::Function` written at that declaration). First
             // exercised by `system.thread.Thread(() => void task)`.
-        } else if matches!((actual, expected), (ExprTy::Closure { .. }, ExprTy::Closure { .. }))
-            && closure_shape_eq(actual, expected)
+        } else if matches!(
+            (actual, expected),
+            (ExprTy::Closure { .. }, ExprTy::Closure { .. })
+        ) && closure_shape_eq(actual, expected)
         {
             // Assigning to an explicit `Type::Function` (specs.md §
             // Function type assignment) — see `ExprTy::Closure`'s doc

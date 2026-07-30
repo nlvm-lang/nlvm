@@ -273,9 +273,7 @@ fn scan_stmt_for_box_requests(
         }
         StmtKind::Return(None) | StmtKind::Break | StmtKind::Continue => {}
         StmtKind::Expr(e) => scan_expr_for_box_requests(e, scopes, mutated_in_method, out),
-        StmtKind::VarDecl {
-            ty, name, init, ..
-        } => {
+        StmtKind::VarDecl { ty, name, init, .. } => {
             if let Some(e) = init {
                 scan_expr_for_box_requests(e, scopes, mutated_in_method, out);
             }
@@ -410,10 +408,19 @@ fn scan_expr_for_box_requests(
             // to preserve (unlike `nl_codegen::closure`'s per-name boxing
             // decision), so reusing the same `scopes` stack (already
             // holding every name visible from here) is enough.
-            scopes.push(params.iter().map(|p| (p.name.clone(), p.ty.clone())).collect());
+            scopes.push(
+                params
+                    .iter()
+                    .map(|p| (p.name.clone(), p.ty.clone()))
+                    .collect(),
+            );
             match body {
-                ClosureBody::Block(b) => scan_block_for_box_requests(b, scopes, mutated_in_method, out),
-                ClosureBody::Expr(e) => scan_expr_for_box_requests(e, scopes, mutated_in_method, out),
+                ClosureBody::Block(b) => {
+                    scan_block_for_box_requests(b, scopes, mutated_in_method, out)
+                }
+                ClosureBody::Expr(e) => {
+                    scan_expr_for_box_requests(e, scopes, mutated_in_method, out)
+                }
             }
             scopes.pop();
         }
@@ -498,7 +505,9 @@ fn scan_lvalue_for_box_requests(
 ) {
     match lvalue {
         LValue::Local(_) => {}
-        LValue::Field(target, _) => scan_expr_for_box_requests(target, scopes, mutated_in_method, out),
+        LValue::Field(target, _) => {
+            scan_expr_for_box_requests(target, scopes, mutated_in_method, out)
+        }
         LValue::Index(target, index) => {
             scan_expr_for_box_requests(target, scopes, mutated_in_method, out);
             scan_expr_for_box_requests(index, scopes, mutated_in_method, out);
@@ -611,7 +620,11 @@ fn collect_referenced_in_expr(expr: &Expr, names: &mut HashSet<String>) {
                 ClosureBody::Expr(e) => collect_referenced_in_expr(e, &mut inner),
             }
             let param_names: HashSet<&str> = params.iter().map(|p| p.name.as_str()).collect();
-            names.extend(inner.into_iter().filter(|n| !param_names.contains(n.as_str())));
+            names.extend(
+                inner
+                    .into_iter()
+                    .filter(|n| !param_names.contains(n.as_str())),
+            );
         }
         Expr::IntLit(_)
         | Expr::FloatLit(_)
@@ -796,7 +809,11 @@ fn collect_mutated_in_expr(expr: &Expr, names: &mut HashSet<String>) {
                 ClosureBody::Expr(e) => collect_mutated_in_expr(e, &mut inner),
             }
             let param_names: HashSet<&str> = params.iter().map(|p| p.name.as_str()).collect();
-            names.extend(inner.into_iter().filter(|n| !param_names.contains(n.as_str())));
+            names.extend(
+                inner
+                    .into_iter()
+                    .filter(|n| !param_names.contains(n.as_str())),
+            );
         }
         Expr::IntLit(_)
         | Expr::FloatLit(_)
@@ -967,7 +984,11 @@ fn mangle_type(ty: &Type) -> String {
             ..
         } => format!(
             "({}) => {}",
-            params.iter().map(mangle_type).collect::<Vec<_>>().join(", "),
+            params
+                .iter()
+                .map(mangle_type)
+                .collect::<Vec<_>>()
+                .join(", "),
             mangle_type(return_type)
         ),
     }
@@ -2043,9 +2064,10 @@ fn subst_expr(expr: &Expr, subst: &HashMap<String, Type>) -> Expr {
             Box::new(subst_expr(lhs, subst)),
             Box::new(subst_expr(rhs, subst)),
         ),
-        Expr::Elvis(lhs, rhs) => {
-            Expr::Elvis(Box::new(subst_expr(lhs, subst)), Box::new(subst_expr(rhs, subst)))
-        }
+        Expr::Elvis(lhs, rhs) => Expr::Elvis(
+            Box::new(subst_expr(lhs, subst)),
+            Box::new(subst_expr(rhs, subst)),
+        ),
         Expr::Closure {
             params,
             return_type,

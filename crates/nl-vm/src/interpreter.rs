@@ -766,9 +766,9 @@ fn exec_step(
         Opcode::GetStatic => {
             let idx = read_u16!();
             let (class_fqcn, field_name, _) = resolve_field_ref(module, idx)?;
-            let value = program.get_static(&class_fqcn, &field_name).ok_or_else(|| {
-                VmError::Malformed("GET_STATIC on an unknown class/field")
-            })?;
+            let value = program
+                .get_static(&class_fqcn, &field_name)
+                .ok_or_else(|| VmError::Malformed("GET_STATIC on an unknown class/field"))?;
             stack.push(value);
         }
         Opcode::SetStatic => {
@@ -1119,7 +1119,11 @@ fn implements_interface(program: &Arc<Program>, class_fqcn: &str, target_fqcn: &
 /// `instanceof`/exception-catch-type test: is `current` (or, transitively,
 /// any of its `extends` ancestors) equal to `target_fqcn`, or does one of
 /// them `implements` it? — vm.md § Object operations, § Exception table.
-pub(crate) fn is_instance_of(program: &Arc<Program>, mut current: String, target_fqcn: &str) -> bool {
+pub(crate) fn is_instance_of(
+    program: &Arc<Program>,
+    mut current: String,
+    target_fqcn: &str,
+) -> bool {
     loop {
         if current == target_fqcn || implements_interface(program, &current, target_fqcn) {
             return true;
@@ -1166,7 +1170,8 @@ fn display_string_of(program: &Arc<Program>, v: &Value) -> Result<String, VmErro
             return crate::json::stringify_compact(v);
         }
         if is_instance_of(program, class_name.clone(), "Stringable") {
-            if let Some((module, method)) = resolve_virtual_by_name(program, &class_name, "toString")
+            if let Some((module, method)) =
+                resolve_virtual_by_name(program, &class_name, "toString")
             {
                 let result = call_instance(program, module, method, v.clone(), Vec::new())?;
                 if let Some(Value::Str(s)) = result {

@@ -158,7 +158,12 @@ pub fn native_parent(fqcn: &str) -> Option<&'static str> {
 /// common ancestor) re-walking the same interface repeatedly; cheap enough
 /// to allocate fresh per top-level call given typical interface hierarchy
 /// depth.
-fn interface_extends(classes: &ClassTable, iface: &str, target: &str, seen: &mut HashSet<String>) -> bool {
+fn interface_extends(
+    classes: &ClassTable,
+    iface: &str,
+    target: &str,
+    seen: &mut HashSet<String>,
+) -> bool {
     if iface == target {
         return true;
     }
@@ -208,7 +213,8 @@ pub fn implements_interface(classes: &ClassTable, fqcn: &str, target: &str) -> b
         let Some(info) = classes.get(current) else {
             // A native stdlib class: its (single) interface is folded into
             // `native_parent`'s chain, so the same walk answers here.
-            return native_parent(current).is_some() && is_subclass_or_same(classes, current, target);
+            return native_parent(current).is_some()
+                && is_subclass_or_same(classes, current, target);
         };
         if info
             .implements
@@ -337,7 +343,6 @@ pub fn resolve_type(ty: &Type, imports: &HashMap<String, String>) -> Type {
     }
 }
 
-
 /// Walks `fqcn`'s direct-superclass chain (starting at `fqcn` itself)
 /// looking for a method with the exact same name and parameter types.
 /// Unlike `find_method`'s arity-only matching (good enough for resolving a
@@ -456,7 +461,11 @@ pub(crate) fn overload_param_score(
         return Some(0);
     }
     if matches!(arg, Type::NullT) {
-        return if types::is_nullable(param) { Some(1) } else { None };
+        return if types::is_nullable(param) {
+            Some(1)
+        } else {
+            None
+        };
     }
     if let (Type::Named(from), Type::Named(to)) = (arg, param) {
         return if is_subclass_or_same(classes, from, to) || implements_interface(classes, from, to)

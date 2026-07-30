@@ -62,7 +62,10 @@ pub const NAMESPACED_ALIASES: &[(&str, &str)] = &[
     // (`Encoding.base64Decode`, `DateTime.parse`) and `JsonFormatException`
     // in `system.text.json`.
     ("system.text.FormatException", "FormatException"),
-    ("system.text.json.JsonFormatException", "JsonFormatException"),
+    (
+        "system.text.json.JsonFormatException",
+        "JsonFormatException",
+    ),
 ];
 
 /// Every built-in exception class, as a namespace-less `SourceFile`.

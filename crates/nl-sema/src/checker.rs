@@ -526,10 +526,7 @@ fn field_assigned_stmt(
 /// issue #8: an implementation is only "the" implementation of an interface
 /// method if it agrees on the parameter signature, not merely on how many
 /// parameters it takes.
-fn check_const_interface_impl(
-    classes: &ClassTable,
-    this_fqcn: &str,
-) -> Result<(), SemaError> {
+fn check_const_interface_impl(classes: &ClassTable, this_fqcn: &str) -> Result<(), SemaError> {
     let Some(info) = classes.get(this_fqcn) else {
         return Ok(());
     };
@@ -944,7 +941,10 @@ fn check_method(
         // compiler.md § Named and optional parameter rules — E026.
         if let Some(default) = &param.default {
             if !is_const_expr(default) {
-                return Err((method.decl_line, SemaError::DefaultNotConstant(param.name.clone())));
+                return Err((
+                    method.decl_line,
+                    SemaError::DefaultNotConstant(param.name.clone()),
+                ));
             }
         }
         // compiler.md § Ref parameter rules — E022: an optional parameter
@@ -1133,9 +1133,10 @@ impl<'a> MethodChecker<'a> {
                     None
                 };
                 match target {
-                    Some((id, declared)) => {
-                        (vec![(id, types::strip_null(&declared))], vec![(id, Type::NullT)])
-                    }
+                    Some((id, declared)) => (
+                        vec![(id, types::strip_null(&declared))],
+                        vec![(id, Type::NullT)],
+                    ),
                     None => (Vec::new(), Vec::new()),
                 }
             }
@@ -1148,9 +1149,10 @@ impl<'a> MethodChecker<'a> {
                     None
                 };
                 match target {
-                    Some((id, declared)) => {
-                        (vec![(id, Type::NullT)], vec![(id, types::strip_null(&declared))])
-                    }
+                    Some((id, declared)) => (
+                        vec![(id, Type::NullT)],
+                        vec![(id, types::strip_null(&declared))],
+                    ),
                     None => (Vec::new(), Vec::new()),
                 }
             }
@@ -1158,7 +1160,10 @@ impl<'a> MethodChecker<'a> {
             // Other operators), so the true branch also drops `null` from
             // the union — a plain `Type::Named(fqcn)`, not a union member.
             Expr::InstanceOf(target, type_name) => match self.narrowable_ident(target) {
-                Some((id, _declared)) => (vec![(id, Type::Named(self.class_fqcn(type_name)))], Vec::new()),
+                Some((id, _declared)) => (
+                    vec![(id, Type::Named(self.class_fqcn(type_name)))],
+                    Vec::new(),
+                ),
                 None => (Vec::new(), Vec::new()),
             },
             // `a && b` true => both `a` and `b`'s true-narrowing hold. Its
@@ -1253,15 +1258,20 @@ impl<'a> MethodChecker<'a> {
     fn nodiscard_call_name(&self, expr: &Expr) -> Option<String> {
         match expr {
             Expr::Call(name, args) => {
-                let (_, method) =
-                    class_table::find_method_owner(self.classes, &self.this_fqcn, name, args.len())?;
+                let (_, method) = class_table::find_method_owner(
+                    self.classes,
+                    &self.this_fqcn,
+                    name,
+                    args.len(),
+                )?;
                 method.is_nodiscard.then(|| name.clone())
             }
             Expr::MethodCall(target, name, args) => {
                 let Type::Named(fqcn) = self.simple_receiver_ty(target)? else {
                     return None;
                 };
-                let (_, method) = class_table::find_method_owner(self.classes, &fqcn, name, args.len())?;
+                let (_, method) =
+                    class_table::find_method_owner(self.classes, &fqcn, name, args.len())?;
                 method.is_nodiscard.then(|| name.clone())
             }
             _ => None,
@@ -1663,7 +1673,13 @@ impl<'a> MethodChecker<'a> {
                         ..
                     }) => {
                         let target = ty.as_ref().map(|t| self.resolve_ty(t));
-                        Some(self.check_closure(params, return_type, body, target, &mut assigned)?)
+                        Some(self.check_closure(
+                            params,
+                            return_type,
+                            body,
+                            target,
+                            &mut assigned,
+                        )?)
                     }
                     Some(e) => Some(self.check_expr(e, &mut assigned)?),
                     None => None,
@@ -1912,7 +1928,9 @@ impl<'a> MethodChecker<'a> {
     fn is_concat_operand(&self, ty: &Type) -> bool {
         match ty {
             Type::Int | Type::Float | Type::Bool | Type::Byte | Type::StringT => true,
-            Type::Named(fqcn) => class_table::implements_interface(self.classes, fqcn, "Stringable"),
+            Type::Named(fqcn) => {
+                class_table::implements_interface(self.classes, fqcn, "Stringable")
+            }
             _ => false,
         }
     }
@@ -2029,8 +2047,10 @@ impl<'a> MethodChecker<'a> {
                 let Some(candidates) = self.sigs.get(name) else {
                     return Ok(Type::Void);
                 };
-                let arg_tys: Vec<Option<Type>> =
-                    args.iter().map(|a| self.overload_arg_ty(&a.value)).collect();
+                let arg_tys: Vec<Option<Type>> = args
+                    .iter()
+                    .map(|a| self.overload_arg_ty(&a.value))
+                    .collect();
                 // Same tie-breaking / leniency rule as
                 // `class_table::best_overload`: filter by arity, then pick
                 // the compatible candidate with the lowest score; fall back
@@ -2069,11 +2089,7 @@ impl<'a> MethodChecker<'a> {
                             // Resolve here so the two sides compare
                             // apples-to-apples via `is_subclass_or_same`.
                             let param_ty = self.resolve_ty(&param.ty);
-                            match class_table::overload_param_score(
-                                self.classes,
-                                arg,
-                                &param_ty,
-                            ) {
+                            match class_table::overload_param_score(self.classes, arg, &param_ty) {
                                 Some(s) => total += s,
                                 None => {
                                     compatible = false;
@@ -2347,8 +2363,10 @@ impl<'a> MethodChecker<'a> {
                         // `match` subject, an `auto`-inferred local) —
                         // exactly what enum `from`/`tryFrom` need.
                         let fqcn = self.class_fqcn(&path);
-                        let arg_tys: Vec<Option<Type>> =
-                            args.iter().map(|a| self.overload_arg_ty(&a.value)).collect();
+                        let arg_tys: Vec<Option<Type>> = args
+                            .iter()
+                            .map(|a| self.overload_arg_ty(&a.value))
+                            .collect();
                         if let Some((owner, method)) = class_table::find_method_owner_overload(
                             self.classes,
                             &fqcn,
@@ -2491,8 +2509,10 @@ impl<'a> MethodChecker<'a> {
                         // report another overload's return type/`throws`/
                         // `const`-ness further down, which would be worse
                         // than just picking one consistently.
-                        let arg_tys: Vec<Option<Type>> =
-                            args.iter().map(|a| self.overload_arg_ty(&a.value)).collect();
+                        let arg_tys: Vec<Option<Type>> = args
+                            .iter()
+                            .map(|a| self.overload_arg_ty(&a.value))
+                            .collect();
                         let resolved = class_table::find_method_owner_overload(
                             self.classes,
                             fqcn,
@@ -3454,7 +3474,6 @@ fn literal_eq(a: &Expr, b: &Expr) -> bool {
         _ => false,
     }
 }
-
 
 fn visibility_str(v: nl_syntax::ast::Visibility) -> String {
     match v {
