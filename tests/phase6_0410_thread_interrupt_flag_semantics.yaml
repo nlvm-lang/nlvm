@@ -1,0 +1,48 @@
+---
+title: "Phase 6 — system.thread.Thread.isInterrupted(): sticky flag, uninterruptible waits, interrupt before start()"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "pending=true done still=true early: sleep interrupted"
+---
+
+#NLFILE phase6/threadinterruptflag/Main.nl
+namespace phase6.threadinterruptflag;
+class Main {
+	public static int main(string[] args) throws InterruptedException {
+		// Interruption is cooperative: Semaphore.acquire() declares no
+		// InterruptedException and is therefore not an interruption point,
+		// so this worker keeps waiting for its permit however often it is
+		// interrupted. The flag stays set (nothing consumed it) and is
+		// observable through isInterrupted() before *and* after the task
+		// ran to completion.
+		auto gate = new system.thread.Semaphore(0);
+		auto worker = new system.thread.Thread(() => {
+			gate.acquire();
+			system.Out.print(" done");
+		});
+		worker.start();
+		worker.interrupt();
+		system.Out.print("pending=");
+		system.Out.print(system.Bool.toString(worker.isInterrupted()));
+		gate.release();
+		worker.join();
+		system.Out.print(" still=");
+		system.Out.print(system.Bool.toString(worker.isInterrupted()));
+
+		// An interrupt requested before start() is remembered, so the first
+		// interruptible wait the task reaches throws straight away.
+		auto early = new system.thread.Thread(() => {
+			try {
+				system.thread.Thread.sleep(10000);
+				system.Out.print(" early: no throw");
+			} catch (InterruptedException e) {
+				system.Out.print(" early: ");
+				system.Out.print(e.message);
+			}
+		});
+		early.interrupt();
+		early.start();
+		early.join();
+		return 0;
+	}
+}

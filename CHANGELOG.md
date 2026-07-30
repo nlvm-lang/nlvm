@@ -5,6 +5,15 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.20.0]
+
+### Added
+- **Thread interruption** — `system.thread.Thread.interrupt()` and `isInterrupted()` (stdlib.md § system.thread.Thread, added in specs 0.8.48). `join()`, `join(int)` and `Thread.sleep(int)` finally *raise* the `InterruptedException` they have always declared: `interrupt()` sets the target thread's flag and unparks it, so a thread blocked in one of those three waits wakes up and throws immediately instead of waiting out its target or timeout (an interrupted `join(int)` throws rather than returning `false`). Delivery clears the flag; otherwise it is sticky, so interrupting a thread that isn't blocked — including one not started yet — is never lost and makes its next wait throw. Nothing else is an interruption point (`Mutex.lock()`, `Semaphore.acquire()`, blocking I/O), and the thread running `main` has no `Thread` object, so it cannot be interrupted and keeps using plain blocking waits. See [issue #4](https://github.com/nlvm-lang/nlvm/issues/4).
+
+### Changed
+- A `system.thread.Thread` now takes its VM-side slot at construction instead of at `start()`, so `interrupt()`/`isInterrupted()` work on a thread that hasn't been started yet. `join()` on a never-started thread remains a no-op, and `isAlive()` still answers `false` for one.
+- An interruptible `join()` waits by polling `is_finished()` at the same 1 ms granularity `join(int)` has always used, since `JoinHandle::join` can neither be cancelled nor bounded. `join()` on the main thread keeps the real blocking join (nothing can interrupt it), so no program that doesn't interrupt pays for this.
+
 ## [0.19.0]
 
 ### Added

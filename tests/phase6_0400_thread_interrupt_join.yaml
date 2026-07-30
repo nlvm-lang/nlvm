@@ -1,0 +1,64 @@
+---
+title: "Phase 6 — system.thread.Thread.interrupt(): join() and join(timeoutMillis) throw InterruptedException"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "join: join interrupted timed: join interrupted"
+---
+
+#NLFILE phase6/threadinterruptjoin/Main.nl
+namespace phase6.threadinterruptjoin;
+class Main {
+	public static int main(string[] args) throws InterruptedException {
+		// The other two interruptible waits: a thread blocked in join()
+		// (unbounded) and in join(timeoutMillis). Both joiners wait on the
+		// same `blocked` thread, which sits on a semaphore until main lets
+		// it go — so the joins really are blocked, without any sleep long
+		// enough to slow the suite down.
+		auto gate = new system.thread.Semaphore(0);
+		auto blocked = new system.thread.Thread(() => {
+			gate.acquire();
+		});
+		blocked.start();
+
+		auto ready = new system.thread.Semaphore(0);
+		auto joiner = new system.thread.Thread(() => {
+			try {
+				ready.release();
+				blocked.join();
+				system.Out.print("join: no throw");
+			} catch (InterruptedException e) {
+				system.Out.print("join: ");
+				system.Out.print(e.message);
+			}
+		});
+		joiner.start();
+		ready.acquire();
+		joiner.interrupt();
+		joiner.join();
+
+		// join(timeoutMillis) reports an interruption by throwing, not by
+		// returning false: a 10s timeout that returned normally would mean
+		// the interrupt never reached the waiting thread.
+		auto timedJoiner = new system.thread.Thread(() => {
+			try {
+				ready.release();
+				bool finished = blocked.join(10000);
+				system.Out.print(" timed: no throw ");
+				system.Out.print(system.Bool.toString(finished));
+			} catch (InterruptedException e) {
+				system.Out.print(" timed: ");
+				system.Out.print(e.message);
+			}
+		});
+		timedJoiner.start();
+		ready.acquire();
+		timedJoiner.interrupt();
+		timedJoiner.join();
+
+		// Let `blocked` finish, then join it from the main thread — which
+		// nothing can interrupt, so this is the plain blocking join.
+		gate.release();
+		blocked.join();
+		return 0;
+	}
+}

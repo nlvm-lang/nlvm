@@ -493,6 +493,8 @@ pub fn instance_lookup(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>
         ("system.thread.Thread", "join", 0) => Some((vec![], Type::Void)),
         ("system.thread.Thread", "join", 1) => Some((vec![Type::Int], Type::Bool)),
         ("system.thread.Thread", "isAlive", 0) => Some((vec![], Type::Bool)),
+        ("system.thread.Thread", "interrupt", 0) => Some((vec![], Type::Void)),
+        ("system.thread.Thread", "isInterrupted", 0) => Some((vec![], Type::Bool)),
         ("system.thread.Mutex", "lock", 0) => Some((vec![], Type::Void)),
         ("system.thread.Mutex", "unlock", 0) => Some((vec![], Type::Void)),
         ("system.thread.Mutex", "tryLock", 0) => Some((vec![], Type::Bool)),
@@ -533,11 +535,10 @@ pub fn throws(fqcn: &str, name: &str) -> &'static [&'static str] {
         ("system.net.TcpStream", "connect" | "read" | "write") => &["IOException"],
         ("system.net.UdpSocket", "bind" | "send" | "receive") => &["IOException"],
         ("system.net.Http", "get" | "post") => &["IOException"],
-        // stdlib.md declares `InterruptedException` on these three, but
-        // nothing in this implementation ever actually raises it (no
-        // interrupt mechanism — see `nl_vm::native`'s thread section); kept
-        // here anyway so `catch`/`throws` sites around them still type-check
-        // against the real declared signature (E015 still fires if unhandled).
+        // stdlib.md § system.thread.Thread — raised for real by
+        // `Thread.interrupt()`, which sets the target thread's interrupt
+        // flag; `join`/`join(int)`/`sleep` are the three points that test it
+        // and throw (see `nl_vm::native`'s thread section, § Interruption).
         ("system.thread.Thread", "join") => &["InterruptedException"],
         ("system.thread.Thread", "sleep") => &["InterruptedException"],
         ("system.ps.Process", "run" | "setCwd") => &["IOException"],

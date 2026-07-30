@@ -216,6 +216,8 @@ pub fn instance_signature(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Ty
         ("system.thread.Thread", "join", 0) => Some((vec![], Type::Void)),
         ("system.thread.Thread", "join", 1) => Some((vec![Type::Int], Type::Bool)),
         ("system.thread.Thread", "isAlive", 0) => Some((vec![], Type::Bool)),
+        ("system.thread.Thread", "interrupt", 0) => Some((vec![], Type::Void)),
+        ("system.thread.Thread", "isInterrupted", 0) => Some((vec![], Type::Bool)),
         ("system.thread.Mutex", "lock", 0) => Some((vec![], Type::Void)),
         ("system.thread.Mutex", "unlock", 0) => Some((vec![], Type::Void)),
         ("system.thread.Mutex", "tryLock", 0) => Some((vec![], Type::Bool)),

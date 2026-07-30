@@ -1,6 +1,7 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::BufRead;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 
@@ -55,6 +56,61 @@ impl Counter {
         *guard += 1;
         self.condvar.notify_one();
     }
+}
+
+/// One `system.thread.Thread`'s bookkeeping. The slot is allocated by
+/// `construct` (not `start()`) because `interrupt()` must have somewhere to
+/// write to on a thread that hasn't started yet.
+struct ThreadSlot {
+    /// `None` before `start()`, and again after a completed `join()` (taken
+    /// out by `join_thread` — a slot left handle-less that way reads back as
+    /// "already joined", matching `FileHandle`'s close-is-terminal pattern).
+    handle: Option<JoinHandle<()>>,
+    /// The OS thread `start()` spawned, kept separately from `handle` so
+    /// `interrupt()` can still `unpark()` a thread whose `JoinHandle` was
+    /// already taken (harmless: unparking a finished thread is a no-op).
+    os_thread: Option<std::thread::Thread>,
+    /// False until `start()`; distinguishes "never started" (`isAlive()` is
+    /// false, `join()` is a no-op) from "started and finished".
+    started: bool,
+    /// Interrupt flag — stdlib.md § system.thread.Thread's
+    /// `InterruptedException`. Set by `interrupt()` from any thread, cleared
+    /// by whichever interruptible wait (`join`/`join(timeout)`/`sleep`) acts
+    /// on it. Shared with the spawned thread itself, which installs it as
+    /// its `CURRENT_INTERRUPT` so `Thread.sleep` — a *static* call with no
+    /// receiver to consult — knows which flag is its own.
+    interrupt: Arc<AtomicBool>,
+}
+
+thread_local! {
+    /// Interrupt flag of the NL thread running on this OS thread, installed
+    /// by `set_current_interrupt` at the top of every spawned thread's task.
+    /// Stays `None` on the main thread, which is deliberate: nothing in the
+    /// spec designates the main thread (no `Thread` object refers to it), so
+    /// it can never be interrupted — and a `None` flag is what lets
+    /// `join`/`sleep` there keep using a plain blocking wait instead of the
+    /// interruptible polling loop (see `crate::native`'s thread section).
+    static CURRENT_INTERRUPT: RefCell<Option<Arc<AtomicBool>>> =
+        const { RefCell::new(None) };
+}
+
+/// Called once, by a spawned thread, before it runs its task.
+pub(crate) fn set_current_interrupt(flag: Arc<AtomicBool>) {
+    CURRENT_INTERRUPT.with(|slot| *slot.borrow_mut() = Some(flag));
+}
+
+/// The calling thread's interrupt flag, or `None` on a thread that can't be
+/// interrupted at all (the main thread — see `CURRENT_INTERRUPT`).
+pub(crate) fn current_interrupt() -> Option<Arc<AtomicBool>> {
+    CURRENT_INTERRUPT.with(|slot| slot.borrow().clone())
+}
+
+/// Tests *and clears* the calling thread's interrupt flag: true means an
+/// `interrupt()` was pending, and the caller now owes an
+/// `InterruptedException`. Clearing on delivery mirrors the exception being
+/// consumed — a second wait doesn't throw again unless interrupted anew.
+pub(crate) fn take_interrupt(flag: &AtomicBool) -> bool {
+    flag.swap(false, Ordering::SeqCst)
 }
 
 /// A linked program: every module that will be executed together, keyed by
@@ -120,11 +176,9 @@ pub struct Program {
     udp_sockets: Mutex<Vec<Option<std::net::UdpSocket>>>,
     /// Backing store for `system.thread.Thread` — a thread object only
     /// carries an index into this table (`"__tid__"`, allocated by
-    /// `start()`, not `NEW`, since an unstarted `Thread` shouldn't occupy a
-    /// slot). `join()` takes the handle out (`Option::take`); a slot left
-    /// `None` after that means "already joined", matching `FileHandle`'s
-    /// close-is-terminal pattern.
-    threads: Mutex<Vec<Option<JoinHandle<()>>>>,
+    /// `construct`, since `interrupt()` needs a flag to set even before
+    /// `start()`). See `ThreadSlot`.
+    threads: Mutex<Vec<ThreadSlot>>,
     /// Backing store for `system.thread.Mutex` (`"__mid__"`) — modeled as a
     /// `Counter` capped at 1 (`lock`/`unlock`/`tryLock` treat `0` as locked,
     /// `1` as unlocked).
@@ -409,10 +463,63 @@ impl Program {
         }
     }
 
-    pub(crate) fn register_thread(&self, handle: JoinHandle<()>) -> i64 {
+    /// Allocates an unstarted slot for a freshly constructed `Thread` and
+    /// returns its `__tid__`.
+    pub(crate) fn register_thread(&self) -> i64 {
         let mut threads = lock(&self.threads);
-        threads.push(Some(handle));
+        threads.push(ThreadSlot {
+            handle: None,
+            os_thread: None,
+            started: false,
+            interrupt: Arc::new(AtomicBool::new(false)),
+        });
         (threads.len() - 1) as i64
+    }
+
+    /// The flag `start()` hands to the thread it is about to spawn (so the
+    /// thread can install it as its own `CURRENT_INTERRUPT`), and that
+    /// `interrupt()`/`isInterrupted()` read and write.
+    pub(crate) fn thread_interrupt_flag(&self, id: i64) -> Option<Arc<AtomicBool>> {
+        lock(&self.threads)
+            .get(id as usize)
+            .map(|slot| Arc::clone(&slot.interrupt))
+    }
+
+    /// Records the OS thread `start()` just spawned into an existing slot.
+    pub(crate) fn start_thread(&self, id: i64, handle: JoinHandle<()>) {
+        if let Some(slot) = lock(&self.threads).get_mut(id as usize) {
+            slot.os_thread = Some(handle.thread().clone());
+            slot.handle = Some(handle);
+            slot.started = true;
+        }
+    }
+
+    pub(crate) fn thread_is_started(&self, id: i64) -> bool {
+        lock(&self.threads)
+            .get(id as usize)
+            .is_some_and(|slot| slot.started)
+    }
+
+    /// Requests interruption of the thread in slot `id`: sets its flag, then
+    /// `unpark()`s it so a wait already blocked in `park_timeout` returns
+    /// immediately instead of sitting out its poll interval. The flag is
+    /// sticky — interrupting a thread that isn't blocked (or hasn't started)
+    /// makes its *next* interruptible wait throw, rather than being dropped.
+    pub(crate) fn interrupt_thread(&self, id: i64) {
+        let threads = lock(&self.threads);
+        let Some(slot) = threads.get(id as usize) else {
+            return;
+        };
+        slot.interrupt.store(true, Ordering::SeqCst);
+        if let Some(os_thread) = &slot.os_thread {
+            os_thread.unpark();
+        }
+    }
+
+    pub(crate) fn thread_is_interrupted(&self, id: i64) -> bool {
+        lock(&self.threads)
+            .get(id as usize)
+            .is_some_and(|slot| slot.interrupt.load(Ordering::SeqCst))
     }
 
     /// True when no `system.thread.Thread` this program started is still
@@ -432,13 +539,16 @@ impl Program {
     pub(crate) fn no_vm_threads_running(&self) -> bool {
         lock(&self.threads)
             .iter()
-            .all(|slot| slot.as_ref().is_none_or(JoinHandle::is_finished))
+            .all(|slot| slot.handle.as_ref().is_none_or(JoinHandle::is_finished))
     }
 
+    /// True for a thread that ran to completion, and also for one that was
+    /// never started or was already joined — every caller uses it as "not
+    /// currently executing bytecode".
     pub(crate) fn thread_is_finished(&self, id: i64) -> bool {
         match lock(&self.threads).get(id as usize) {
-            Some(Some(handle)) => handle.is_finished(),
-            _ => true,
+            Some(slot) => slot.handle.as_ref().is_none_or(JoinHandle::is_finished),
+            None => true,
         }
     }
 
@@ -452,7 +562,7 @@ impl Program {
     pub(crate) fn join_thread(&self, id: i64) {
         let handle = lock(&self.threads)
             .get_mut(id as usize)
-            .and_then(Option::take);
+            .and_then(|slot| slot.handle.take());
         if let Some(handle) = handle {
             let _ = handle.join();
         }

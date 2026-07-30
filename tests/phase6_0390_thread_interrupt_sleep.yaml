@@ -1,0 +1,44 @@
+---
+title: "Phase 6 — system.thread.Thread.interrupt(): Thread.sleep() throws InterruptedException"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "caught: sleep interrupted alive=false interrupted=false"
+---
+
+#NLFILE phase6/threadinterrupt/Main.nl
+namespace phase6.threadinterrupt;
+class Main {
+	public static int main(string[] args) throws InterruptedException {
+		// interrupt() is what makes the InterruptedException stdlib.md
+		// declares on sleep()/join() reachable at all. The worker asks for
+		// a 10s sleep it must never finish: main interrupts it as soon as
+		// the semaphore says the worker is inside its try block, so a
+		// working implementation ends in milliseconds and a broken one
+		// (interrupt ignored) prints "no throw" 10 seconds later.
+		auto ready = new system.thread.Semaphore(0);
+		auto worker = new system.thread.Thread(() => {
+			try {
+				ready.release();
+				system.thread.Thread.sleep(10000);
+				system.Out.print("no throw");
+			} catch (InterruptedException e) {
+				system.Out.print("caught: ");
+				system.Out.print(e.message);
+			}
+		});
+		worker.start();
+		// No race to worry about either way: the flag is sticky, so an
+		// interrupt landing before the sleep starts makes it throw
+		// immediately rather than being lost.
+		ready.acquire();
+		worker.interrupt();
+		worker.join();
+		system.Out.print(" alive=");
+		system.Out.print(system.Bool.toString(worker.isAlive()));
+		// Delivering the exception consumed the flag, so the thread no
+		// longer reports itself as interrupted.
+		system.Out.print(" interrupted=");
+		system.Out.print(system.Bool.toString(worker.isInterrupted()));
+		return 0;
+	}
+}

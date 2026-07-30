@@ -966,7 +966,7 @@ fn exec_step(
                 return Ok(Step::Continue);
             }
             if crate::native::is_thread_class(&class_fqcn) {
-                crate::native::construct_thread(&receiver, call_args)?;
+                crate::native::construct_thread(program, &receiver, call_args)?;
                 *pc_ref = pc;
                 return Ok(Step::Continue);
             }

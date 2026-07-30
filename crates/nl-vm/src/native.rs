@@ -525,7 +525,7 @@ pub fn dispatch(
         }
         ("system.thread.Thread", "sleep") => {
             let millis = expect_int(&mut args)?.max(0) as u64;
-            std::thread::sleep(std::time::Duration::from_millis(millis));
+            sleep_interruptibly(std::time::Duration::from_millis(millis))?;
             Ok(None)
         }
         // stdlib.md § system.ps.Process — `list`/`list(pid)` are backed by
@@ -1998,6 +1998,24 @@ fn dispatch_udp_socket(
 /// (`Program::Counter`, built on `Condvar` rather than a `MutexGuard` —
 /// see that type's doc comment for why): a `Mutex` is a `Counter` capped at
 /// 1 (locked ⇔ count is `0`), a `Semaphore` is the same counter uncapped.
+///
+/// ## Interruption
+///
+/// stdlib.md declares `throws InterruptedException` on `join()`,
+/// `join(int)` and `sleep(int)`, and `interrupt()`/`isInterrupted()` are
+/// what raise it: `interrupt()` sets the target thread's flag
+/// (`program::ThreadSlot::interrupt`) and unparks it; each of the three
+/// waits above tests-and-clears the flag *of the thread it blocks* before
+/// and after every park, throwing `InterruptedException` when it was set.
+/// A spawned thread learns which flag is its own from
+/// `program::CURRENT_INTERRUPT`, which `start()` installs before running
+/// the task — `sleep` is static and has no receiver to ask.
+///
+/// Interruption is therefore cooperative and confined to those three
+/// points: `Mutex.lock()`/`Semaphore.acquire()` declare no
+/// `InterruptedException` and are not interruptible, and a task that never
+/// blocks runs to completion no matter how often it is interrupted (the
+/// flag simply stays set, observable through `isInterrupted()`).
 pub fn is_thread_class(fqcn: &str) -> bool {
     fqcn == "system.thread.Thread"
 }
@@ -2038,17 +2056,27 @@ pub fn new_semaphore_object() -> Value {
     ))))
 }
 
-/// `Thread(() => void task)` — just stashes the closure; the thread isn't
-/// actually spawned (and doesn't occupy a `Program::threads` slot) until
-/// `start()` (see `dispatch_thread`).
-pub fn construct_thread(receiver: &Value, mut args: Vec<Value>) -> Result<(), VmError> {
+/// `Thread(() => void task)` — stashes the closure and takes a
+/// `Program::threads` slot (the OS thread itself is only spawned by
+/// `start()`, see `dispatch_thread`). The slot is claimed this early so
+/// `interrupt()` has an interrupt flag to set on a thread that hasn't
+/// started yet, and so `isInterrupted()` can be called at any point in the
+/// object's life.
+pub fn construct_thread(
+    program: &Arc<Program>,
+    receiver: &Value,
+    mut args: Vec<Value>,
+) -> Result<(), VmError> {
     let task = args.pop().ok_or(VmError::Malformed(
         "expected closure argument to native call",
     ))?;
     let Value::Object(obj) = receiver else {
         return Err(VmError::Malformed("expected Thread receiver"));
     };
-    lock(&obj).fields.insert("__task__".to_string(), task);
+    let id = program.register_thread();
+    let mut obj = lock(&obj);
+    obj.fields.insert("__task__".to_string(), task);
+    obj.fields.insert("__tid__".to_string(), Value::Int(id));
     Ok(())
 }
 
@@ -2141,6 +2169,12 @@ fn dispatch_thread(
             if task.is_null() {
                 return Ok(None);
             }
+            let Some(tid) = thread_id(&obj) else {
+                return Ok(None);
+            };
+            let Some(interrupt) = program.thread_interrupt_flag(tid) else {
+                return Err(VmError::Malformed("malformed Thread object"));
+            };
             lock(&obj)
                 .fields
                 .insert("__task__".to_string(), Value::Null);
@@ -2159,55 +2193,79 @@ fn dispatch_thread(
             const THREAD_STACK_SIZE: usize = 8 * 1024 * 1024;
             let handle = std::thread::Builder::new()
                 .stack_size(THREAD_STACK_SIZE)
-                .spawn(move || match invoke_task(&program_clone, task) {
-                    Ok(_) => {}
-                    // Same wording as the main thread's own unhandled-exception
-                    // report (`program::run_program`) — no trailing newline
-                    // either, for the same reason: a later write (from this
-                    // thread or another) shouldn't inherit a blank line.
-                    Err(VmError::Thrown(exc)) => {
-                        program_clone.write_stderr(&format!(
-                            "Unhandled exception: {}",
-                            crate::program::describe_exception(&exc)
-                        ));
+                .spawn(move || {
+                    // Must happen before the task's first `sleep`/`join`:
+                    // that's how a static `Thread.sleep` finds the flag of
+                    // the thread it is running on.
+                    crate::program::set_current_interrupt(interrupt);
+                    match invoke_task(&program_clone, task) {
+                        Ok(_) => {}
+                        // Same wording as the main thread's own unhandled-exception
+                        // report (`program::run_program`) — no trailing newline
+                        // either, for the same reason: a later write (from this
+                        // thread or another) shouldn't inherit a blank line.
+                        Err(VmError::Thrown(exc)) => {
+                            program_clone.write_stderr(&format!(
+                                "Unhandled exception: {}",
+                                crate::program::describe_exception(&exc)
+                            ));
+                        }
+                        Err(e) => program_clone.write_stderr(&format!("Unhandled exception: {e}")),
                     }
-                    Err(e) => program_clone.write_stderr(&format!("Unhandled exception: {e}")),
                 })
                 .expect("spawning an OS thread for system.thread.Thread");
-            let tid = program.register_thread(handle);
-            lock(&obj)
-                .fields
-                .insert("__tid__".to_string(), Value::Int(tid));
+            program.start_thread(tid, handle);
             Ok(None)
         }
         "join" if args.is_empty() => {
-            if let Some(tid) = thread_id(&obj) {
-                program.join_thread(tid);
+            let Some(tid) = started_thread_id(program, &obj) else {
+                return Ok(None);
+            };
+            match crate::program::current_interrupt() {
+                // Nothing can interrupt the main thread (see
+                // `program::CURRENT_INTERRUPT`), so it keeps the real
+                // blocking `JoinHandle::join` — no poll loop, no wakeups.
+                None => program.join_thread(tid),
+                Some(flag) => {
+                    wait_for_thread(program, tid, Some(&flag), None)?;
+                }
             }
             Ok(None)
         }
         "join" => {
             let timeout_millis = expect_int(&mut args)?.max(0) as u64;
-            let Some(tid) = thread_id(&obj) else {
+            let Some(tid) = started_thread_id(program, &obj) else {
                 return Ok(Some(Value::Bool(true)));
             };
-            // `std::thread::JoinHandle` has no timed join — polls
-            // `is_finished()` instead, bounded by `timeout_millis`.
             let deadline =
                 std::time::Instant::now() + std::time::Duration::from_millis(timeout_millis);
-            loop {
-                if program.thread_is_finished(tid) {
-                    program.join_thread(tid);
-                    return Ok(Some(Value::Bool(true)));
-                }
-                if std::time::Instant::now() >= deadline {
-                    return Ok(Some(Value::Bool(false)));
-                }
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
+            let flag = crate::program::current_interrupt();
+            let finished = wait_for_thread(program, tid, flag.as_deref(), Some(deadline))?;
+            Ok(Some(Value::Bool(finished)))
         }
         "isAlive" => match thread_id(&obj) {
-            Some(tid) => Ok(Some(Value::Bool(!program.thread_is_finished(tid)))),
+            Some(tid) => Ok(Some(Value::Bool(
+                program.thread_is_started(tid) && !program.thread_is_finished(tid),
+            ))),
+            None => Ok(Some(Value::Bool(false))),
+        },
+        // Sets the target's interrupt flag; the target itself turns that
+        // into an `InterruptedException` the next time it blocks in
+        // `join`/`sleep` (or immediately, if it is blocked there now).
+        // Interrupting an unstarted, finished or non-blocking thread is
+        // well-defined and does nothing observable beyond
+        // `isInterrupted()`.
+        "interrupt" => {
+            if let Some(tid) = thread_id(&obj) {
+                program.interrupt_thread(tid);
+            }
+            Ok(None)
+        }
+        // Reads the flag without clearing it: only the interrupted wait
+        // itself consumes it (see `wait_for_thread`/`sleep_interruptibly`),
+        // so this reports `false` again once the target has thrown.
+        "isInterrupted" => match thread_id(&obj) {
+            Some(tid) => Ok(Some(Value::Bool(program.thread_is_interrupted(tid)))),
             None => Ok(Some(Value::Bool(false))),
         },
         _ => Err(VmError::MethodNotFound(format!(
@@ -2216,10 +2274,85 @@ fn dispatch_thread(
     }
 }
 
+/// `__tid__` — the object's `Program::threads` slot, allocated by
+/// `construct_thread`. `None` only for a `Thread` object that never had its
+/// constructor run (bytecode that skipped `INVOKE_SPECIAL <construct>`).
 fn thread_id(obj: &Arc<Mutex<Object>>) -> Option<i64> {
     match lock(obj).fields.get("__tid__") {
         Some(Value::Int(id)) if *id >= 0 => Some(*id),
         _ => None,
+    }
+}
+
+/// Same, but `None` for a thread `start()` never ran on — which is what
+/// makes `join()` on an unstarted thread the no-op it has always been
+/// (stdlib.md only defines `join` as "blocks until the thread has
+/// finished", and one that never started can't be waited for).
+fn started_thread_id(program: &Arc<Program>, obj: &Arc<Mutex<Object>>) -> Option<i64> {
+    thread_id(obj).filter(|&tid| program.thread_is_started(tid))
+}
+
+/// How long an interruptible `join` parks between two liveness checks.
+/// Interruption itself doesn't wait for the interval to elapse
+/// (`interrupt()` unparks), but nothing unparks a joiner when its target
+/// merely *finishes*, so completion is still noticed by polling — same 1 ms
+/// granularity the timed `join` has always used.
+const JOIN_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1);
+
+/// Waits for thread `tid` to finish — until `deadline` if there is one, for
+/// as long as it takes otherwise — and returns whether it did.
+/// `JoinHandle::join` can't be cancelled or bounded in time, so this polls
+/// `is_finished()` and only calls the real join once the thread is done.
+/// With `flag` (a thread that can be interrupted), a pending interrupt is
+/// consumed and reported as `InterruptedException` instead.
+fn wait_for_thread(
+    program: &Arc<Program>,
+    tid: i64,
+    flag: Option<&std::sync::atomic::AtomicBool>,
+    deadline: Option<std::time::Instant>,
+) -> Result<bool, VmError> {
+    loop {
+        if flag.is_some_and(crate::program::take_interrupt) {
+            return Err(throw_native("InterruptedException", "join interrupted"));
+        }
+        if program.thread_is_finished(tid) {
+            program.join_thread(tid);
+            return Ok(true);
+        }
+        let mut wait = JOIN_POLL_INTERVAL;
+        if let Some(deadline) = deadline {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return Ok(false);
+            }
+            wait = wait.min(deadline - now);
+        }
+        std::thread::park_timeout(wait);
+    }
+}
+
+/// `Thread.sleep(millis)` — the whole duration in one `park_timeout` on a
+/// thread that can be interrupted (`interrupt()` unparks it, so it wakes up
+/// and throws right away rather than sleeping out the remainder), and a
+/// plain uninterruptible `std::thread::sleep` on the main thread, which
+/// nothing can interrupt. A spurious wakeup, or a leftover unpark token
+/// from an `interrupt()` that arrived while the thread wasn't parked, just
+/// re-tests the flag and parks for whatever time is left.
+fn sleep_interruptibly(duration: std::time::Duration) -> Result<(), VmError> {
+    let Some(flag) = crate::program::current_interrupt() else {
+        std::thread::sleep(duration);
+        return Ok(());
+    };
+    let deadline = std::time::Instant::now() + duration;
+    loop {
+        if crate::program::take_interrupt(&flag) {
+            return Err(throw_native("InterruptedException", "sleep interrupted"));
+        }
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            return Ok(());
+        }
+        std::thread::park_timeout(deadline - now);
     }
 }
 
