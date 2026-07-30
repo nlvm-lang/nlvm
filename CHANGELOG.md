@@ -5,6 +5,11 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.0]
+
+### Added
+- **`system.ps.Process.list()`/`list(pid)`** now work on macOS too, shelling out to the system `ps` binary to enumerate processes (`pid`, `user`, `command`, `args`) instead of the Linux-only `/proc` reader. On any other platform (e.g. Windows), `list()` returns an empty array and `list(pid)` behaves as "not found" rather than panicking, matching stdlib.md's "platform-specific" note for this API. See [issue #5](https://github.com/nlvm-lang/nlvm/issues/5).
+
 ## [0.18.0]
 
 ### Added

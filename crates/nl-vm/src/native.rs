@@ -528,29 +528,20 @@ pub fn dispatch(
             std::thread::sleep(std::time::Duration::from_millis(millis));
             Ok(None)
         }
-        // stdlib.md § system.ps.Process — `list`/`list(pid)` read `/proc`
-        // directly (Linux-only, same portability stance already taken for
-        // `system.SecureRandom`/`Uuid`'s `/dev/urandom`: this project's
-        // dev/CI environment is Linux and no external crate is pulled in
-        // just for process enumeration). `run` shells out and captures
-        // output; `exit` doesn't produce a value at all — see `VmError::Exit`.
+        // stdlib.md § system.ps.Process — `list`/`list(pid)` are backed by
+        // per-OS helpers below (`list_all_processes`/`read_process_info`):
+        // `/proc` on Linux, the `ps` binary on macOS (no external crate for
+        // either, same portability stance already taken for
+        // `system.SecureRandom`/`Uuid`'s `/dev/urandom`), and an empty
+        // result on any other target (documented in stdlib.md). `run` shells
+        // out and captures output; `exit` doesn't produce a value at all —
+        // see `VmError::Exit`.
         ("system.ps.Process", "list") => {
-            let usernames = read_passwd_usernames();
             let infos: Vec<Value> = if args.is_empty() {
-                let mut pids: Vec<u32> = std::fs::read_dir("/proc")
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|e| e.ok()?.file_name().to_str()?.parse::<u32>().ok())
-                    .collect();
-                pids.sort_unstable();
-                pids.into_iter()
-                    .filter_map(|pid| read_process_info(pid, &usernames))
-                    .collect()
+                list_all_processes()
             } else {
                 let pid = int_at(&args, 0)?;
-                read_process_info(pid as u32, &usernames)
-                    .into_iter()
-                    .collect()
+                read_process_info(pid as u32).into_iter().collect()
             };
             Ok(Some(Value::Array(Arc::new(Mutex::new(infos)))))
         }
@@ -743,11 +734,39 @@ pub fn dispatch(
     }
 }
 
+/// Builds a `system.ps.ProcessInfo` object from already-extracted fields —
+/// shared by the Linux `/proc` backend and the macOS `ps` backend below.
+fn process_info_object(
+    pid: u32,
+    command: String,
+    args: Vec<String>,
+    user: Option<String>,
+) -> Value {
+    let mut fields = HashMap::new();
+    fields.insert("pid".to_string(), Value::Int(pid as i64));
+    fields.insert("command".to_string(), Value::Str(Arc::new(command)));
+    fields.insert(
+        "args".to_string(),
+        Value::Array(Arc::new(Mutex::new(
+            args.into_iter().map(|a| Value::Str(Arc::new(a))).collect(),
+        ))),
+    );
+    fields.insert(
+        "user".to_string(),
+        user.map_or(Value::Null, |u| Value::Str(Arc::new(u))),
+    );
+    Value::Object(Arc::new(Mutex::new(Object::native(
+        "system.ps.ProcessInfo",
+        fields,
+    ))))
+}
+
 /// `uid -> username` from `/etc/passwd` (`name:passwd:uid:gid:gecos:home:shell`),
-/// used by `read_process_info` to resolve `ProcessInfo.user`. Read fresh on
+/// used by the Linux backend to resolve `ProcessInfo.user`. Read fresh on
 /// every `Process.list()` call rather than cached — process listing is
 /// already an inherently point-in-time snapshot, and re-reading a small
 /// text file per call keeps this stateless like every other native here.
+#[cfg(target_os = "linux")]
 fn read_passwd_usernames() -> HashMap<u32, String> {
     let mut map = HashMap::new();
     if let Ok(content) = std::fs::read_to_string("/etc/passwd") {
@@ -763,6 +782,29 @@ fn read_passwd_usernames() -> HashMap<u32, String> {
     map
 }
 
+/// All processes visible to the current process, per stdlib.md §
+/// system.ps.Process.list() — Linux backend (`/proc`).
+#[cfg(target_os = "linux")]
+fn list_all_processes() -> Vec<Value> {
+    let usernames = read_passwd_usernames();
+    let mut pids: Vec<u32> = std::fs::read_dir("/proc")
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok()?.file_name().to_str()?.parse::<u32>().ok())
+        .collect();
+    pids.sort_unstable();
+    pids.into_iter()
+        .filter_map(|pid| read_process_info_from_proc(pid, &usernames))
+        .collect()
+}
+
+/// One `system.ps.ProcessInfo` for `pid`, per stdlib.md §
+/// system.ps.Process.list(int) — Linux backend (`/proc`).
+#[cfg(target_os = "linux")]
+fn read_process_info(pid: u32) -> Option<Value> {
+    read_process_info_from_proc(pid, &read_passwd_usernames())
+}
+
 /// One `system.ps.ProcessInfo` for `pid`, or `None` if `/proc/<pid>` doesn't
 /// exist (already gone, or the caller has no permission to see it — treated
 /// the same as "not found", matching `Process.list(pid)`'s documented
@@ -773,7 +815,8 @@ fn read_passwd_usernames() -> HashMap<u32, String> {
 /// first `Uid:` field of `/proc/<pid>/status`, resolved through
 /// `read_passwd_usernames` — `None` (not just an unknown uid) if `status`
 /// itself can't be read, per stdlib.md's "null if not available".
-fn read_process_info(pid: u32, usernames: &HashMap<u32, String>) -> Option<Value> {
+#[cfg(target_os = "linux")]
+fn read_process_info_from_proc(pid: u32, usernames: &HashMap<u32, String>) -> Option<Value> {
     let proc_dir = format!("/proc/{pid}");
     if !std::path::Path::new(&proc_dir).is_dir() {
         return None;
@@ -805,24 +848,98 @@ fn read_process_info(pid: u32, usernames: &HashMap<u32, String>) -> Option<Value
                 })
                 .and_then(|uid| usernames.get(&uid).cloned())
         });
+    Some(process_info_object(pid, command, parts, user))
+}
 
-    let mut fields = HashMap::new();
-    fields.insert("pid".to_string(), Value::Int(pid as i64));
-    fields.insert("command".to_string(), Value::Str(Arc::new(command)));
-    fields.insert(
-        "args".to_string(),
-        Value::Array(Arc::new(Mutex::new(
-            parts.into_iter().map(|a| Value::Str(Arc::new(a))).collect(),
-        ))),
-    );
-    fields.insert(
-        "user".to_string(),
-        user.map_or(Value::Null, |u| Value::Str(Arc::new(u))),
-    );
-    Some(Value::Object(Arc::new(Mutex::new(Object::native(
-        "system.ps.ProcessInfo",
-        fields,
-    )))))
+/// All processes visible to the current process, per stdlib.md §
+/// system.ps.Process.list() — macOS backend, shelling out to the system
+/// `ps` binary (see `parse_ps_line` for why: unlike Linux's `/proc`, macOS
+/// exposes no stable public filesystem/syscall API for this without either
+/// an external crate or hand-rolled `sysctl`/libproc FFI bindings that
+/// can't be exercised in this project's Linux-only dev/CI environment).
+#[cfg(target_os = "macos")]
+fn list_all_processes() -> Vec<Value> {
+    let Ok(output) = std::process::Command::new("ps")
+        .args(["-A", "-ww", "-o", "pid=,user=,comm=,args="])
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(parse_ps_line)
+        .collect()
+}
+
+/// One `system.ps.ProcessInfo` for `pid`, or `None` if `ps -p <pid>` finds
+/// nothing (already gone, matching `Process.list(pid)`'s documented "empty
+/// array if not found") — macOS backend, see `list_all_processes`.
+#[cfg(target_os = "macos")]
+fn read_process_info(pid: u32) -> Option<Value> {
+    let output = std::process::Command::new("ps")
+        .args([
+            "-ww",
+            "-p",
+            &pid.to_string(),
+            "-o",
+            "pid=,user=,comm=,args=",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .find_map(parse_ps_line)
+}
+
+/// Parses one line of `ps -o pid=,user=,comm=,args=` output (columns
+/// separated by runs of whitespace, no header since every column uses the
+/// `=` empty-label form). `command`/`args` are recovered by splitting the
+/// reconstructed `args` column on whitespace — the same "first token is the
+/// command, the rest are arguments" convention as the Linux `/proc/<pid>/cmdline`
+/// backend, though here it's best-effort: `ps` reconstructs `args` from the
+/// process's argv without preserving original quoting, so an argument that
+/// itself contained whitespace cannot be told apart from an argument
+/// boundary. A zombie/kernel-adjacent process reports an empty `args`
+/// column, so `command` falls back to the (space-free) `comm` column with no
+/// args, mirroring the Linux fallback to `/proc/<pid>/comm`.
+#[cfg(target_os = "macos")]
+fn parse_ps_line(line: &str) -> Option<Value> {
+    let mut tokens = line.split_whitespace();
+    let pid: u32 = tokens.next()?.parse().ok()?;
+    let user = tokens.next()?.to_string();
+    let comm = tokens.next()?.to_string();
+    let rest: Vec<&str> = tokens.collect();
+    let (command, args) = if rest.is_empty() {
+        (comm, Vec::new())
+    } else {
+        (
+            rest[0].to_string(),
+            rest[1..].iter().map(|s| s.to_string()).collect(),
+        )
+    };
+    Some(process_info_object(pid, command, args, Some(user)))
+}
+
+/// stdlib.md § system.ps.Process.list(): "Additional platform-specific
+/// fields may be provided by the implementation" and `user`'s "null if not
+/// available or platform-specific" already anticipate that not every target
+/// supports process listing — on anything other than Linux/macOS, `list()`
+/// returns an empty array and `list(pid)` behaves as "not found" rather than
+/// failing outright.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn list_all_processes() -> Vec<Value> {
+    Vec::new()
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn read_process_info(_pid: u32) -> Option<Value> {
+    None
 }
 
 /// Reads `n` cryptographically secure random bytes from the OS entropy
