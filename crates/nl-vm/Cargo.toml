@@ -8,6 +8,8 @@ nl-bytecode.workspace = true
 thiserror.workspace = true
 rustls.workspace = true
 webpki-roots.workspace = true
+rusqlite.workspace = true
+mysql.workspace = true
 
 [dev-dependencies]
 nl-syntax.workspace = true

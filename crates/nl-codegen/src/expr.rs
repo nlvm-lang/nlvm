@@ -2656,8 +2656,18 @@ impl<'a> Emitter<'a> {
                 // that last path has `Param` metadata (a real `.nl`
                 // declaration), so it's the only one that resolves
                 // named/optional arguments rather than requiring positional.
+                //
+                // `system.db.Row`'s typed accessors are the one native
+                // instance methods whose overloads share an arity (column
+                // index vs column name — stdlib.md § Column lookup by
+                // name), so the argument's inferred type picks between
+                // them; `overload_arg_ty` is the same best-effort inference
+                // the user-class overload path below already uses.
+                let key_is_name = crate::stdlib::is_row_accessor(&fqcn, name)
+                    && args.first().and_then(|a| self.overload_arg_ty(&a.value))
+                        == Some(ExprTy::StringT);
                 let (params, return_ty, is_ref, positional) = if let Some((p, r)) =
-                    crate::stdlib::instance_signature(&fqcn, name, args.len())
+                    crate::stdlib::instance_signature(&fqcn, name, args.len(), key_is_name)
                 {
                     let n = p.len();
                     (p, r, vec![false; n], require_positional_args(args)?)

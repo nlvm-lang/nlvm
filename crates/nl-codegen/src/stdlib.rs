@@ -34,7 +34,102 @@ pub fn is_stdlib_class(fqcn: &str) -> bool {
             | "system.time.DateTime"
             | "system.time.TimeZone"
             | "system.text.json.Json"
+            | "system.db.sqlite.Sqlite"
+            | "system.db.mysql.Mysql"
     )
+}
+
+/// stdlib.md § system.db — mirrors `nl_sema::stdlib`'s copy of these FQCNs.
+pub const DB_CONNECTION: &str = "system.db.Connection";
+pub const DB_STATEMENT: &str = "system.db.PreparedStatement";
+pub const DB_RESULT_SET: &str = "system.db.ResultSet";
+pub const DB_ROW: &str = "system.db.Row";
+pub const DB_COLUMN_TYPE: &str = "system.db.ColumnType";
+pub const DB_OPEN_MODE: &str = "system.db.sqlite.SqliteOpenMode";
+
+fn db(fqcn: &str) -> Type {
+    Type::Named(fqcn.to_string())
+}
+
+/// Instance methods of the four `system.db` types — mirrors
+/// `nl_sema::stdlib::db_instance_lookup`, except for `system.db.Row`'s
+/// typed accessors: sema declares their parameter as the union `int|string`
+/// (index form / column-name form, same arity), which is exactly what
+/// `expr_ty_of` collapses to its first member, so a `getInt("id")` call
+/// would be rejected as `string` vs `int`. `key_is_name` carries the call
+/// site's answer instead — see `Emitter::compile_method_call`.
+fn db_instance_signature(
+    fqcn: &str,
+    name: &str,
+    argc: usize,
+    key_is_name: bool,
+) -> Option<(Vec<Type>, Type)> {
+    let nullable = |t: Type| Type::Union(vec![t, Type::NullT]);
+    let byte_array = Type::Array(Box::new(Type::Byte));
+    let column_key = if key_is_name {
+        Type::StringT
+    } else {
+        Type::Int
+    };
+    match (fqcn, name, argc) {
+        (DB_CONNECTION, "prepare", 1) => Some((vec![Type::StringT], db(DB_STATEMENT))),
+        (DB_CONNECTION, "query", 1) => Some((vec![Type::StringT], db(DB_RESULT_SET))),
+        (DB_CONNECTION, "execute", 1) => Some((vec![Type::StringT], Type::Int)),
+        (DB_CONNECTION, "beginTransaction", 0) => Some((vec![], Type::Void)),
+        (DB_CONNECTION, "commit", 0) => Some((vec![], Type::Void)),
+        (DB_CONNECTION, "rollback", 0) => Some((vec![], Type::Void)),
+        (DB_CONNECTION, "lastInsertId", 0) => Some((vec![], nullable(Type::Int))),
+        (DB_CONNECTION, "isClosed", 0) => Some((vec![], Type::Bool)),
+        (DB_CONNECTION, "close", 0) => Some((vec![], Type::Void)),
+        (DB_STATEMENT, "parameterCount", 0) => Some((vec![], Type::Int)),
+        (DB_STATEMENT, "bindInt", 2) => Some((vec![Type::Int, Type::Int], Type::Void)),
+        (DB_STATEMENT, "bindFloat", 2) => Some((vec![Type::Int, Type::Float], Type::Void)),
+        (DB_STATEMENT, "bindBool", 2) => Some((vec![Type::Int, Type::Bool], Type::Void)),
+        (DB_STATEMENT, "bindString", 2) => Some((vec![Type::Int, Type::StringT], Type::Void)),
+        (DB_STATEMENT, "bindBytes", 2) => Some((vec![Type::Int, byte_array], Type::Void)),
+        (DB_STATEMENT, "bindNull", 1) => Some((vec![Type::Int], Type::Void)),
+        (DB_STATEMENT, "query", 0) => Some((vec![], db(DB_RESULT_SET))),
+        (DB_STATEMENT, "execute", 0) => Some((vec![], Type::Int)),
+        (DB_STATEMENT, "reset", 0) => Some((vec![], Type::Void)),
+        (DB_STATEMENT, "isClosed", 0) => Some((vec![], Type::Bool)),
+        (DB_STATEMENT, "close", 0) => Some((vec![], Type::Void)),
+        (DB_RESULT_SET, "next", 0) => Some((vec![], nullable(db(DB_ROW)))),
+        (DB_RESULT_SET, "columnCount", 0) => Some((vec![], Type::Int)),
+        (DB_RESULT_SET, "columnName", 1) => Some((vec![Type::Int], Type::StringT)),
+        (DB_RESULT_SET, "isClosed", 0) => Some((vec![], Type::Bool)),
+        (DB_RESULT_SET, "close", 0) => Some((vec![], Type::Void)),
+        (DB_ROW, "columnCount", 0) => Some((vec![], Type::Int)),
+        (DB_ROW, "columnType", 1) => Some((vec![column_key], db(DB_COLUMN_TYPE))),
+        (DB_ROW, "isNull", 1) => Some((vec![column_key], Type::Bool)),
+        (DB_ROW, "getInt", 1) => Some((vec![column_key], nullable(Type::Int))),
+        (DB_ROW, "getFloat", 1) => Some((vec![column_key], nullable(Type::Float))),
+        (DB_ROW, "getBool", 1) => Some((vec![column_key], nullable(Type::Bool))),
+        (DB_ROW, "getString", 1) => Some((vec![column_key], nullable(Type::StringT))),
+        (DB_ROW, "getBytes", 1) => Some((
+            vec![column_key],
+            nullable(Type::Array(Box::new(Type::Byte))),
+        )),
+        _ => None,
+    }
+}
+
+/// `system.db.ResultSet` is the one for-each iterable whose loop is driven
+/// by `next()`-until-`null` rather than an index (stdlib.md §
+/// system.db.ResultSet) — see `Emitter::compile_foreach`. Mirrors
+/// `nl_sema::stdlib::foreach_element_ty`.
+pub fn is_result_set(fqcn: &str) -> bool {
+    fqcn == DB_RESULT_SET
+}
+
+/// Whether `fqcn.name(...)`'s single argument is `system.db.Row`'s
+/// column-*name* key rather than a column index — see
+/// `db_instance_signature`.
+pub fn is_row_accessor(fqcn: &str, name: &str) -> bool {
+    fqcn == DB_ROW
+        && matches!(
+            name,
+            "columnType" | "isNull" | "getInt" | "getFloat" | "getBool" | "getString" | "getBytes"
+        )
 }
 
 /// stdlib.md § system.text.json — mirrors `nl_sema::stdlib`'s copy of these
@@ -147,20 +242,23 @@ fn time_zone() -> Type {
 /// on). See that module's doc comment for why this is a constant rather
 /// than a real enum.
 pub fn enum_const_value(fqcn: &str, name: &str) -> Option<i64> {
-    if fqcn != "system.io.FileMode" {
-        return None;
-    }
-    [
-        "Read",
-        "Write",
-        "Append",
-        "ReadWrite",
-        "ReadWriteTruncate",
-        "ReadWriteAppend",
-    ]
-    .iter()
-    .position(|&m| m == name)
-    .map(|i| i as i64)
+    let cases: &[&str] = match fqcn {
+        "system.io.FileMode" => &[
+            "Read",
+            "Write",
+            "Append",
+            "ReadWrite",
+            "ReadWriteTruncate",
+            "ReadWriteAppend",
+        ],
+        // stdlib.md § system.db.ColumnType / § system.db.sqlite.SqliteOpenMode
+        // — same int-constant modeling as `FileMode`; mirrors
+        // `nl_sema::stdlib::COLUMN_TYPES`/`SQLITE_OPEN_MODES`.
+        DB_COLUMN_TYPE => &["Integer", "Float", "Text", "Blob", "Bool", "Null"],
+        DB_OPEN_MODE => &["ReadOnly", "ReadWrite", "ReadWriteCreate"],
+        _ => return None,
+    };
+    cases.iter().position(|&m| m == name).map(|i| i as i64)
 }
 
 /// The one native class whose *instances* the user manipulates
@@ -168,11 +266,22 @@ pub fn enum_const_value(fqcn: &str, name: &str) -> Option<i64> {
 /// `INVOKE_INSTANCE` (the VM intercepts by the receiver's runtime class,
 /// `nl_vm::native::dispatch_native_instance`), with this table standing in
 /// for the `ClassInfo` a bytecode-backed class would provide.
-pub fn instance_signature(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>, Type)> {
+///
+/// `key_is_name` is only consulted for `system.db.Row`'s typed accessors
+/// (see `db_instance_signature`); every other class ignores it.
+pub fn instance_signature(
+    fqcn: &str,
+    name: &str,
+    argc: usize,
+    key_is_name: bool,
+) -> Option<(Vec<Type>, Type)> {
     let nullable = |t: Type| Type::Union(vec![t, Type::NullT]);
     let byte_array = Type::Array(Box::new(Type::Byte));
     if is_json_value_class(fqcn) {
         return json_instance_signature(fqcn, name, argc);
+    }
+    if let Some(sig) = db_instance_signature(fqcn, name, argc, key_is_name) {
+        return Some(sig);
     }
     match (fqcn, name, argc) {
         ("system.io.FileHandle", "close", 0) => Some((vec![], Type::Void)),
@@ -431,6 +540,23 @@ pub fn signature(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>, Type
         ("system.text.json.Json", "stringify", 2) => {
             Some((vec![json(JSON_VALUE), Type::Int], Type::StringT))
         }
+        // stdlib.md § system.db.sqlite / § system.db.mysql — mirrors
+        // `nl_sema::stdlib::lookup`'s matching entries.
+        ("system.db.sqlite.Sqlite", "open", 1) => Some((vec![Type::StringT], db(DB_CONNECTION))),
+        ("system.db.sqlite.Sqlite", "open", 2) => {
+            Some((vec![Type::StringT, db(DB_OPEN_MODE)], db(DB_CONNECTION)))
+        }
+        ("system.db.sqlite.Sqlite", "openMemory", 0) => Some((vec![], db(DB_CONNECTION))),
+        ("system.db.mysql.Mysql", "connect", 1) => Some((
+            // The *resolved* prelude FQCN: `MysqlConfig` is declared
+            // namespace-less like every prelude class, and
+            // `system.db.mysql.MysqlConfig` is only an import-map alias for
+            // it (`prelude::NAMESPACED_ALIASES`). Spelling the qualified
+            // name here would make `new system.db.mysql.MysqlConfig(...)`
+            // — whose type resolves to the bare name — fail E004.
+            vec![Type::Named("MysqlConfig".to_string())],
+            db(DB_CONNECTION),
+        )),
         _ => None,
     }
 }

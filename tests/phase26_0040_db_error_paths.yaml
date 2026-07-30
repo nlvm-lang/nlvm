@@ -1,0 +1,115 @@
+---
+title: "issue #2 — stdlib.md § system.db: the documented `SqlException` cases — SQL syntax error at `prepare`, constraint violation at `execute` (with the driver's `sqlState`/`errorCode` payload), out-of-range bind index, unbound placeholder, unknown column name, and the transaction-state rules on `beginTransaction`/`commit`/`rollback`."
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: |
+  syntax error -> SqlException
+  constraint violation -> SqlException sqlState='' errorCode=1555
+  bind index 5 -> SqlException
+  unbound placeholder -> SqlException
+  unknown column -> SqlException
+  index out of range -> IndexOutOfBoundsException
+  double begin -> SqlException
+  commit without transaction -> SqlException
+  rollback discards the insert: 1
+expected_stderr: ""
+---
+
+#NLFILE phase26/dberrors/Main.nl
+namespace phase26.dberrors;
+class Main {
+	public static int main(string[] args) {
+		try {
+			system.db.Connection db = system.db.sqlite.Sqlite.openMemory();
+			db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, x INTEGER)");
+			db.execute("INSERT INTO t(id, x) VALUES (1, 10)");
+
+			try {
+				db.prepare("SELCT 1");
+				system.Out.println("syntax error -> no exception");
+			}
+			catch (system.db.SqlException ex) {
+				system.Out.println("syntax error -> SqlException");
+			}
+
+			try {
+				// Duplicate primary key — SQLITE_CONSTRAINT_PRIMARYKEY (1555).
+				db.execute("INSERT INTO t(id, x) VALUES (1, 99)");
+				system.Out.println("constraint violation -> no exception");
+			}
+			catch (system.db.SqlException ex) {
+				system.Out.println("constraint violation -> SqlException sqlState='" + ex.sqlState
+					+ "' errorCode=" + ex.errorCode);
+			}
+
+			system.db.PreparedStatement stmt = db.prepare("SELECT x FROM t WHERE id = ?");
+			try {
+				stmt.bindInt(5, 1);
+				system.Out.println("bind index 5 -> no exception");
+			}
+			catch (system.db.SqlException ex) {
+				system.Out.println("bind index 5 -> SqlException");
+			}
+			try {
+				stmt.query();
+				system.Out.println("unbound placeholder -> no exception");
+			}
+			catch (system.db.SqlException ex) {
+				system.Out.println("unbound placeholder -> SqlException");
+			}
+			stmt.close();
+
+			system.db.ResultSet rows = db.query("SELECT x FROM t");
+			system.db.Row|null row = rows.next();
+			if (row != null) {
+				// stdlib.md § Column lookup by name: an unknown *name* is a
+				// SqlException; an out-of-range *index* is the ordinary
+				// IndexOutOfBoundsException.
+				try {
+					row.getInt("nope");
+					system.Out.println("unknown column -> no exception");
+				}
+				catch (system.db.SqlException ex) {
+					system.Out.println("unknown column -> SqlException");
+				}
+				try {
+					row.getInt(9);
+					system.Out.println("index out of range -> no exception");
+				}
+				catch (IndexOutOfBoundsException ex) {
+					system.Out.println("index out of range -> IndexOutOfBoundsException");
+				}
+			}
+			rows.close();
+
+			db.beginTransaction();
+			try {
+				db.beginTransaction();
+				system.Out.println("double begin -> no exception");
+			}
+			catch (system.db.SqlException ex) {
+				system.Out.println("double begin -> SqlException");
+			}
+			db.execute("INSERT INTO t(id, x) VALUES (2, 20)");
+			db.rollback();
+			try {
+				db.commit();
+				system.Out.println("commit without transaction -> no exception");
+			}
+			catch (system.db.SqlException ex) {
+				system.Out.println("commit without transaction -> SqlException");
+			}
+
+			system.db.ResultSet counted = db.query("SELECT COUNT(*) FROM t");
+			system.db.Row|null total = counted.next();
+			system.Out.println("rollback discards the insert: " + (total != null ? (total.getInt(0) ?? -1) : -1));
+			counted.close();
+			db.close();
+		}
+		catch (system.db.SqlException ex) {
+			system.Err.println("unexpected: " + ex.message);
+			return 1;
+		}
+		return 0;
+	}
+}

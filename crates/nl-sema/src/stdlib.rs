@@ -87,6 +87,107 @@ fn json(fqcn: &str) -> Type {
     Type::Named(fqcn.to_string())
 }
 
+/// stdlib.md § system.db — the four driver-agnostic instance types. Like
+/// `system.io.FileHandle` they are never written with `new`: a driver
+/// factory (`system.db.sqlite.Sqlite.open`, `system.db.mysql.Mysql.connect`)
+/// returns a `Connection`, and each type produces the next one down the
+/// chain. `system.db.mysql.MysqlConfig` is *not* here — it is a real
+/// prelude class (see `nl_syntax::prelude::mysql_config_class`).
+pub const DB_CONNECTION: &str = "system.db.Connection";
+pub const DB_STATEMENT: &str = "system.db.PreparedStatement";
+pub const DB_RESULT_SET: &str = "system.db.ResultSet";
+pub const DB_ROW: &str = "system.db.Row";
+/// stdlib.md § system.db.ColumnType — modeled as int constants on a fake
+/// stdlib class, exactly like `system.io.FileMode` (see this module's doc
+/// comment). Unlike `FileMode` it is also a *return* type (`Row.columnType`),
+/// which needs nothing extra: `==` between two `Type::Named` operands is
+/// already accepted by the checker and compiles to the generic `CmpEq`,
+/// which compares the underlying `Value::Int` tags.
+pub const DB_COLUMN_TYPE: &str = "system.db.ColumnType";
+/// stdlib.md § system.db.sqlite.SqliteOpenMode — input-only, the exact
+/// `system.io.FileMode` shape.
+pub const DB_OPEN_MODE: &str = "system.db.sqlite.SqliteOpenMode";
+
+fn db(fqcn: &str) -> Type {
+    Type::Named(fqcn.to_string())
+}
+
+/// Shared with `nl_codegen::stdlib::enum_const_value`, which assigns the
+/// matching int tag by position — keep both lists in sync (the position
+/// *is* the runtime tag `nl_vm::db` maps values to).
+pub const COLUMN_TYPES: [&str; 6] = ["Integer", "Float", "Text", "Blob", "Bool", "Null"];
+
+/// Same contract as `COLUMN_TYPES`; order matches stdlib.md's
+/// `SqliteOpenMode` table.
+pub const SQLITE_OPEN_MODES: [&str; 3] = ["ReadOnly", "ReadWrite", "ReadWriteCreate"];
+
+/// Instance methods of the four `system.db` types. Mirrored by
+/// `nl_codegen::stdlib::db_instance_signature`.
+///
+/// `Row`'s typed accessors each have two forms at the *same* arity — by
+/// 0-based index and by column name (stdlib.md § Column lookup by name) —
+/// so their parameter is declared as the union `int|string`, the same trick
+/// `system.ps.Process.run` uses in `lookup` below. nl-codegen can't use a
+/// union there (it would collapse to its first member and reject the string
+/// form), so it resolves the two by the argument's inferred type instead.
+fn db_instance_lookup(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>, Type)> {
+    let nullable = |t: Type| Type::Union(vec![t, Type::NullT]);
+    let byte_array = Type::Array(Box::new(Type::Byte));
+    let column_key = Type::Union(vec![Type::Int, Type::StringT]);
+    match (fqcn, name, argc) {
+        (DB_CONNECTION, "prepare", 1) => Some((vec![Type::StringT], db(DB_STATEMENT))),
+        (DB_CONNECTION, "query", 1) => Some((vec![Type::StringT], db(DB_RESULT_SET))),
+        (DB_CONNECTION, "execute", 1) => Some((vec![Type::StringT], Type::Int)),
+        (DB_CONNECTION, "beginTransaction", 0) => Some((vec![], Type::Void)),
+        (DB_CONNECTION, "commit", 0) => Some((vec![], Type::Void)),
+        (DB_CONNECTION, "rollback", 0) => Some((vec![], Type::Void)),
+        (DB_CONNECTION, "lastInsertId", 0) => Some((vec![], nullable(Type::Int))),
+        (DB_CONNECTION, "isClosed", 0) => Some((vec![], Type::Bool)),
+        (DB_CONNECTION, "close", 0) => Some((vec![], Type::Void)),
+        (DB_STATEMENT, "parameterCount", 0) => Some((vec![], Type::Int)),
+        (DB_STATEMENT, "bindInt", 2) => Some((vec![Type::Int, Type::Int], Type::Void)),
+        (DB_STATEMENT, "bindFloat", 2) => Some((vec![Type::Int, Type::Float], Type::Void)),
+        (DB_STATEMENT, "bindBool", 2) => Some((vec![Type::Int, Type::Bool], Type::Void)),
+        (DB_STATEMENT, "bindString", 2) => Some((vec![Type::Int, Type::StringT], Type::Void)),
+        (DB_STATEMENT, "bindBytes", 2) => Some((vec![Type::Int, byte_array], Type::Void)),
+        (DB_STATEMENT, "bindNull", 1) => Some((vec![Type::Int], Type::Void)),
+        (DB_STATEMENT, "query", 0) => Some((vec![], db(DB_RESULT_SET))),
+        (DB_STATEMENT, "execute", 0) => Some((vec![], Type::Int)),
+        (DB_STATEMENT, "reset", 0) => Some((vec![], Type::Void)),
+        (DB_STATEMENT, "isClosed", 0) => Some((vec![], Type::Bool)),
+        (DB_STATEMENT, "close", 0) => Some((vec![], Type::Void)),
+        (DB_RESULT_SET, "next", 0) => Some((vec![], nullable(db(DB_ROW)))),
+        (DB_RESULT_SET, "columnCount", 0) => Some((vec![], Type::Int)),
+        (DB_RESULT_SET, "columnName", 1) => Some((vec![Type::Int], Type::StringT)),
+        (DB_RESULT_SET, "isClosed", 0) => Some((vec![], Type::Bool)),
+        (DB_RESULT_SET, "close", 0) => Some((vec![], Type::Void)),
+        (DB_ROW, "columnCount", 0) => Some((vec![], Type::Int)),
+        (DB_ROW, "columnType", 1) => Some((vec![column_key], db(DB_COLUMN_TYPE))),
+        (DB_ROW, "isNull", 1) => Some((vec![column_key], Type::Bool)),
+        (DB_ROW, "getInt", 1) => Some((vec![column_key], nullable(Type::Int))),
+        (DB_ROW, "getFloat", 1) => Some((vec![column_key], nullable(Type::Float))),
+        (DB_ROW, "getBool", 1) => Some((vec![column_key], nullable(Type::Bool))),
+        (DB_ROW, "getString", 1) => Some((vec![column_key], nullable(Type::StringT))),
+        (DB_ROW, "getBytes", 1) => Some((
+            vec![column_key],
+            nullable(Type::Array(Box::new(Type::Byte))),
+        )),
+        _ => None,
+    }
+}
+
+/// stdlib.md § system.db.ResultSet: "supports the for-each loop — `for
+/// (const auto row : results)` iterates by repeatedly calling `next()` until
+/// `null` is returned". The loop variable is a `Row` (never `null`: the
+/// `null` terminates the loop rather than being handed to the body), so
+/// `checker`'s `StmtKind::ForEach` arm consults this before falling back to
+/// `native_generics::foreach_element_ty`. Mirrored by
+/// `nl_codegen::stmt::compile_foreach`, which emits the `next()`-until-null
+/// loop shape.
+pub fn foreach_element_ty(fqcn: &str) -> Option<Type> {
+    (fqcn == DB_RESULT_SET).then(|| db(DB_ROW))
+}
+
 /// Whether `fqcn` is one of the seven `system.text.json` value classes
 /// (`JsonValue` plus its six concrete subclasses) — everything the family
 /// shares in nl-sema is keyed off this.
@@ -143,14 +244,15 @@ fn json_instance_lookup(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type
     }
 }
 
-/// `system.io.FileMode.<name>` — `None` if `fqcn` isn't `"system.io.FileMode"`
-/// or `name` isn't one of the six modes stdlib.md documents. See this
-/// module's doc comment.
+/// `system.io.FileMode.<name>` — `None` if `fqcn` isn't one of the three
+/// enum-like stdlib classes or `name` isn't one of the cases stdlib.md
+/// documents for it. See this module's doc comment.
 pub fn enum_const_ty(fqcn: &str, name: &str) -> Option<Type> {
-    if fqcn == "system.io.FileMode" && FILE_MODES.contains(&name) {
-        Some(file_mode())
-    } else {
-        None
+    match fqcn {
+        "system.io.FileMode" if FILE_MODES.contains(&name) => Some(file_mode()),
+        DB_COLUMN_TYPE if COLUMN_TYPES.contains(&name) => Some(db(DB_COLUMN_TYPE)),
+        DB_OPEN_MODE if SQLITE_OPEN_MODES.contains(&name) => Some(db(DB_OPEN_MODE)),
+        _ => None,
     }
 }
 
@@ -365,6 +467,26 @@ pub fn lookup(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>, Type)> 
         ("system.text.json.Json", "stringify", 2) => {
             Some((vec![json(JSON_VALUE), Type::Int], Type::StringT))
         }
+        // stdlib.md § system.db.sqlite / § system.db.mysql — the two driver
+        // factories, the only static entry points into `system.db`.
+        // Everything they hand back (`Connection` and, transitively,
+        // `PreparedStatement`/`ResultSet`/`Row`) is instance dispatch, see
+        // `db_instance_lookup`.
+        ("system.db.sqlite.Sqlite", "open", 1) => Some((vec![Type::StringT], db(DB_CONNECTION))),
+        ("system.db.sqlite.Sqlite", "open", 2) => {
+            Some((vec![Type::StringT, db(DB_OPEN_MODE)], db(DB_CONNECTION)))
+        }
+        ("system.db.sqlite.Sqlite", "openMemory", 0) => Some((vec![], db(DB_CONNECTION))),
+        ("system.db.mysql.Mysql", "connect", 1) => Some((
+            // The *resolved* prelude FQCN: `MysqlConfig` is declared
+            // namespace-less like every prelude class, and
+            // `system.db.mysql.MysqlConfig` is only an import-map alias for
+            // it (`prelude::NAMESPACED_ALIASES`). Spelling the qualified
+            // name here would make `new system.db.mysql.MysqlConfig(...)`
+            // — whose type resolves to the bare name — fail E004.
+            vec![Type::Named("MysqlConfig".to_string())],
+            db(DB_CONNECTION),
+        )),
         _ => None,
     }
 }
@@ -419,19 +541,20 @@ pub fn is_native_instance(fqcn: &str) -> bool {
     if is_json_value_class(fqcn) {
         return true;
     }
-    matches!(
-        fqcn,
-        "system.io.FileHandle"
-            | "system.Random"
-            | "system.net.TcpListener"
-            | "system.net.TcpStream"
-            | "system.net.UdpSocket"
-            | "system.thread.Thread"
-            | "system.thread.Mutex"
-            | "system.thread.Semaphore"
-            | "system.time.DateTime"
-            | "system.time.TimeZone"
-    )
+    matches!(fqcn, DB_CONNECTION | DB_STATEMENT | DB_RESULT_SET | DB_ROW)
+        || matches!(
+            fqcn,
+            "system.io.FileHandle"
+                | "system.Random"
+                | "system.net.TcpListener"
+                | "system.net.TcpStream"
+                | "system.net.UdpSocket"
+                | "system.thread.Thread"
+                | "system.thread.Mutex"
+                | "system.thread.Semaphore"
+                | "system.time.DateTime"
+                | "system.time.TimeZone"
+        )
 }
 
 /// Instance-method signatures for `is_native_instance` classes, keyed by
@@ -443,6 +566,9 @@ pub fn instance_lookup(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>
     let byte_array = Type::Array(Box::new(Type::Byte));
     if is_json_value_class(fqcn) {
         return json_instance_lookup(fqcn, name, argc);
+    }
+    if let Some(sig) = db_instance_lookup(fqcn, name, argc) {
+        return Some(sig);
     }
     match (fqcn, name, argc) {
         ("system.io.FileHandle", "close", 0) => Some((vec![], Type::Void)),
@@ -535,6 +661,28 @@ pub fn throws(fqcn: &str, name: &str) -> &'static [&'static str] {
         // of the pair; `tryParse` returns `null` instead of throwing, which
         // is exactly why it needs no `throws` entry here.
         ("system.text.json.Json", "parse") => &["JsonFormatException"],
+        // stdlib.md § system.db — every operation that can reach the driver
+        // declares `throws SqlException`. `isClosed`/`close`/
+        // `parameterCount`/`columnCount`/`lastInsertId` deliberately don't
+        // (stdlib.md's tables leave their `throws` clause off: `close` is
+        // idempotent and infallible, the rest only read cached state).
+        //
+        // `system.db.Row`'s accessors are absent for the same reason: their
+        // signatures in stdlib.md § system.db.Row carry no `throws` clause
+        // either, even though the column-name overloads are documented as
+        // raising `SqlException` for an unknown name. Taking the table at
+        // its word is also what makes stdlib.md's own example compile — it
+        // calls `row.getInt("id")` inside a `try`/`finally` with no
+        // `catch (SqlException)` anywhere, which E015 would reject if these
+        // declared a checked exception.
+        (DB_CONNECTION, "prepare" | "query" | "execute") => &["SqlException"],
+        (DB_CONNECTION, "beginTransaction" | "commit" | "rollback") => &["SqlException"],
+        (DB_STATEMENT, "bindInt" | "bindFloat" | "bindBool") => &["SqlException"],
+        (DB_STATEMENT, "bindString" | "bindBytes" | "bindNull") => &["SqlException"],
+        (DB_STATEMENT, "query" | "execute" | "reset") => &["SqlException"],
+        (DB_RESULT_SET, "next" | "columnName") => &["SqlException"],
+        ("system.db.sqlite.Sqlite", "open" | "openMemory") => &["SqlException"],
+        ("system.db.mysql.Mysql", "connect") => &["SqlException"],
         _ => &[],
     }
 }

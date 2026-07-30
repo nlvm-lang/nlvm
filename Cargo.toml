@@ -12,7 +12,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.21.0"
+version = "0.22.0"
 edition = "2021"
 
 [workspace.dependencies]
@@ -28,3 +28,15 @@ serde_yaml = "0.9"
 sha2 = "0.10"
 rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
 webpki-roots = "0.26"
+# stdlib.md § system.db.sqlite — `bundled` compiles SQLite itself into the
+# binary rather than linking whatever `libsqlite3` the host happens to ship,
+# so `nlvm` behaves identically everywhere (same portability stance as
+# `crate::mini_regex`/`mini_tz`, which is why those exist at all).
+rusqlite = { version = "0.37", features = ["bundled"] }
+# stdlib.md § system.db.mysql — `rustls-tls-ring` (not the default
+# `rustls-tls`, which pulls `aws-lc-rs`) keeps rustls' *ring* provider the
+# only one in the dependency graph: `nl_vm::net_http` calls
+# `rustls::ClientConfig::builder()`, which panics at runtime when two
+# crypto providers are enabled and none is installed process-wide.
+# `minimal-rust` likewise picks flate2's Rust backend over zlib's C one.
+mysql = { version = "26", default-features = false, features = ["minimal-rust", "rustls-tls-ring"] }

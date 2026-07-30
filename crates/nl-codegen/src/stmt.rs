@@ -423,6 +423,13 @@ impl<'a> Emitter<'a> {
                 iterable_ty = expr_ty_of(&ret);
             }
         }
+        // stdlib.md § system.db.ResultSet — a cursor, not an indexable
+        // collection: the loop is driven by `next()` returning `null`, so
+        // it gets its own shape (no index local, no length call) instead of
+        // the shared index-based one below.
+        if matches!(&iterable_ty, ExprTy::Object(fqcn) if crate::stdlib::is_result_set(fqcn)) {
+            return self.compile_foreach_result_set(ty, var, body);
+        }
         let (list_fqcn, elem_ty) = match &iterable_ty {
             ExprTy::Array(elem) => (None, (**elem).clone()),
             ExprTy::Object(fqcn) if fqcn.starts_with("system.List<") => {
@@ -481,6 +488,66 @@ impl<'a> Emitter<'a> {
             self.patch_branch_to(pc, operand, step_pc);
         }
         self.op_iinc(idx_local, 1);
+        self.emit_goto_to(cond_pc);
+        let end_pc = self.code.len();
+        self.patch_branch_to(exit_patch.0, exit_patch.1, end_pc);
+        for (pc, operand) in ctx.break_patches {
+            self.patch_branch_to(pc, operand, end_pc);
+        }
+        self.pop_scope();
+        Ok(())
+    }
+
+    /// `for ([const] row : resultSet)` — stdlib.md § system.db.ResultSet:
+    /// "iterates by repeatedly calling `next()` until `null` is returned".
+    /// Called by `compile_foreach` with the result set already compiled and
+    /// on top of the stack, and inside its scope (which also owns the
+    /// matching `pop_scope`).
+    ///
+    /// Unlike every other for-each shape there is no index local and no
+    /// length call: the cursor lives inside the native result set, so the
+    /// loop condition *is* the `next()` call. `null` ends the loop rather
+    /// than reaching the body, which is why the loop variable is typed
+    /// `Row` and not `Row|null`. The result set is deliberately *not*
+    /// closed at the end (stdlib.md says so explicitly — the caller closes
+    /// it, typically in a `finally`).
+    fn compile_foreach_result_set(
+        &mut self,
+        ty: Option<&Type>,
+        var: &str,
+        body: &Block,
+    ) -> Result<(), CodegenError> {
+        let rs_fqcn = crate::stdlib::DB_RESULT_SET.to_string();
+        let rs_local = self.declare_scratch_local(ExprTy::Object(rs_fqcn.clone()));
+        self.emit_store(rs_local);
+        let item_ty = match ty {
+            Some(t) => expr_ty_of(&resolve_type(t, self.imports)),
+            None => ExprTy::Object(crate::stdlib::DB_ROW.to_string()),
+        };
+        let item_local = self.declare_local(var.to_string(), item_ty);
+
+        let cond_pc = self.code.len();
+        self.op_u16(Opcode::Load, rs_local, 1);
+        self.emit_native_instance_call(&rs_fqcn, "next", 0)?;
+        self.emit_store(item_local);
+        self.op_u16(Opcode::Load, item_local, 1);
+        self.op(Opcode::IsNull, 0);
+        let exit_patch = self.branch(Opcode::IfTrue, -1);
+
+        self.loops.push(LoopCtx {
+            break_patches: Vec::new(),
+            continue_patches: Vec::new(),
+            finally_depth: self.finally_stack.len(),
+            is_switch: false,
+        });
+        self.compile_block(body)?;
+        let ctx = self.loops.pop().unwrap();
+
+        // `continue` proceeds to the next row: back to the `next()` call,
+        // which is both the step and the condition here.
+        for (pc, operand) in ctx.continue_patches {
+            self.patch_branch_to(pc, operand, cond_pc);
+        }
         self.emit_goto_to(cond_pc);
         let end_pc = self.code.len();
         self.patch_branch_to(exit_patch.0, exit_patch.1, end_pc);
@@ -581,8 +648,13 @@ impl<'a> Emitter<'a> {
         name: &str,
         argc: usize,
     ) -> Result<(), CodegenError> {
-        let (params, ret) =
-            crate::native_generics::method_signature(fqcn, name, argc).ok_or_else(|| {
+        let (params, ret) = crate::native_generics::method_signature(fqcn, name, argc)
+            // `system.db.ResultSet.next()` — the one non-generic native
+            // instance call `compile_foreach` emits directly (see its
+            // `is_result_set` branch), so the table for the plain stdlib
+            // classes is consulted too.
+            .or_else(|| crate::stdlib::instance_signature(fqcn, name, argc, false))
+            .ok_or_else(|| {
                 CodegenError::Unsupported(format!(
                     "unknown method '{name}' on '{fqcn}' with {argc} argument(s)"
                 ))

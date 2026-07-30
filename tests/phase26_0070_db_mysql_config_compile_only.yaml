@@ -1,0 +1,56 @@
+---
+title: "issue #2 — stdlib.md § system.db.mysql: `MysqlConfig` built with named parameters (and its `port`/`database`/`useTls` defaults), then passed to `Mysql.connect`, which returns the same driver-agnostic `system.db.Connection` the SQLite factory does. Compile-only: reaching the driver would need a live MySQL server, which the test suite has no way to provide."
+file_separator: "#NLFILE"
+compile_only: true
+---
+
+#NLFILE phase26/dbmysql/Main.nl
+namespace phase26.dbmysql;
+class Main {
+	public static int main(string[] args) {
+		// stdlib.md § Security (credentials): loaded from the environment
+		// rather than embedded in source.
+		auto config = new system.db.mysql.MysqlConfig(
+			host: "db.example.com",
+			port: 3306,
+			user: system.Env.get("DB_USER") ?? "app",
+			password: system.Env.get("DB_PASSWORD") ?? "",
+			database: "app",
+			useTls: true
+		);
+		// `port`, `database` and `useTls` all carry defaults, so a minimal
+		// config names only the three required fields.
+		auto minimal = new system.db.mysql.MysqlConfig(
+			host: "localhost",
+			user: "app",
+			password: ""
+		);
+		system.Out.println(minimal.host + ":" + minimal.port + " tls=" + minimal.useTls);
+
+		try {
+			system.db.Connection db = system.db.mysql.Mysql.connect(config);
+			try {
+				system.db.PreparedStatement q = db.prepare("SELECT COUNT(*) FROM orders WHERE customer_id = ?");
+				q.bindInt(0, 1);
+				system.db.ResultSet rows = q.query();
+				try {
+					for (const auto row : rows) {
+						system.Out.println("orders: " + (row.getInt(0) ?? 0));
+					}
+				}
+				finally {
+					rows.close();
+					q.close();
+				}
+			}
+			finally {
+				db.close();
+			}
+		}
+		catch (system.db.SqlException ex) {
+			system.Err.println("db unavailable: " + ex.message);
+			return 1;
+		}
+		return 0;
+	}
+}

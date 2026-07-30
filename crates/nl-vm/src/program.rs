@@ -174,6 +174,11 @@ pub struct Program {
     tcp_listeners: Mutex<Vec<Option<std::net::TcpListener>>>,
     tcp_streams: Mutex<Vec<Option<std::net::TcpStream>>>,
     udp_sockets: Mutex<Vec<Option<std::net::UdpSocket>>>,
+    /// Backing store for the whole `system.db` namespace — connections,
+    /// prepared statements and result sets share one table (and one lock)
+    /// because closing a connection has to reach the statements and result
+    /// sets derived from it. See `crate::db`'s module doc comment.
+    db: Mutex<crate::db::DbRegistry>,
     /// Backing store for `system.thread.Thread` — a thread object only
     /// carries an index into this table (`"__tid__"`, allocated by
     /// `construct`, since `interrupt()` needs a flag to set even before
@@ -248,6 +253,7 @@ impl Program {
             tcp_listeners: Mutex::new(Vec::new()),
             tcp_streams: Mutex::new(Vec::new()),
             udp_sockets: Mutex::new(Vec::new()),
+            db: Mutex::new(crate::db::DbRegistry::default()),
             threads: Mutex::new(Vec::new()),
             thread_mutexes: Mutex::new(Vec::new()),
             thread_semaphores: Mutex::new(Vec::new()),
@@ -390,6 +396,14 @@ impl Program {
     pub fn with_file<R>(&self, id: i64, f: impl FnOnce(&mut std::fs::File) -> R) -> Option<R> {
         let mut handles = lock(&self.file_handles);
         handles.get_mut(id as usize)?.as_mut().map(f)
+    }
+
+    /// The `system.db` registry — handed out whole (rather than wrapped in
+    /// `with_*` helpers like the file/socket tables) because `crate::db`
+    /// routinely touches a connection and one of its statements or result
+    /// sets under the same lock.
+    pub(crate) fn db(&self) -> &Mutex<crate::db::DbRegistry> {
+        &self.db
     }
 
     pub fn register_tcp_listener(&self, listener: std::net::TcpListener) -> i64 {

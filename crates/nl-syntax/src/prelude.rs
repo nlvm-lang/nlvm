@@ -66,6 +66,14 @@ pub const NAMESPACED_ALIASES: &[(&str, &str)] = &[
         "system.text.json.JsonFormatException",
         "JsonFormatException",
     ),
+    // stdlib.md § Exception table places `SqlException` in `system.db`;
+    // every `system.db.*` type and both driver factories raise it.
+    ("system.db.SqlException", "SqlException"),
+    // stdlib.md § system.db.mysql.MysqlConfig — unlike every other
+    // `system.db` type this one *is* written by user code (`new
+    // MysqlConfig(host: ..., ...)`), so it's a real prelude class rather
+    // than a native table entry; see `mysql_config_class`.
+    ("system.db.mysql.MysqlConfig", "MysqlConfig"),
 ];
 
 /// Every built-in exception class, as a namespace-less `SourceFile`.
@@ -85,6 +93,20 @@ pub fn files() -> Vec<SourceFile> {
         uses: Vec::new(),
         typedefs: Vec::new(),
         item: SourceItem::Class(json_format_exception_class()),
+        path: PRELUDE_PATH.to_string(),
+    });
+    files.push(SourceFile {
+        namespace: Vec::new(),
+        uses: Vec::new(),
+        typedefs: Vec::new(),
+        item: SourceItem::Class(sql_exception_class()),
+        path: PRELUDE_PATH.to_string(),
+    });
+    files.push(SourceFile {
+        namespace: Vec::new(),
+        uses: Vec::new(),
+        typedefs: Vec::new(),
+        item: SourceItem::Class(mysql_config_class()),
         path: PRELUDE_PATH.to_string(),
     });
     files.push(SourceFile {
@@ -478,6 +500,184 @@ fn json_format_exception_class() -> ClassDecl {
             decl_line: 0,
         }],
         is_readonly: true,
+        is_abstract: false,
+        is_final: false,
+        decl_line: 0,
+        is_enum: false,
+        enum_cases: Vec::new(),
+    }
+}
+
+/// stdlib.md § Exception table, `SqlException`: a *checked* exception
+/// (extends `Exception` directly, like `IOException`) carrying `sqlState`
+/// (SQLSTATE code, empty string when the driver does not provide one) and
+/// `errorCode` (driver-specific numeric code, `0` when not provided). Same
+/// two-extra-fields shape as `json_format_exception_class` above, so it gets
+/// its own builder rather than going through `exception_class`.
+///
+/// `nl_vm::db` builds these natively (fields filled directly, constructor
+/// never run) exactly as `nl_vm::json` does for `JsonFormatException`; the
+/// class is declared anyway so it is catchable, its fields are typed, and
+/// user code can `throw` one of its own.
+fn sql_exception_class() -> ClassDecl {
+    let extra: [(&str, Type); 2] = [("sqlState", Type::StringT), ("errorCode", Type::Int)];
+    let fields = extra
+        .iter()
+        .map(|(name, ty)| FieldDecl {
+            name: (*name).to_string(),
+            visibility: Visibility::Public,
+            visibility_explicit: true,
+            is_static: false,
+            readonly: false,
+            ty: ty.clone(),
+            init: None,
+        })
+        .collect();
+    let mut params = vec![Param {
+        name: "what".to_string(),
+        ty: Type::StringT,
+        is_const: false,
+        default: None,
+        is_ref: false,
+    }];
+    params.extend(extra.iter().map(|(name, ty)| Param {
+        name: (*name).to_string(),
+        ty: ty.clone(),
+        is_const: false,
+        default: None,
+        is_ref: false,
+    }));
+    let mut body: Block = vec![Stmt {
+        kind: StmtKind::SuperCall(vec![Arg {
+            name: None,
+            is_ref: false,
+            value: Expr::Ident("what".to_string()),
+        }]),
+        line: 0,
+    }];
+    body.extend(extra.iter().map(|(name, _)| Stmt {
+        kind: StmtKind::Expr(Expr::Assign(
+            LValue::Field(Box::new(Expr::This), (*name).to_string()),
+            Box::new(Expr::Ident((*name).to_string())),
+        )),
+        line: 0,
+    }));
+    ClassDecl {
+        name: "SqlException".to_string(),
+        type_params: Vec::new(),
+        extends: Some("Exception".to_string()),
+        implements: Vec::new(),
+        fields,
+        methods: vec![MethodDecl {
+            name: "<construct>".to_string(),
+            kind: MethodKind::Constructor,
+            visibility: Visibility::Public,
+            visibility_explicit: true,
+            is_static: false,
+            is_const: false,
+            is_abstract: false,
+            is_final: false,
+            is_nodiscard: false,
+            return_type: Type::Void,
+            params,
+            throws: Vec::new(),
+            body,
+            decl_line: 0,
+        }],
+        is_readonly: true,
+        is_abstract: false,
+        is_final: false,
+        decl_line: 0,
+        is_enum: false,
+        enum_cases: Vec::new(),
+    }
+}
+
+/// stdlib.md § system.db.mysql.MysqlConfig — the one `system.db` type user
+/// code instantiates itself: "All fields are `public`; the constructor takes
+/// them positionally, but callers should prefer named parameters for
+/// readability", with `port` defaulting to `3306`, `database` to `""` and
+/// `useTls` to `true`.
+///
+/// Declared as a real (hand-built AST) prelude class rather than an entry in
+/// the `nl_sema`/`nl_codegen` stdlib tables because those carry parameter
+/// *types* only — no names and no defaults — so `new MysqlConfig(host: ...,
+/// user: ..., password: ...)` could not resolve there. As an ordinary class
+/// it gets named/optional argument resolution, field access and `new` for
+/// free, and `nl_vm::db` just reads the resulting object's fields by name.
+fn mysql_config_class() -> ClassDecl {
+    // (name, type, default) — declaration order is also the positional
+    // constructor order, matching stdlib.md's `construct(string host, int
+    // port, string user, string password, string database, bool useTls)`.
+    let spec: [(&str, Type, Option<Expr>); 6] = [
+        ("host", Type::StringT, None),
+        ("port", Type::Int, Some(Expr::IntLit(3306))),
+        ("user", Type::StringT, None),
+        ("password", Type::StringT, None),
+        (
+            "database",
+            Type::StringT,
+            Some(Expr::StringLit(String::new())),
+        ),
+        ("useTls", Type::Bool, Some(Expr::BoolLit(true))),
+    ];
+    let fields = spec
+        .iter()
+        .map(|(name, ty, _)| FieldDecl {
+            name: (*name).to_string(),
+            visibility: Visibility::Public,
+            visibility_explicit: true,
+            is_static: false,
+            readonly: false,
+            ty: ty.clone(),
+            init: None,
+        })
+        .collect();
+    let params = spec
+        .iter()
+        .map(|(name, ty, default)| Param {
+            name: (*name).to_string(),
+            ty: ty.clone(),
+            is_const: false,
+            default: default.clone(),
+            is_ref: false,
+        })
+        .collect();
+    let body: Block = spec
+        .iter()
+        .map(|(name, _, _)| Stmt {
+            kind: StmtKind::Expr(Expr::Assign(
+                LValue::Field(Box::new(Expr::This), (*name).to_string()),
+                Box::new(Expr::Ident((*name).to_string())),
+            )),
+            line: 0,
+        })
+        .collect();
+    ClassDecl {
+        name: "MysqlConfig".to_string(),
+        type_params: Vec::new(),
+        extends: None,
+        implements: Vec::new(),
+        fields,
+        methods: vec![MethodDecl {
+            name: "<construct>".to_string(),
+            kind: MethodKind::Constructor,
+            visibility: Visibility::Public,
+            visibility_explicit: true,
+            is_static: false,
+            is_const: false,
+            is_abstract: false,
+            is_final: false,
+            is_nodiscard: false,
+            return_type: Type::Void,
+            params,
+            throws: Vec::new(),
+            body,
+            decl_line: 0,
+        }],
+        // Not `readonly`: stdlib.md documents the fields as plain `public`,
+        // so a caller may build the config then adjust a field.
+        is_readonly: false,
         is_abstract: false,
         is_final: false,
         decl_line: 0,

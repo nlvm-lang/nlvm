@@ -1,0 +1,15 @@
+---
+title: "issue #2 — `SqlException` is a *checked* exception (stdlib.md § Exception table), so calling a driver factory without a `catch` or a `throws` clause is E015. `system.db.Row`'s accessors deliberately declare nothing, which is what lets stdlib.md's own example read columns inside a bare `try`/`finally`."
+file_separator: "#NLFILE"
+expected_compile_error: "E015"
+---
+
+#NLFILE phase26/dbe015/Main.nl
+namespace phase26.dbe015;
+class Main {
+	public static int main(string[] args) {
+		system.db.Connection db = system.db.sqlite.Sqlite.openMemory();
+		db.close();
+		return 0;
+	}
+}
