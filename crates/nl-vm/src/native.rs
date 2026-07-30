@@ -109,7 +109,7 @@ pub fn is_native_class(fqcn: &str) -> bool {
             | "system.time.DateTime"
             | "system.time.TimeZone"
             | "system.text.json.Json"
-    )
+    ) || crate::db::is_db_class(fqcn)
 }
 
 /// Dispatches one native call. `args` has already been popped off the
@@ -728,6 +728,10 @@ pub fn dispatch(
         // the namespace's only static-only class (the `JsonValue` family it
         // returns is dispatched through `dispatch_native_instance`).
         (crate::json::JSON, _) => crate::json::dispatch_static(name, args),
+        // stdlib.md § system.db.sqlite / § system.db.mysql — the two driver
+        // factories; the `Connection` they return (and everything reachable
+        // from it) is dispatched through `dispatch_native_instance`.
+        _ if crate::db::is_db_class(fqcn) => crate::db::dispatch_static(program, fqcn, name, args),
         _ => Err(VmError::MethodNotFound(format!("{fqcn}.{name}"))),
     }
 }
@@ -1304,6 +1308,12 @@ pub fn is_native_instance_class(fqcn: &str) -> bool {
     if crate::json::is_json_value_class(fqcn) {
         return true;
     }
+    // `system.db.Connection`/`PreparedStatement`/`ResultSet` are the
+    // `FileHandle` shape (state outside the object, in `Program::db`);
+    // `Row` is a pair of indices into that same state. See `crate::db`.
+    if crate::db::is_db_instance_class(fqcn) {
+        return true;
+    }
     matches!(
         fqcn,
         "system.io.FileHandle"
@@ -1339,6 +1349,9 @@ pub fn dispatch_native_instance(
     let class_name = lock(&obj).class_name.clone();
     if crate::json::is_json_value_class(&class_name) {
         return crate::json::dispatch_json_instance(name, receiver, args);
+    }
+    if crate::db::is_db_instance_class(&class_name) {
+        return crate::db::dispatch_instance(program, &class_name, name, receiver, args);
     }
     match class_name.as_str() {
         "system.Random" => return dispatch_random(name, receiver, args),

@@ -1,4 +1,5 @@
 mod call_stack;
+mod db;
 pub mod error;
 mod gc;
 pub mod interpreter;

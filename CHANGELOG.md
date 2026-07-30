@@ -5,6 +5,14 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.22.0]
+
+### Added
+- The **`system.db`** namespace (stdlib.md § system.db, § system.db.sqlite, § system.db.mysql) is implemented: the driver-agnostic `Connection`, `PreparedStatement`, `ResultSet` and `Row` types, the `ColumnType` enum, the checked `SqlException` (carrying `sqlState` and `errorCode`), and both drivers — `system.db.sqlite.Sqlite.open`/`open(path, SqliteOpenMode)`/`openMemory` and `system.db.mysql.Mysql.connect(MysqlConfig)`. Prepared statements use positional `?` placeholders bound by 0-based index through `bindInt`/`bindFloat`/`bindBool`/`bindString`/`bindBytes`/`bindNull`, so user data never has to be concatenated into SQL; `Row` reads columns by index *or* by name through the `T|null` typed accessors, `beginTransaction`/`commit`/`rollback` throw when the transaction state doesn't allow them, and `Connection`/`PreparedStatement`/`ResultSet` follow the documented close semantics (idempotent `close()`, closing a connection closes everything derived from it, any later operation throws `SqlException`). A `ResultSet` is iterable with the ordinary for-each loop (`for (const auto row : rows)`), which drains it through `next()` until `null`, and a `Row` left behind by the next `next()` is rejected as stale rather than silently returning the wrong data. See [issue #2](https://github.com/nlvm-lang/nlvm/issues/2).
+
+### Changed
+- New Cargo dependencies for the two drivers: `rusqlite` (with `bundled`, so SQLite is compiled into `nlvm` instead of linking whatever the host ships) and `mysql` (with `rustls-tls-ring`, keeping rustls' *ring* provider the only one in the graph — `system.net.Http` shares it).
+
 ## [0.21.0]
 
 ### Changed

@@ -1,0 +1,86 @@
+---
+title: "issue #2 — stdlib.md § system.db, Resource lifetime: `close()` is idempotent on all three types, closing a `Connection` closes every statement and result set derived from it, a stale `Row` (the result set has advanced) and any use of a closed handle throw `SqlException`."
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: |
+  open: db false stmt false rows false
+  stale row -> SqlException
+  after rows.close(): rows true, next() -> SqlException
+  after db.close(): db true stmt true
+  stmt.execute() on closed connection -> SqlException
+  db.execute() on closed connection -> SqlException
+  close is idempotent
+expected_stderr: ""
+---
+
+#NLFILE phase26/dblifetime/Main.nl
+namespace phase26.dblifetime;
+class Main {
+	public static int main(string[] args) {
+		try {
+			system.db.Connection db = system.db.sqlite.Sqlite.openMemory();
+			db.execute("CREATE TABLE t (x INTEGER)");
+			db.execute("INSERT INTO t(x) VALUES (1), (2)");
+
+			system.db.PreparedStatement stmt = db.prepare("SELECT x FROM t ORDER BY x");
+			system.db.ResultSet rows = stmt.query();
+			system.Out.println("open: db " + system.Bool.toString(db.isClosed())
+				+ " stmt " + system.Bool.toString(stmt.isClosed())
+				+ " rows " + system.Bool.toString(rows.isClosed()));
+
+			// stdlib.md § system.db.Row: a Row is valid only until the next
+			// `next()`/`close()`.
+			system.db.Row|null first = rows.next();
+			rows.next();
+			if (first != null) {
+				try {
+					first.getInt(0);
+					system.Out.println("stale row -> no exception");
+				}
+				catch (system.db.SqlException ex) {
+					system.Out.println("stale row -> SqlException");
+				}
+			}
+
+			rows.close();
+			try {
+				rows.next();
+				system.Out.println("after rows.close(): rows " + system.Bool.toString(rows.isClosed()) + ", next() -> no exception");
+			}
+			catch (system.db.SqlException ex) {
+				system.Out.println("after rows.close(): rows " + system.Bool.toString(rows.isClosed()) + ", next() -> SqlException");
+			}
+
+			// Closing the connection closes the statements derived from it.
+			db.close();
+			system.Out.println("after db.close(): db " + system.Bool.toString(db.isClosed())
+				+ " stmt " + system.Bool.toString(stmt.isClosed()));
+			try {
+				stmt.execute();
+				system.Out.println("stmt.execute() on closed connection -> no exception");
+			}
+			catch (system.db.SqlException ex) {
+				system.Out.println("stmt.execute() on closed connection -> SqlException");
+			}
+			try {
+				db.execute("SELECT 1");
+				system.Out.println("db.execute() on closed connection -> no exception");
+			}
+			catch (system.db.SqlException ex) {
+				system.Out.println("db.execute() on closed connection -> SqlException");
+			}
+
+			// Idempotent everywhere (stdlib.md), including through a
+			// connection that already closed them.
+			db.close();
+			stmt.close();
+			rows.close();
+			system.Out.println("close is idempotent");
+		}
+		catch (system.db.SqlException ex) {
+			system.Err.println("unexpected: " + ex.message);
+			return 1;
+		}
+		return 0;
+	}
+}

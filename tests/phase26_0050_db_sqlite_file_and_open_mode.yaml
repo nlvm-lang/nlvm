@@ -1,0 +1,73 @@
+---
+title: "issue #2 — stdlib.md § system.db.sqlite: a file-backed database and the `SqliteOpenMode` table — `ReadWriteCreate` creates a missing file, `ReadOnly` on a missing file throws `SqlException`, and a `ReadOnly` connection to an existing file reads but refuses to write."
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: |
+  ReadOnly on a missing file -> SqlException
+  created and populated: 2
+  read-only sees: 2
+  write through a ReadOnly connection -> SqlException
+expected_stderr: ""
+---
+
+#NLFILE phase26/dbfile/Main.nl
+namespace phase26.dbfile;
+class Main {
+	public static int main(string[] args) {
+		// Written under the system temp directory, and dropped/recreated on
+		// every run so repeated runs stay deterministic (there is no
+		// `system.io.File.remove` in stdlib.md to clean up with).
+		string path = (system.Env.get("TMPDIR") ?? "/tmp") + "/nlvm_phase26_dbfile.db";
+		try {
+			try {
+				system.db.sqlite.Sqlite.open(path + ".missing", system.db.sqlite.SqliteOpenMode.ReadOnly);
+				system.Out.println("ReadOnly on a missing file -> no exception");
+			}
+			catch (system.db.SqlException ex) {
+				system.Out.println("ReadOnly on a missing file -> SqlException");
+			}
+
+			system.db.Connection db = system.db.sqlite.Sqlite.open(path, system.db.sqlite.SqliteOpenMode.ReadWriteCreate);
+			db.execute("DROP TABLE IF EXISTS notes");
+			db.execute("CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT)");
+			system.db.PreparedStatement ins = db.prepare("INSERT INTO notes(body) VALUES (?)");
+			ins.bindString(0, "first");
+			ins.execute();
+			ins.reset();
+			ins.bindString(0, "second");
+			ins.execute();
+			ins.close();
+			system.Out.println("created and populated: " + count(db));
+			db.close();
+
+			// The 1-argument `open` is ReadWriteCreate; this one asks for
+			// ReadOnly on the file just written.
+			system.db.Connection ro = system.db.sqlite.Sqlite.open(path, system.db.sqlite.SqliteOpenMode.ReadOnly);
+			system.Out.println("read-only sees: " + count(ro));
+			try {
+				ro.execute("INSERT INTO notes(body) VALUES ('third')");
+				system.Out.println("write through a ReadOnly connection -> no exception");
+			}
+			catch (system.db.SqlException ex) {
+				system.Out.println("write through a ReadOnly connection -> SqlException");
+			}
+			ro.close();
+		}
+		catch (system.db.SqlException ex) {
+			system.Err.println("unexpected: " + ex.message);
+			return 1;
+		}
+		return 0;
+	}
+
+	private static int count(system.db.Connection db) throws system.db.SqlException {
+		system.db.ResultSet rows = db.query("SELECT COUNT(*) FROM notes");
+		try {
+			system.db.Row|null row = rows.next();
+			return row != null ? (row.getInt(0) ?? -1) : -1;
+		}
+		finally {
+			rows.close();
+		}
+	}
+}

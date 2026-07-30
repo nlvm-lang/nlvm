@@ -1,0 +1,85 @@
+---
+title: "issue #2 — stdlib.md § system.db: the spec's own driver-agnostic example against `system.db.sqlite.Sqlite.openMemory()` — constant DDL through `Connection.execute`, a parameterized `INSERT` reused across a transaction with `reset()`, then a parameterized `SELECT` iterated with the `ResultSet` for-each loop and read by column name."
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: |
+  params 2
+  affected 1
+  lastInsertId 2
+  columns 3: id name age
+  1 Ada 36
+  2 Linus 55
+  closed true
+expected_stderr: ""
+---
+
+#NLFILE phase26/dbcrud/Main.nl
+namespace phase26.dbcrud;
+class Main {
+	public static int main(string[] args) {
+		try {
+			// In-memory database: exists only for the lifetime of the
+			// connection, so the test leaves nothing behind.
+			system.db.Connection db = system.db.sqlite.Sqlite.openMemory();
+			try {
+				db.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)");
+
+				// Parameterized INSERT — user data is bound, never
+				// interpolated (stdlib.md § Security (SQL injection)).
+				system.db.PreparedStatement ins = db.prepare("INSERT INTO users(name, age) VALUES (?, ?)");
+				try {
+					system.Out.println("params " + system.Int.toString(ins.parameterCount()));
+					db.beginTransaction();
+					ins.bindString(0, "Ada");
+					ins.bindInt(1, 36);
+					system.Out.println("affected " + system.Int.toString(ins.execute()));
+
+					// `reset()` clears the bindings so the compiled
+					// statement can run again with new ones.
+					ins.reset();
+					ins.bindString(0, "Linus");
+					ins.bindInt(1, 55);
+					ins.execute();
+					db.commit();
+				}
+				finally {
+					ins.close();
+				}
+				int|null last = db.lastInsertId();
+				system.Out.println("lastInsertId " + (last ?? -1));
+
+				system.db.PreparedStatement q = db.prepare("SELECT id, name, age FROM users WHERE age >= ? ORDER BY id");
+				q.bindInt(0, 18);
+				system.db.ResultSet rows = q.query();
+				try {
+					string header = "columns " + system.Int.toString(rows.columnCount()) + ":";
+					for (int i = 0; i < rows.columnCount(); i++) {
+						header = header + " " + rows.columnName(i);
+					}
+					system.Out.println(header);
+					// stdlib.md § system.db.ResultSet: for-each calls
+					// `next()` until it returns null.
+					for (const auto row : rows) {
+						int|null id = row.getInt("id");
+						string|null name = row.getString("name");
+						int|null age = row.getInt("age");
+						system.Out.println((id ?? 0) + " " + (name ?? "?") + " " + (age ?? 0));
+					}
+				}
+				finally {
+					rows.close();
+					q.close();
+				}
+			}
+			finally {
+				db.close();
+			}
+			system.Out.println("closed true");
+		}
+		catch (system.db.SqlException ex) {
+			system.Err.println("unexpected: " + ex.message);
+			return 1;
+		}
+		return 0;
+	}
+}

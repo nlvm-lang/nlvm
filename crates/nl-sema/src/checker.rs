@@ -1775,9 +1775,13 @@ impl<'a> MethodChecker<'a> {
                 // of labor as unknown classes/methods.
                 let elem_ty = match &iterable_ty {
                     Type::Array(elem) => (**elem).clone(),
-                    Type::Named(fqcn) => {
-                        crate::native_generics::foreach_element_ty(fqcn).unwrap_or(Type::Void)
-                    }
+                    // `system.db.ResultSet` (`Row`, drained through
+                    // `next()`) is checked first — it is a plain native
+                    // stdlib class, not a mangled generic instantiation, so
+                    // it has no `native_generics` entry.
+                    Type::Named(fqcn) => crate::stdlib::foreach_element_ty(fqcn)
+                        .or_else(|| crate::native_generics::foreach_element_ty(fqcn))
+                        .unwrap_or(Type::Void),
                     _ => Type::Void,
                 };
                 self.push_scope();

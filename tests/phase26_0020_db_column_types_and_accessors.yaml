@@ -1,0 +1,133 @@
+---
+title: "issue #2 — stdlib.md § system.db.ColumnType / § system.db.Row: `columnType()` reported for every stored kind, `isNull` and the `T|null` typed accessors (including `getBytes` round-tripping a BLOB through `bindBytes`), by index and by column name."
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: |
+  count 5
+  types Integer Text Float Blob Null
+  n=42 s=hello f=1.5 bytes=3 nil=null
+  by name n=42 s=hello
+  isNull: n false nil true
+  bool from integer: true false
+  int from text column: 7
+  blob as int -> InvalidCastException
+expected_stderr: ""
+---
+
+#NLFILE phase26/dbtypes/Main.nl
+namespace phase26.dbtypes;
+class Main {
+	public static int main(string[] args) {
+		try {
+			system.db.Connection db = system.db.sqlite.Sqlite.openMemory();
+			try {
+				db.execute("CREATE TABLE t (n INTEGER, s TEXT, f REAL, b BLOB, nil INTEGER)");
+				system.db.PreparedStatement ins = db.prepare("INSERT INTO t(n, s, f, b, nil) VALUES (?, ?, ?, ?, ?)");
+				byte[] payload = new byte[]{ (byte)1, (byte)2, (byte)3 };
+				ins.bindInt(0, 42);
+				ins.bindString(1, "hello");
+				ins.bindFloat(2, 1.5);
+				ins.bindBytes(3, payload);
+				ins.bindNull(4);
+				ins.execute();
+				ins.close();
+
+				system.db.ResultSet rows = db.query("SELECT n, s, f, b, nil FROM t");
+				try {
+					system.Out.println("count " + system.Int.toString(rows.columnCount()));
+					system.db.Row|null maybe = rows.next();
+					if (maybe == null) {
+						system.Err.println("expected one row");
+						return 1;
+					}
+					system.db.Row row = maybe;
+
+					// `ColumnType` is compared like any other enum-shaped
+					// stdlib constant.
+					string types = "types";
+					for (int i = 0; i < row.columnCount(); i++) {
+						types = types + " " + name(row.columnType(i));
+					}
+					system.Out.println(types);
+
+					int|null n = row.getInt(0);
+					string|null s = row.getString(1);
+					float|null f = row.getFloat(2);
+					byte[]|null b = row.getBytes(3);
+					int|null nil = row.getInt(4);
+					system.Out.println(
+						"n=" + (n ?? 0)
+						+ " s=" + (s ?? "?")
+						+ " f=" + (f ?? 0.0)
+						+ " bytes=" + (b != null ? b.length() : -1)
+						+ " nil=" + (nil == null ? "null" : "set")
+					);
+
+					// stdlib.md § Column lookup by name — same accessors,
+					// column name instead of the index.
+					system.Out.println("by name n=" + (row.getInt("n") ?? 0) + " s=" + (row.getString("s") ?? "?"));
+					system.Out.println("isNull: n " + system.Bool.toString(row.isNull("n"))
+						+ " nil " + system.Bool.toString(row.isNull("nil")));
+
+					// SQLite has no boolean type: a bool binds as 1/0 and
+					// reads back through `getBool` (stdlib.md § ColumnType).
+					system.Out.println("bool from integer: "
+						+ system.Bool.toString(row.getBool(0) ?? false) + " "
+						+ system.Bool.toString(row.getBool("nil") ?? false));
+
+				}
+				finally {
+					rows.close();
+				}
+
+				// SQLite is dynamically typed; text that parses is still
+				// readable as an int.
+				system.db.ResultSet numeric = db.query("SELECT '7' AS seven");
+				try {
+					system.db.Row|null r = numeric.next();
+					if (r != null) {
+						system.Out.println("int from text column: " + (r.getInt("seven") ?? 0));
+					}
+				}
+				finally {
+					numeric.close();
+				}
+
+				// A blob never converts to a scalar.
+				system.db.ResultSet again = db.query("SELECT b FROM t");
+				try {
+					system.db.Row|null r = again.next();
+					if (r != null) {
+						try {
+							r.getInt(0);
+							system.Out.println("blob as int -> no exception");
+						}
+						catch (InvalidCastException ex) {
+							system.Out.println("blob as int -> InvalidCastException");
+						}
+					}
+				}
+				finally {
+					again.close();
+				}
+			}
+			finally {
+				db.close();
+			}
+		}
+		catch (system.db.SqlException ex) {
+			system.Err.println("unexpected: " + ex.message);
+			return 1;
+		}
+		return 0;
+	}
+
+	private static string name(system.db.ColumnType t) {
+		if (t == system.db.ColumnType.Integer) { return "Integer"; }
+		if (t == system.db.ColumnType.Float) { return "Float"; }
+		if (t == system.db.ColumnType.Text) { return "Text"; }
+		if (t == system.db.ColumnType.Blob) { return "Blob"; }
+		if (t == system.db.ColumnType.Bool) { return "Bool"; }
+		return "Null";
+	}
+}
