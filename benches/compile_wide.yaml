@@ -1,0 +1,2130 @@
+---
+title: "Compiler throughput — a wide program (24 classes x 8 methods) whose run phase is trivial, so the compile column measures nl-syntax/nl-sema/nl-codegen on something bigger than the prelude"
+file_separator: "#NLFILE"
+expected_stdout: "300\n"
+---
+
+#NLFILE bench/compilewide/Main.nl
+namespace bench.compilewide;
+class Main {
+	// Generated shape, kept flat on purpose: every class is independent, so
+	// what this measures is per-declaration compiler cost (name resolution,
+	// type checking, constant pool building) rather than any one hot path.
+	public static int main(string[] args) {
+		int total = 0;
+		total = total + new Worker0().step0(0);
+		total = total + new Worker1().step0(1);
+		total = total + new Worker2().step0(2);
+		total = total + new Worker3().step0(3);
+		total = total + new Worker4().step0(4);
+		total = total + new Worker5().step0(5);
+		total = total + new Worker6().step0(6);
+		total = total + new Worker7().step0(7);
+		total = total + new Worker8().step0(8);
+		total = total + new Worker9().step0(9);
+		total = total + new Worker10().step0(10);
+		total = total + new Worker11().step0(11);
+		total = total + new Worker12().step0(12);
+		total = total + new Worker13().step0(13);
+		total = total + new Worker14().step0(14);
+		total = total + new Worker15().step0(15);
+		total = total + new Worker16().step0(16);
+		total = total + new Worker17().step0(17);
+		total = total + new Worker18().step0(18);
+		total = total + new Worker19().step0(19);
+		total = total + new Worker20().step0(20);
+		total = total + new Worker21().step0(21);
+		total = total + new Worker22().step0(22);
+		total = total + new Worker23().step0(23);
+		system.Out.println(system.Int.toString(total));
+		return 0;
+	}
+}
+
+#NLFILE bench/compilewide/Worker0.nl
+namespace bench.compilewide;
+class Worker0 {
+	public int seed;
+
+	public construct() {
+		this.seed = 0;
+	}
+
+	public int step0(int n) {
+		int local = n * 1;
+		if (local % 2 == 0) {
+			local = local + 0;
+		} else {
+			local = local - 0;
+		}
+		return local + 0 + 1;
+	}
+	public int step1(int n) {
+		int local = n * 2;
+		if (local % 2 == 0) {
+			local = local + 1;
+		} else {
+			local = local - 1;
+		}
+		return local + 1 + 1;
+	}
+	public int step2(int n) {
+		int local = n * 3;
+		if (local % 2 == 0) {
+			local = local + 2;
+		} else {
+			local = local - 2;
+		}
+		return local + 2 + 1;
+	}
+	public int step3(int n) {
+		int local = n * 4;
+		if (local % 2 == 0) {
+			local = local + 3;
+		} else {
+			local = local - 3;
+		}
+		return local + 3 + 1;
+	}
+	public int step4(int n) {
+		int local = n * 5;
+		if (local % 2 == 0) {
+			local = local + 4;
+		} else {
+			local = local - 4;
+		}
+		return local + 4 + 1;
+	}
+	public int step5(int n) {
+		int local = n * 6;
+		if (local % 2 == 0) {
+			local = local + 5;
+		} else {
+			local = local - 5;
+		}
+		return local + 5 + 1;
+	}
+	public int step6(int n) {
+		int local = n * 7;
+		if (local % 2 == 0) {
+			local = local + 6;
+		} else {
+			local = local - 6;
+		}
+		return local + 6 + 1;
+	}
+	public int step7(int n) {
+		int local = n * 8;
+		if (local % 2 == 0) {
+			local = local + 7;
+		} else {
+			local = local - 7;
+		}
+		return local + 7 + 1;
+	}
+
+	public string label() {
+		return "worker0";
+	}
+}
+
+#NLFILE bench/compilewide/Worker1.nl
+namespace bench.compilewide;
+class Worker1 {
+	public int seed;
+
+	public construct() {
+		this.seed = 1;
+	}
+
+	public int step0(int n) {
+		int local = n * 1;
+		if (local % 2 == 0) {
+			local = local + 0;
+		} else {
+			local = local - 0;
+		}
+		return local + 0 + 1;
+	}
+	public int step1(int n) {
+		int local = n * 2;
+		if (local % 2 == 0) {
+			local = local + 1;
+		} else {
+			local = local - 1;
+		}
+		return local + 1 + 1;
+	}
+	public int step2(int n) {
+		int local = n * 3;
+		if (local % 2 == 0) {
+			local = local + 2;
+		} else {
+			local = local - 2;
+		}
+		return local + 2 + 1;
+	}
+	public int step3(int n) {
+		int local = n * 4;
+		if (local % 2 == 0) {
+			local = local + 3;
+		} else {
+			local = local - 3;
+		}
+		return local + 3 + 1;
+	}
+	public int step4(int n) {
+		int local = n * 5;
+		if (local % 2 == 0) {
+			local = local + 4;
+		} else {
+			local = local - 4;
+		}
+		return local + 4 + 1;
+	}
+	public int step5(int n) {
+		int local = n * 6;
+		if (local % 2 == 0) {
+			local = local + 5;
+		} else {
+			local = local - 5;
+		}
+		return local + 5 + 1;
+	}
+	public int step6(int n) {
+		int local = n * 7;
+		if (local % 2 == 0) {
+			local = local + 6;
+		} else {
+			local = local - 6;
+		}
+		return local + 6 + 1;
+	}
+	public int step7(int n) {
+		int local = n * 8;
+		if (local % 2 == 0) {
+			local = local + 7;
+		} else {
+			local = local - 7;
+		}
+		return local + 7 + 1;
+	}
+
+	public string label() {
+		return "worker1";
+	}
+}
+
+#NLFILE bench/compilewide/Worker2.nl
+namespace bench.compilewide;
+class Worker2 {
+	public int seed;
+
+	public construct() {
+		this.seed = 2;
+	}
+
+	public int step0(int n) {
+		int local = n * 1;
+		if (local % 2 == 0) {
+			local = local + 0;
+		} else {
+			local = local - 0;
+		}
+		return local + 0 + 1;
+	}
+	public int step1(int n) {
+		int local = n * 2;
+		if (local % 2 == 0) {
+			local = local + 1;
+		} else {
+			local = local - 1;
+		}
+		return local + 1 + 1;
+	}
+	public int step2(int n) {
+		int local = n * 3;
+		if (local % 2 == 0) {
+			local = local + 2;
+		} else {
+			local = local - 2;
+		}
+		return local + 2 + 1;
+	}
+	public int step3(int n) {
+		int local = n * 4;
+		if (local % 2 == 0) {
+			local = local + 3;
+		} else {
+			local = local - 3;
+		}
+		return local + 3 + 1;
+	}
+	public int step4(int n) {
+		int local = n * 5;
+		if (local % 2 == 0) {
+			local = local + 4;
+		} else {
+			local = local - 4;
+		}
+		return local + 4 + 1;
+	}
+	public int step5(int n) {
+		int local = n * 6;
+		if (local % 2 == 0) {
+			local = local + 5;
+		} else {
+			local = local - 5;
+		}
+		return local + 5 + 1;
+	}
+	public int step6(int n) {
+		int local = n * 7;
+		if (local % 2 == 0) {
+			local = local + 6;
+		} else {
+			local = local - 6;
+		}
+		return local + 6 + 1;
+	}
+	public int step7(int n) {
+		int local = n * 8;
+		if (local % 2 == 0) {
+			local = local + 7;
+		} else {
+			local = local - 7;
+		}
+		return local + 7 + 1;
+	}
+
+	public string label() {
+		return "worker2";
+	}
+}
+
+#NLFILE bench/compilewide/Worker3.nl
+namespace bench.compilewide;
+class Worker3 {
+	public int seed;
+
+	public construct() {
+		this.seed = 3;
+	}
+
+	public int step0(int n) {
+		int local = n * 1;
+		if (local % 2 == 0) {
+			local = local + 0;
+		} else {
+			local = local - 0;
+		}
+		return local + 0 + 1;
+	}
+	public int step1(int n) {
+		int local = n * 2;
+		if (local % 2 == 0) {
+			local = local + 1;
+		} else {
+			local = local - 1;
+		}
+		return local + 1 + 1;
+	}
+	public int step2(int n) {
+		int local = n * 3;
+		if (local % 2 == 0) {
+			local = local + 2;
+		} else {
+			local = local - 2;
+		}
+		return local + 2 + 1;
+	}
+	public int step3(int n) {
+		int local = n * 4;
+		if (local % 2 == 0) {
+			local = local + 3;
+		} else {
+			local = local - 3;
+		}
+		return local + 3 + 1;
+	}
+	public int step4(int n) {
+		int local = n * 5;
+		if (local % 2 == 0) {
+			local = local + 4;
+		} else {
+			local = local - 4;
+		}
+		return local + 4 + 1;
+	}
+	public int step5(int n) {
+		int local = n * 6;
+		if (local % 2 == 0) {
+			local = local + 5;
+		} else {
+			local = local - 5;
+		}
+		return local + 5 + 1;
+	}
+	public int step6(int n) {
+		int local = n * 7;
+		if (local % 2 == 0) {
+			local = local + 6;
+		} else {
+			local = local - 6;
+		}
+		return local + 6 + 1;
+	}
+	public int step7(int n) {
+		int local = n * 8;
+		if (local % 2 == 0) {
+			local = local + 7;
+		} else {
+			local = local - 7;
+		}
+		return local + 7 + 1;
+	}
+
+	public string label() {
+		return "worker3";
+	}
+}
+
+#NLFILE bench/compilewide/Worker4.nl
+namespace bench.compilewide;
+class Worker4 {
+	public int seed;
+
+	public construct() {
+		this.seed = 4;
+	}
+
+	public int step0(int n) {
+		int local = n * 1;
+		if (local % 2 == 0) {
+			local = local + 0;
+		} else {
+			local = local - 0;
+		}
+		return local + 0 + 1;
+	}
+	public int step1(int n) {
+		int local = n * 2;
+		if (local % 2 == 0) {
+			local = local + 1;
+		} else {
+			local = local - 1;
+		}
+		return local + 1 + 1;
+	}
+	public int step2(int n) {
+		int local = n * 3;
+		if (local % 2 == 0) {
+			local = local + 2;
+		} else {
+			local = local - 2;
+		}
+		return local + 2 + 1;
+	}
+	public int step3(int n) {
+		int local = n * 4;
+		if (local % 2 == 0) {
+			local = local + 3;
+		} else {
+			local = local - 3;
+		}
+		return local + 3 + 1;
+	}
+	public int step4(int n) {
+		int local = n * 5;
+		if (local % 2 == 0) {
+			local = local + 4;
+		} else {
+			local = local - 4;
+		}
+		return local + 4 + 1;
+	}
+	public int step5(int n) {
+		int local = n * 6;
+		if (local % 2 == 0) {
+			local = local + 5;
+		} else {
+			local = local - 5;
+		}
+		return local + 5 + 1;
+	}
+	public int step6(int n) {
+		int local = n * 7;
+		if (local % 2 == 0) {
+			local = local + 6;
+		} else {
+			local = local - 6;
+		}
+		return local + 6 + 1;
+	}
+	public int step7(int n) {
+		int local = n * 8;
+		if (local % 2 == 0) {
+			local = local + 7;
+		} else {
+			local = local - 7;
+		}
+		return local + 7 + 1;
+	}
+
+	public string label() {
+		return "worker4";
+	}
+}
+
+#NLFILE bench/compilewide/Worker5.nl
+namespace bench.compilewide;
+class Worker5 {
+	public int seed;
+
+	public construct() {
+		this.seed = 5;
+	}
+
+	public int step0(int n) {
+		int local = n * 1;
+		if (local % 2 == 0) {
+			local = local + 0;
+		} else {
+			local = local - 0;
+		}
+		return local + 0 + 1;
+	}
+	public int step1(int n) {
+		int local = n * 2;
+		if (local % 2 == 0) {
+			local = local + 1;
+		} else {
+			local = local - 1;
+		}
+		return local + 1 + 1;
+	}
+	public int step2(int n) {
+		int local = n * 3;
+		if (local % 2 == 0) {
+			local = local + 2;
+		} else {
+			local = local - 2;
+		}
+		return local + 2 + 1;
+	}
+	public int step3(int n) {
+		int local = n * 4;
+		if (local % 2 == 0) {
+			local = local + 3;
+		} else {
+			local = local - 3;
+		}
+		return local + 3 + 1;
+	}
+	public int step4(int n) {
+		int local = n * 5;
+		if (local % 2 == 0) {
+			local = local + 4;
+		} else {
+			local = local - 4;
+		}
+		return local + 4 + 1;
+	}
+	public int step5(int n) {
+		int local = n * 6;
+		if (local % 2 == 0) {
+			local = local + 5;
+		} else {
+			local = local - 5;
+		}
+		return local + 5 + 1;
+	}
+	public int step6(int n) {
+		int local = n * 7;
+		if (local % 2 == 0) {
+			local = local + 6;
+		} else {
+			local = local - 6;
+		}
+		return local + 6 + 1;
+	}
+	public int step7(int n) {
+		int local = n * 8;
+		if (local % 2 == 0) {
+			local = local + 7;
+		} else {
+			local = local - 7;
+		}
+		return local + 7 + 1;
+	}
+
+	public string label() {
+		return "worker5";
+	}
+}
+
+#NLFILE bench/compilewide/Worker6.nl
+namespace bench.compilewide;
+class Worker6 {
+	public int seed;
+
+	public construct() {
+		this.seed = 6;
+	}
+
+	public int step0(int n) {
+		int local = n * 1;
+		if (local % 2 == 0) {
+			local = local + 0;
+		} else {
+			local = local - 0;
+		}
+		return local + 0 + 1;
+	}
+	public int step1(int n) {
+		int local = n * 2;
+		if (local % 2 == 0) {
+			local = local + 1;
+		} else {
+			local = local - 1;
+		}
+		return local + 1 + 1;
+	}
+	public int step2(int n) {
+		int local = n * 3;
+		if (local % 2 == 0) {
+			local = local + 2;
+		} else {
+			local = local - 2;
+		}
+		return local + 2 + 1;
+	}
+	public int step3(int n) {
+		int local = n * 4;
+		if (local % 2 == 0) {
+			local = local + 3;
+		} else {
+			local = local - 3;
+		}
+		return local + 3 + 1;
+	}
+	public int step4(int n) {
+		int local = n * 5;
+		if (local % 2 == 0) {
+			local = local + 4;
+		} else {
+			local = local - 4;
+		}
+		return local + 4 + 1;
+	}
+	public int step5(int n) {
+		int local = n * 6;
+		if (local % 2 == 0) {
+			local = local + 5;
+		} else {
+			local = local - 5;
+		}
+		return local + 5 + 1;
+	}
+	public int step6(int n) {
+		int local = n * 7;
+		if (local % 2 == 0) {
+			local = local + 6;
+		} else {
+			local = local - 6;
+		}
+		return local + 6 + 1;
+	}
+	public int step7(int n) {
+		int local = n * 8;
+		if (local % 2 == 0) {
+			local = local + 7;
+		} else {
+			local = local - 7;
+		}
+		return local + 7 + 1;
+	}
+
+	public string label() {
+		return "worker6";
+	}
+}
+
+#NLFILE bench/compilewide/Worker7.nl
+namespace bench.compilewide;
+class Worker7 {
+	public int seed;
+
+	public construct() {
+		this.seed = 7;
+	}
+
+	public int step0(int n) {
+		int local = n * 1;
+		if (local % 2 == 0) {
+			local = local + 0;
+		} else {
+			local = local - 0;
+		}
+		return local + 0 + 1;
+	}
+	public int step1(int n) {
+		int local = n * 2;
+		if (local % 2 == 0) {
+			local = local + 1;
+		} else {
+			local = local - 1;
+		}
+		return local + 1 + 1;
+	}
+	public int step2(int n) {
+		int local = n * 3;
+		if (local % 2 == 0) {
+			local = local + 2;
+		} else {
+			local = local - 2;
+		}
+		return local + 2 + 1;
+	}
+	public int step3(int n) {
+		int local = n * 4;
+		if (local % 2 == 0) {
+			local = local + 3;
+		} else {
+			local = local - 3;
+		}
+		return local + 3 + 1;
+	}
+	public int step4(int n) {
+		int local = n * 5;
+		if (local % 2 == 0) {
+			local = local + 4;
+		} else {
+			local = local - 4;
+		}
+		return local + 4 + 1;
+	}
+	public int step5(int n) {
+		int local = n * 6;
+		if (local % 2 == 0) {
+			local = local + 5;
+		} else {
+			local = local - 5;
+		}
+		return local + 5 + 1;
+	}
+	public int step6(int n) {
+		int local = n * 7;
+		if (local % 2 == 0) {
+			local = local + 6;
+		} else {
+			local = local - 6;
+		}
+		return local + 6 + 1;
+	}
+	public int step7(int n) {
+		int local = n * 8;
+		if (local % 2 == 0) {
+			local = local + 7;
+		} else {
+			local = local - 7;
+		}
+		return local + 7 + 1;
+	}
+
+	public string label() {
+		return "worker7";
+	}
+}
+
+#NLFILE bench/compilewide/Worker8.nl
+namespace bench.compilewide;
+class Worker8 {
+	public int seed;
+
+	public construct() {
+		this.seed = 8;
+	}
+
+	public int step0(int n) {
+		int local = n * 1;
+		if (local % 2 == 0) {
+			local = local + 0;
+		} else {
+			local = local - 0;
+		}
+		return local + 0 + 1;
+	}
+	public int step1(int n) {
+		int local = n * 2;
+		if (local % 2 == 0) {
+			local = local + 1;
+		} else {
+			local = local - 1;
+		}
+		return local + 1 + 1;
+	}
+	public int step2(int n) {
+		int local = n * 3;
+		if (local % 2 == 0) {
+			local = local + 2;
+		} else {
+			local = local - 2;
+		}
+		return local + 2 + 1;
+	}
+	public int step3(int n) {
+		int local = n * 4;
+		if (local % 2 == 0) {
+			local = local + 3;
+		} else {
+			local = local - 3;
+		}
+		return local + 3 + 1;
+	}
+	public int step4(int n) {
+		int local = n * 5;
+		if (local % 2 == 0) {
+			local = local + 4;
+		} else {
+			local = local - 4;
+		}
+		return local + 4 + 1;
+	}
+	public int step5(int n) {
+		int local = n * 6;
+		if (local % 2 == 0) {
+			local = local + 5;
+		} else {
+			local = local - 5;
+		}
+		return local + 5 + 1;
+	}
+	public int step6(int n) {
+		int local = n * 7;
+		if (local % 2 == 0) {
+			local = local + 6;
+		} else {
+			local = local - 6;
+		}
+		return local + 6 + 1;
+	}
+	public int step7(int n) {
+		int local = n * 8;
+		if (local % 2 == 0) {
+			local = local + 7;
+		} else {
+			local = local - 7;
+		}
+		return local + 7 + 1;
+	}
+
+	public string label() {
+		return "worker8";
+	}
+}
+
+#NLFILE bench/compilewide/Worker9.nl
+namespace bench.compilewide;
+class Worker9 {
+	public int seed;
+
+	public construct() {
+		this.seed = 9;
+	}
+
+	public int step0(int n) {
+		int local = n * 1;
+		if (local % 2 == 0) {
+			local = local + 0;
+		} else {
+			local = local - 0;
+		}
+		return local + 0 + 1;
+	}
+	public int step1(int n) {
+		int local = n * 2;
+		if (local % 2 == 0) {
+			local = local + 1;
+		} else {
+			local = local - 1;
+		}
+		return local + 1 + 1;
+	}
+	public int step2(int n) {
+		int local = n * 3;
+		if (local % 2 == 0) {
+			local = local + 2;
+		} else {
+			local = local - 2;
+		}
+		return local + 2 + 1;
+	}
+	public int step3(int n) {
+		int local = n * 4;
+		if (local % 2 == 0) {
+			local = local + 3;
+		} else {
+			local = local - 3;
+		}
+		return local + 3 + 1;
+	}
+	public int step4(int n) {
+		int local = n * 5;
+		if (local % 2 == 0) {
+			local = local + 4;
+		} else {
+			local = local - 4;
+		}
+		return local + 4 + 1;
+	}
+	public int step5(int n) {
+		int local = n * 6;
+		if (local % 2 == 0) {
+			local = local + 5;
+		} else {
+			local = local - 5;
+		}
+		return local + 5 + 1;
+	}
+	public int step6(int n) {
+		int local = n * 7;
+		if (local % 2 == 0) {
+			local = local + 6;
+		} else {
+			local = local - 6;
+		}
+		return local + 6 + 1;
+	}
+	public int step7(int n) {
+		int local = n * 8;
+		if (local % 2 == 0) {
+			local = local + 7;
+		} else {
+			local = local - 7;
+		}
+		return local + 7 + 1;
+	}
+
+	public string label() {
+		return "worker9";
+	}
+}
+
+#NLFILE bench/compilewide/Worker10.nl
+namespace bench.compilewide;
+class Worker10 {
+	public int seed;
+
+	public construct() {
+		this.seed = 10;
+	}
+
+	public int step0(int n) {
+		int local = n * 1;
+		if (local % 2 == 0) {
+			local = local + 0;
+		} else {
+			local = local - 0;
+		}
+		return local + 0 + 1;
+	}
+	public int step1(int n) {
+		int local = n * 2;
+		if (local % 2 == 0) {
+			local = local + 1;
+		} else {
+			local = local - 1;
+		}
+		return local + 1 + 1;
+	}
+	public int step2(int n) {
+		int local = n * 3;
+		if (local % 2 == 0) {
+			local = local + 2;
+		} else {
+			local = local - 2;
+		}
+		return local + 2 + 1;
+	}
+	public int step3(int n) {
+		int local = n * 4;
+		if (local % 2 == 0) {
+			local = local + 3;
+		} else {
+			local = local - 3;
+		}
+		return local + 3 + 1;
+	}
+	public int step4(int n) {
+		int local = n * 5;
+		if (local % 2 == 0) {
+			local = local + 4;
+		} else {
+			local = local - 4;
+		}
+		return local + 4 + 1;
+	}
+	public int step5(int n) {
+		int local = n * 6;
+		if (local % 2 == 0) {
+			local = local + 5;
+		} else {
+			local = local - 5;
+		}
+		return local + 5 + 1;
+	}
+	public int step6(int n) {
+		int local = n * 7;
+		if (local % 2 == 0) {
+			local = local + 6;
+		} else {
+			local = local - 6;
+		}
+		return local + 6 + 1;
+	}
+	public int step7(int n) {
+		int local = n * 8;
+		if (local % 2 == 0) {
+			local = local + 7;
+		} else {
+			local = local - 7;
+		}
+		return local + 7 + 1;
+	}
+
+	public string label() {
+		return "worker10";
+	}
+}
+
+#NLFILE bench/compilewide/Worker11.nl
+namespace bench.compilewide;
+class Worker11 {
+	public int seed;
+
+	public construct() {
+		this.seed = 11;
+	}
+
+	public int step0(int n) {
+		int local = n * 1;
+		if (local % 2 == 0) {
+			local = local + 0;
+		} else {
+			local = local - 0;
+		}
+		return local + 0 + 1;
+	}
+	public int step1(int n) {
+		int local = n * 2;
+		if (local % 2 == 0) {
+			local = local + 1;
+		} else {
+			local = local - 1;
+		}
+		return local + 1 + 1;
+	}
+	public int step2(int n) {
+		int local = n * 3;
+		if (local % 2 == 0) {
+			local = local + 2;
+		} else {
+			local = local - 2;
+		}
+		return local + 2 + 1;
+	}
+	public int step3(int n) {
+		int local = n * 4;
+		if (local % 2 == 0) {
+			local = local + 3;
+		} else {
+			local = local - 3;
+		}
+		return local + 3 + 1;
+	}
+	public int step4(int n) {
+		int local = n * 5;
+		if (local % 2 == 0) {
+			local = local + 4;
+		} else {
+			local = local - 4;
+		}
+		return local + 4 + 1;
+	}
+	public int step5(int n) {
+		int local = n * 6;
+		if (local % 2 == 0) {
+			local = local + 5;
+		} else {
+			local = local - 5;
+		}
+		return local + 5 + 1;
+	}
+	public int step6(int n) {
+		int local = n * 7;
+		if (local % 2 == 0) {
+			local = local + 6;
+		} else {
+			local = local - 6;
+		}
+		return local + 6 + 1;
+	}
+	public int step7(int n) {
+		int local = n * 8;
+		if (local % 2 == 0) {
+			local = local + 7;
+		} else {
+			local = local - 7;
+		}
+		return local + 7 + 1;
+	}
+
+	public string label() {
+		return "worker11";
+	}
+}
+
+#NLFILE bench/compilewide/Worker12.nl
+namespace bench.compilewide;
+class Worker12 {
+	public int seed;
+
+	public construct() {
+		this.seed = 12;
+	}
+
+	public int step0(int n) {
+		int local = n * 1;
+		if (local % 2 == 0) {
+			local = local + 0;
+		} else {
+			local = local - 0;
+		}
+		return local + 0 + 1;
+	}
+	public int step1(int n) {
+		int local = n * 2;
+		if (local % 2 == 0) {
+			local = local + 1;
+		} else {
+			local = local - 1;
+		}
+		return local + 1 + 1;
+	}
+	public int step2(int n) {
+		int local = n * 3;
+		if (local % 2 == 0) {
+			local = local + 2;
+		} else {
+			local = local - 2;
+		}
+		return local + 2 + 1;
+	}
+	public int step3(int n) {
+		int local = n * 4;
+		if (local % 2 == 0) {
+			local = local + 3;
+		} else {
+			local = local - 3;
+		}
+		return local + 3 + 1;
+	}
+	public int step4(int n) {
+		int local = n * 5;
+		if (local % 2 == 0) {
+			local = local + 4;
+		} else {
+			local = local - 4;
+		}
+		return local + 4 + 1;
+	}
+	public int step5(int n) {
+		int local = n * 6;
+		if (local % 2 == 0) {
+			local = local + 5;
+		} else {
+			local = local - 5;
+		}
+		return local + 5 + 1;
+	}
+	public int step6(int n) {
+		int local = n * 7;
+		if (local % 2 == 0) {
+			local = local + 6;
+		} else {
+			local = local - 6;
+		}
+		return local + 6 + 1;
+	}
+	public int step7(int n) {
+		int local = n * 8;
+		if (local % 2 == 0) {
+			local = local + 7;
+		} else {
+			local = local - 7;
+		}
+		return local + 7 + 1;
+	}
+
+	public string label() {
+		return "worker12";
+	}
+}
+
+#NLFILE bench/compilewide/Worker13.nl
+namespace bench.compilewide;
+class Worker13 {
+	public int seed;
+
+	public construct() {
+		this.seed = 13;
+	}
+
+	public int step0(int n) {
+		int local = n * 1;
+		if (local % 2 == 0) {
+			local = local + 0;
+		} else {
+			local = local - 0;
+		}
+		return local + 0 + 1;
+	}
+	public int step1(int n) {
+		int local = n * 2;
+		if (local % 2 == 0) {
+			local = local + 1;
+		} else {
+			local = local - 1;
+		}
+		return local + 1 + 1;
+	}
+	public int step2(int n) {
+		int local = n * 3;
+		if (local % 2 == 0) {
+			local = local + 2;
+		} else {
+			local = local - 2;
+		}
+		return local + 2 + 1;
+	}
+	public int step3(int n) {
+		int local = n * 4;
+		if (local % 2 == 0) {
+			local = local + 3;
+		} else {
+			local = local - 3;
+		}
+		return local + 3 + 1;
+	}
+	public int step4(int n) {
+		int local = n * 5;
+		if (local % 2 == 0) {
+			local = local + 4;
+		} else {
+			local = local - 4;
+		}
+		return local + 4 + 1;
+	}
+	public int step5(int n) {
+		int local = n * 6;
+		if (local % 2 == 0) {
+			local = local + 5;
+		} else {
+			local = local - 5;
+		}
+		return local + 5 + 1;
+	}
+	public int step6(int n) {
+		int local = n * 7;
+		if (local % 2 == 0) {
+			local = local + 6;
+		} else {
+			local = local - 6;
+		}
+		return local + 6 + 1;
+	}
+	public int step7(int n) {
+		int local = n * 8;
+		if (local % 2 == 0) {
+			local = local + 7;
+		} else {
+			local = local - 7;
+		}
+		return local + 7 + 1;
+	}
+
+	public string label() {
+		return "worker13";
+	}
+}
+
+#NLFILE bench/compilewide/Worker14.nl
+namespace bench.compilewide;
+class Worker14 {
+	public int seed;
+
+	public construct() {
+		this.seed = 14;
+	}
+
+	public int step0(int n) {
+		int local = n * 1;
+		if (local % 2 == 0) {
+			local = local + 0;
+		} else {
+			local = local - 0;
+		}
+		return local + 0 + 1;
+	}
+	public int step1(int n) {
+		int local = n * 2;
+		if (local % 2 == 0) {
+			local = local + 1;
+		} else {
+			local = local - 1;
+		}
+		return local + 1 + 1;
+	}
+	public int step2(int n) {
+		int local = n * 3;
+		if (local % 2 == 0) {
+			local = local + 2;
+		} else {
+			local = local - 2;
+		}
+		return local + 2 + 1;
+	}
+	public int step3(int n) {
+		int local = n * 4;
+		if (local % 2 == 0) {
+			local = local + 3;
+		} else {
+			local = local - 3;
+		}
+		return local + 3 + 1;
+	}
+	public int step4(int n) {
+		int local = n * 5;
+		if (local % 2 == 0) {
+			local = local + 4;
+		} else {
+			local = local - 4;
+		}
+		return local + 4 + 1;
+	}
+	public int step5(int n) {
+		int local = n * 6;
+		if (local % 2 == 0) {
+			local = local + 5;
+		} else {
+			local = local - 5;
+		}
+		return local + 5 + 1;
+	}
+	public int step6(int n) {
+		int local = n * 7;
+		if (local % 2 == 0) {
+			local = local + 6;
+		} else {
+			local = local - 6;
+		}
+		return local + 6 + 1;
+	}
+	public int step7(int n) {
+		int local = n * 8;
+		if (local % 2 == 0) {
+			local = local + 7;
+		} else {
+			local = local - 7;
+		}
+		return local + 7 + 1;
+	}
+
+	public string label() {
+		return "worker14";
+	}
+}
+
+#NLFILE bench/compilewide/Worker15.nl
+namespace bench.compilewide;
+class Worker15 {
+	public int seed;
+
+	public construct() {
+		this.seed = 15;
+	}
+
+	public int step0(int n) {
+		int local = n * 1;
+		if (local % 2 == 0) {
+			local = local + 0;
+		} else {
+			local = local - 0;
+		}
+		return local + 0 + 1;
+	}
+	public int step1(int n) {
+		int local = n * 2;
+		if (local % 2 == 0) {
+			local = local + 1;
+		} else {
+			local = local - 1;
+		}
+		return local + 1 + 1;
+	}
+	public int step2(int n) {
+		int local = n * 3;
+		if (local % 2 == 0) {
+			local = local + 2;
+		} else {
+			local = local - 2;
+		}
+		return local + 2 + 1;
+	}
+	public int step3(int n) {
+		int local = n * 4;
+		if (local % 2 == 0) {
+			local = local + 3;
+		} else {
+			local = local - 3;
+		}
+		return local + 3 + 1;
+	}
+	public int step4(int n) {
+		int local = n * 5;
+		if (local % 2 == 0) {
+			local = local + 4;
+		} else {
+			local = local - 4;
+		}
+		return local + 4 + 1;
+	}
+	public int step5(int n) {
+		int local = n * 6;
+		if (local % 2 == 0) {
+			local = local + 5;
+		} else {
+			local = local - 5;
+		}
+		return local + 5 + 1;
+	}
+	public int step6(int n) {
+		int local = n * 7;
+		if (local % 2 == 0) {
+			local = local + 6;
+		} else {
+			local = local - 6;
+		}
+		return local + 6 + 1;
+	}
+	public int step7(int n) {
+		int local = n * 8;
+		if (local % 2 == 0) {
+			local = local + 7;
+		} else {
+			local = local - 7;
+		}
+		return local + 7 + 1;
+	}
+
+	public string label() {
+		return "worker15";
+	}
+}
+
+#NLFILE bench/compilewide/Worker16.nl
+namespace bench.compilewide;
+class Worker16 {
+	public int seed;
+
+	public construct() {
+		this.seed = 16;
+	}
+
+	public int step0(int n) {
+		int local = n * 1;
+		if (local % 2 == 0) {
+			local = local + 0;
+		} else {
+			local = local - 0;
+		}
+		return local + 0 + 1;
+	}
+	public int step1(int n) {
+		int local = n * 2;
+		if (local % 2 == 0) {
+			local = local + 1;
+		} else {
+			local = local - 1;
+		}
+		return local + 1 + 1;
+	}
+	public int step2(int n) {
+		int local = n * 3;
+		if (local % 2 == 0) {
+			local = local + 2;
+		} else {
+			local = local - 2;
+		}
+		return local + 2 + 1;
+	}
+	public int step3(int n) {
+		int local = n * 4;
+		if (local % 2 == 0) {
+			local = local + 3;
+		} else {
+			local = local - 3;
+		}
+		return local + 3 + 1;
+	}
+	public int step4(int n) {
+		int local = n * 5;
+		if (local % 2 == 0) {
+			local = local + 4;
+		} else {
+			local = local - 4;
+		}
+		return local + 4 + 1;
+	}
+	public int step5(int n) {
+		int local = n * 6;
+		if (local % 2 == 0) {
+			local = local + 5;
+		} else {
+			local = local - 5;
+		}
+		return local + 5 + 1;
+	}
+	public int step6(int n) {
+		int local = n * 7;
+		if (local % 2 == 0) {
+			local = local + 6;
+		} else {
+			local = local - 6;
+		}
+		return local + 6 + 1;
+	}
+	public int step7(int n) {
+		int local = n * 8;
+		if (local % 2 == 0) {
+			local = local + 7;
+		} else {
+			local = local - 7;
+		}
+		return local + 7 + 1;
+	}
+
+	public string label() {
+		return "worker16";
+	}
+}
+
+#NLFILE bench/compilewide/Worker17.nl
+namespace bench.compilewide;
+class Worker17 {
+	public int seed;
+
+	public construct() {
+		this.seed = 17;
+	}
+
+	public int step0(int n) {
+		int local = n * 1;
+		if (local % 2 == 0) {
+			local = local + 0;
+		} else {
+			local = local - 0;
+		}
+		return local + 0 + 1;
+	}
+	public int step1(int n) {
+		int local = n * 2;
+		if (local % 2 == 0) {
+			local = local + 1;
+		} else {
+			local = local - 1;
+		}
+		return local + 1 + 1;
+	}
+	public int step2(int n) {
+		int local = n * 3;
+		if (local % 2 == 0) {
+			local = local + 2;
+		} else {
+			local = local - 2;
+		}
+		return local + 2 + 1;
+	}
+	public int step3(int n) {
+		int local = n * 4;
+		if (local % 2 == 0) {
+			local = local + 3;
+		} else {
+			local = local - 3;
+		}
+		return local + 3 + 1;
+	}
+	public int step4(int n) {
+		int local = n * 5;
+		if (local % 2 == 0) {
+			local = local + 4;
+		} else {
+			local = local - 4;
+		}
+		return local + 4 + 1;
+	}
+	public int step5(int n) {
+		int local = n * 6;
+		if (local % 2 == 0) {
+			local = local + 5;
+		} else {
+			local = local - 5;
+		}
+		return local + 5 + 1;
+	}
+	public int step6(int n) {
+		int local = n * 7;
+		if (local % 2 == 0) {
+			local = local + 6;
+		} else {
+			local = local - 6;
+		}
+		return local + 6 + 1;
+	}
+	public int step7(int n) {
+		int local = n * 8;
+		if (local % 2 == 0) {
+			local = local + 7;
+		} else {
+			local = local - 7;
+		}
+		return local + 7 + 1;
+	}
+
+	public string label() {
+		return "worker17";
+	}
+}
+
+#NLFILE bench/compilewide/Worker18.nl
+namespace bench.compilewide;
+class Worker18 {
+	public int seed;
+
+	public construct() {
+		this.seed = 18;
+	}
+
+	public int step0(int n) {
+		int local = n * 1;
+		if (local % 2 == 0) {
+			local = local + 0;
+		} else {
+			local = local - 0;
+		}
+		return local + 0 + 1;
+	}
+	public int step1(int n) {
+		int local = n * 2;
+		if (local % 2 == 0) {
+			local = local + 1;
+		} else {
+			local = local - 1;
+		}
+		return local + 1 + 1;
+	}
+	public int step2(int n) {
+		int local = n * 3;
+		if (local % 2 == 0) {
+			local = local + 2;
+		} else {
+			local = local - 2;
+		}
+		return local + 2 + 1;
+	}
+	public int step3(int n) {
+		int local = n * 4;
+		if (local % 2 == 0) {
+			local = local + 3;
+		} else {
+			local = local - 3;
+		}
+		return local + 3 + 1;
+	}
+	public int step4(int n) {
+		int local = n * 5;
+		if (local % 2 == 0) {
+			local = local + 4;
+		} else {
+			local = local - 4;
+		}
+		return local + 4 + 1;
+	}
+	public int step5(int n) {
+		int local = n * 6;
+		if (local % 2 == 0) {
+			local = local + 5;
+		} else {
+			local = local - 5;
+		}
+		return local + 5 + 1;
+	}
+	public int step6(int n) {
+		int local = n * 7;
+		if (local % 2 == 0) {
+			local = local + 6;
+		} else {
+			local = local - 6;
+		}
+		return local + 6 + 1;
+	}
+	public int step7(int n) {
+		int local = n * 8;
+		if (local % 2 == 0) {
+			local = local + 7;
+		} else {
+			local = local - 7;
+		}
+		return local + 7 + 1;
+	}
+
+	public string label() {
+		return "worker18";
+	}
+}
+
+#NLFILE bench/compilewide/Worker19.nl
+namespace bench.compilewide;
+class Worker19 {
+	public int seed;
+
+	public construct() {
+		this.seed = 19;
+	}
+
+	public int step0(int n) {
+		int local = n * 1;
+		if (local % 2 == 0) {
+			local = local + 0;
+		} else {
+			local = local - 0;
+		}
+		return local + 0 + 1;
+	}
+	public int step1(int n) {
+		int local = n * 2;
+		if (local % 2 == 0) {
+			local = local + 1;
+		} else {
+			local = local - 1;
+		}
+		return local + 1 + 1;
+	}
+	public int step2(int n) {
+		int local = n * 3;
+		if (local % 2 == 0) {
+			local = local + 2;
+		} else {
+			local = local - 2;
+		}
+		return local + 2 + 1;
+	}
+	public int step3(int n) {
+		int local = n * 4;
+		if (local % 2 == 0) {
+			local = local + 3;
+		} else {
+			local = local - 3;
+		}
+		return local + 3 + 1;
+	}
+	public int step4(int n) {
+		int local = n * 5;
+		if (local % 2 == 0) {
+			local = local + 4;
+		} else {
+			local = local - 4;
+		}
+		return local + 4 + 1;
+	}
+	public int step5(int n) {
+		int local = n * 6;
+		if (local % 2 == 0) {
+			local = local + 5;
+		} else {
+			local = local - 5;
+		}
+		return local + 5 + 1;
+	}
+	public int step6(int n) {
+		int local = n * 7;
+		if (local % 2 == 0) {
+			local = local + 6;
+		} else {
+			local = local - 6;
+		}
+		return local + 6 + 1;
+	}
+	public int step7(int n) {
+		int local = n * 8;
+		if (local % 2 == 0) {
+			local = local + 7;
+		} else {
+			local = local - 7;
+		}
+		return local + 7 + 1;
+	}
+
+	public string label() {
+		return "worker19";
+	}
+}
+
+#NLFILE bench/compilewide/Worker20.nl
+namespace bench.compilewide;
+class Worker20 {
+	public int seed;
+
+	public construct() {
+		this.seed = 20;
+	}
+
+	public int step0(int n) {
+		int local = n * 1;
+		if (local % 2 == 0) {
+			local = local + 0;
+		} else {
+			local = local - 0;
+		}
+		return local + 0 + 1;
+	}
+	public int step1(int n) {
+		int local = n * 2;
+		if (local % 2 == 0) {
+			local = local + 1;
+		} else {
+			local = local - 1;
+		}
+		return local + 1 + 1;
+	}
+	public int step2(int n) {
+		int local = n * 3;
+		if (local % 2 == 0) {
+			local = local + 2;
+		} else {
+			local = local - 2;
+		}
+		return local + 2 + 1;
+	}
+	public int step3(int n) {
+		int local = n * 4;
+		if (local % 2 == 0) {
+			local = local + 3;
+		} else {
+			local = local - 3;
+		}
+		return local + 3 + 1;
+	}
+	public int step4(int n) {
+		int local = n * 5;
+		if (local % 2 == 0) {
+			local = local + 4;
+		} else {
+			local = local - 4;
+		}
+		return local + 4 + 1;
+	}
+	public int step5(int n) {
+		int local = n * 6;
+		if (local % 2 == 0) {
+			local = local + 5;
+		} else {
+			local = local - 5;
+		}
+		return local + 5 + 1;
+	}
+	public int step6(int n) {
+		int local = n * 7;
+		if (local % 2 == 0) {
+			local = local + 6;
+		} else {
+			local = local - 6;
+		}
+		return local + 6 + 1;
+	}
+	public int step7(int n) {
+		int local = n * 8;
+		if (local % 2 == 0) {
+			local = local + 7;
+		} else {
+			local = local - 7;
+		}
+		return local + 7 + 1;
+	}
+
+	public string label() {
+		return "worker20";
+	}
+}
+
+#NLFILE bench/compilewide/Worker21.nl
+namespace bench.compilewide;
+class Worker21 {
+	public int seed;
+
+	public construct() {
+		this.seed = 21;
+	}
+
+	public int step0(int n) {
+		int local = n * 1;
+		if (local % 2 == 0) {
+			local = local + 0;
+		} else {
+			local = local - 0;
+		}
+		return local + 0 + 1;
+	}
+	public int step1(int n) {
+		int local = n * 2;
+		if (local % 2 == 0) {
+			local = local + 1;
+		} else {
+			local = local - 1;
+		}
+		return local + 1 + 1;
+	}
+	public int step2(int n) {
+		int local = n * 3;
+		if (local % 2 == 0) {
+			local = local + 2;
+		} else {
+			local = local - 2;
+		}
+		return local + 2 + 1;
+	}
+	public int step3(int n) {
+		int local = n * 4;
+		if (local % 2 == 0) {
+			local = local + 3;
+		} else {
+			local = local - 3;
+		}
+		return local + 3 + 1;
+	}
+	public int step4(int n) {
+		int local = n * 5;
+		if (local % 2 == 0) {
+			local = local + 4;
+		} else {
+			local = local - 4;
+		}
+		return local + 4 + 1;
+	}
+	public int step5(int n) {
+		int local = n * 6;
+		if (local % 2 == 0) {
+			local = local + 5;
+		} else {
+			local = local - 5;
+		}
+		return local + 5 + 1;
+	}
+	public int step6(int n) {
+		int local = n * 7;
+		if (local % 2 == 0) {
+			local = local + 6;
+		} else {
+			local = local - 6;
+		}
+		return local + 6 + 1;
+	}
+	public int step7(int n) {
+		int local = n * 8;
+		if (local % 2 == 0) {
+			local = local + 7;
+		} else {
+			local = local - 7;
+		}
+		return local + 7 + 1;
+	}
+
+	public string label() {
+		return "worker21";
+	}
+}
+
+#NLFILE bench/compilewide/Worker22.nl
+namespace bench.compilewide;
+class Worker22 {
+	public int seed;
+
+	public construct() {
+		this.seed = 22;
+	}
+
+	public int step0(int n) {
+		int local = n * 1;
+		if (local % 2 == 0) {
+			local = local + 0;
+		} else {
+			local = local - 0;
+		}
+		return local + 0 + 1;
+	}
+	public int step1(int n) {
+		int local = n * 2;
+		if (local % 2 == 0) {
+			local = local + 1;
+		} else {
+			local = local - 1;
+		}
+		return local + 1 + 1;
+	}
+	public int step2(int n) {
+		int local = n * 3;
+		if (local % 2 == 0) {
+			local = local + 2;
+		} else {
+			local = local - 2;
+		}
+		return local + 2 + 1;
+	}
+	public int step3(int n) {
+		int local = n * 4;
+		if (local % 2 == 0) {
+			local = local + 3;
+		} else {
+			local = local - 3;
+		}
+		return local + 3 + 1;
+	}
+	public int step4(int n) {
+		int local = n * 5;
+		if (local % 2 == 0) {
+			local = local + 4;
+		} else {
+			local = local - 4;
+		}
+		return local + 4 + 1;
+	}
+	public int step5(int n) {
+		int local = n * 6;
+		if (local % 2 == 0) {
+			local = local + 5;
+		} else {
+			local = local - 5;
+		}
+		return local + 5 + 1;
+	}
+	public int step6(int n) {
+		int local = n * 7;
+		if (local % 2 == 0) {
+			local = local + 6;
+		} else {
+			local = local - 6;
+		}
+		return local + 6 + 1;
+	}
+	public int step7(int n) {
+		int local = n * 8;
+		if (local % 2 == 0) {
+			local = local + 7;
+		} else {
+			local = local - 7;
+		}
+		return local + 7 + 1;
+	}
+
+	public string label() {
+		return "worker22";
+	}
+}
+
+#NLFILE bench/compilewide/Worker23.nl
+namespace bench.compilewide;
+class Worker23 {
+	public int seed;
+
+	public construct() {
+		this.seed = 23;
+	}
+
+	public int step0(int n) {
+		int local = n * 1;
+		if (local % 2 == 0) {
+			local = local + 0;
+		} else {
+			local = local - 0;
+		}
+		return local + 0 + 1;
+	}
+	public int step1(int n) {
+		int local = n * 2;
+		if (local % 2 == 0) {
+			local = local + 1;
+		} else {
+			local = local - 1;
+		}
+		return local + 1 + 1;
+	}
+	public int step2(int n) {
+		int local = n * 3;
+		if (local % 2 == 0) {
+			local = local + 2;
+		} else {
+			local = local - 2;
+		}
+		return local + 2 + 1;
+	}
+	public int step3(int n) {
+		int local = n * 4;
+		if (local % 2 == 0) {
+			local = local + 3;
+		} else {
+			local = local - 3;
+		}
+		return local + 3 + 1;
+	}
+	public int step4(int n) {
+		int local = n * 5;
+		if (local % 2 == 0) {
+			local = local + 4;
+		} else {
+			local = local - 4;
+		}
+		return local + 4 + 1;
+	}
+	public int step5(int n) {
+		int local = n * 6;
+		if (local % 2 == 0) {
+			local = local + 5;
+		} else {
+			local = local - 5;
+		}
+		return local + 5 + 1;
+	}
+	public int step6(int n) {
+		int local = n * 7;
+		if (local % 2 == 0) {
+			local = local + 6;
+		} else {
+			local = local - 6;
+		}
+		return local + 6 + 1;
+	}
+	public int step7(int n) {
+		int local = n * 8;
+		if (local % 2 == 0) {
+			local = local + 7;
+		} else {
+			local = local - 7;
+		}
+		return local + 7 + 1;
+	}
+
+	public string label() {
+		return "worker23";
+	}
+}

@@ -1,0 +1,32 @@
+---
+title: "String building — repeated `+` concatenation, `system.Int.toString` on the hot path, and the `system.String` scan primitives on the result"
+file_separator: "#NLFILE"
+expected_stdout: "34890 34890 6001 1000\n"
+---
+
+#NLFILE bench/stringbuild/Main.nl
+namespace bench.stringbuild;
+class Main {
+	// Concatenation is the operation string interning (#27) and literal
+	// folding (#25) are supposed to move, so the loop deliberately mixes
+	// literal operands (foldable, internable) with computed ones (neither).
+	public static int main(string[] args) {
+		string built = "";
+		for (int i = 0; i < 6000; i = i + 1) {
+			built = built + "k" + system.Int.toString(i) + ";";
+		}
+
+		int scanned = 0;
+		for (int j = 0; j < 1000; j = j + 1) {
+			string key = "k" + system.Int.toString(j) + ";";
+			if (system.String.contains(built, key)) {
+				scanned = scanned + 1;
+			}
+		}
+
+		int upper = system.String.length(system.String.toUpperCase(built));
+		int parts = system.String.split(built, ";").length();
+		system.Out.println(system.Int.toString(system.String.length(built)) + " " + system.Int.toString(upper) + " " + system.Int.toString(parts) + " " + system.Int.toString(scanned));
+		return 0;
+	}
+}

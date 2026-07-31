@@ -21,3 +21,15 @@ jobs:
 
       - name: YAML fixture suite (nltest)
         run: cargo run -p nl-test-runner --locked -- tests
+
+      # Not a timing gate — a shared CI runner is far too noisy for that, and
+      # the baseline is recorded per host anyway (see benches/baseline.yaml).
+      # This only proves every benchmark still compiles and still produces the
+      # output its fixture expects, so the suite cannot rot between the
+      # optimization passes it exists to measure (issue #23).
+      # Debug build on purpose: it reuses what the two steps above already
+      # compiled, where `-r` would pay for a second full build of the
+      # workspace. The numbers it prints are meaningless (nlbench says so
+      # itself) — only the exit code matters here.
+      - name: Benchmark smoke run (nlbench)
+        run: cargo run -p nl-bench --locked -- --quick --iterations 1 --no-compare

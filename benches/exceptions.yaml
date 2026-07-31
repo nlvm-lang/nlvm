@@ -1,0 +1,57 @@
+---
+title: "Exception throw/catch — throwing across frames (stack trace capture included), catching locally, and running `finally` on the non-throwing path"
+file_separator: "#NLFILE"
+expected_stdout: "2500 traced 50000\n"
+---
+
+#NLFILE bench/exceptions/Boom.nl
+namespace bench.exceptions;
+class Boom extends Exception {
+	public construct(string message) {
+		super(message);
+	}
+}
+
+#NLFILE bench/exceptions/Main.nl
+namespace bench.exceptions;
+class Main {
+	// Three frames deep: the cost of a throw is dominated by unwinding and
+	// by the stack trace the spec makes observable, not by the `throw`
+	// opcode itself, so it must cross more than one frame to mean anything.
+	private static int deep(int n) throws Boom {
+		if (n <= 0) {
+			throw new Boom("boom");
+		}
+		return Main.deep(n - 1);
+	}
+
+	public static int main(string[] args) {
+		int caught = 0;
+		int traced = 0;
+		for (int i = 0; i < 2500; i = i + 1) {
+			try {
+				Main.deep(3);
+			} catch (Boom e) {
+				caught = caught + 1;
+				traced = traced + e.stackTrace.length();
+			}
+		}
+
+		// The path that costs nothing at run time but still has to be
+		// compiled and linked: a try/finally that never throws.
+		int finallies = 0;
+		for (int j = 0; j < 25000; j = j + 1) {
+			try {
+				finallies = finallies + 1;
+			} finally {
+				finallies = finallies + 1;
+			}
+		}
+
+		// The trace's *depth* is not pinned down here — a future frame-eliding
+		// optimization (#18's TCO/inlining question) may legitimately change
+		// it. Only "a trace was captured at all" is asserted.
+		system.Out.println(system.Int.toString(caught) + " " + (traced > 0 ? "traced" : "untraced") + " " + system.Int.toString(finallies));
+		return 0;
+	}
+}

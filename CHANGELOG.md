@@ -5,6 +5,17 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.23.0]
+
+### Added
+- A **benchmark harness**, prerequisite for every optimization tracked in [issue #18](https://github.com/nlvm-lang/nlvm/issues/18): until now nothing in the repository could tell "the optimization is implemented" apart from "the optimization is implemented and made things slower". [`benches/`](benches) holds eight NL programs, each isolating one cost centre (arithmetic loop, string building, virtual/interface dispatch, allocation churn, GC surviving set, exception throw/catch, recursion, compiler throughput on a wide program), written in the same YAML fixture format as `tests/`. The new `nl-bench` crate's `nlbench` binary compiles and runs them in-process and reports **compile time and run time as two separate columns** — a compiler-side optimization and a VM-side one do not move the same one — with the relative standard deviation next to each number and a comparison against [`benches/baseline.yaml`](benches/baseline.yaml). Each fixture's expected stdout is verified before anything is timed, so a benchmark that breaks can never be reported as a spectacular speed-up. See [issue #23](https://github.com/nlvm-lang/nlvm/issues/23).
+
+- A [`Makefile`](Makefile) wrapping the cargo invocations the README documents: `make` (release build), `make test` (`cargo test --workspace` then the YAML fixture suite, in CI's order), `make unit-tests` / `make fixtures` for either half, `make bench`, `make fmt` / `fmt-check` / `clippy`, `make check` for all of them, `make install`, `make help`. Every cargo call passes `--locked`, like CI, so a build cannot silently rewrite `Cargo.lock`.
+
+### Changed
+- `nl-test-runner` now also exposes a small library (`nl_test_runner::fixture`) holding the fixture format's parsing — front matter split and `#NLFILE` block splitting — so `nlbench` reads the same file format as `nltest` without a second copy of the parser. `nltest`'s behaviour is unchanged (the 232 YAML fixtures pass identically).
+- CI gained a benchmark smoke step (`nlbench --quick --iterations 1 --no-compare`, debug build). It is deliberately **not** a timing gate — a shared runner is far too noisy for that, and baselines are per host — it only proves the benchmark programs still compile and still produce their expected output.
+
 ## [0.22.1]
 
 ### Fixed

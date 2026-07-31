@@ -1,0 +1,56 @@
+---
+title: "GC cost of a *surviving* set — objects that stay reachable while allocation continues around them. Deliberately tiny (350 objects): the collector re-walks its whole survivor buffer on every pass, so this benchmark is quadratic in the set size today (see the note in the source)."
+file_separator: "#NLFILE"
+expected_stdout: "350 61075 0\n"
+---
+
+#NLFILE bench/gcliveset/Node.nl
+namespace bench.gcliveset;
+class Node {
+	public static int destroyed = 0;
+	public int payload;
+	public Node|null next;
+
+	public construct(int payload) {
+		this.payload = payload;
+		this.next = null;
+	}
+
+	public destruct() {
+		Node.destroyed = Node.destroyed + 1;
+	}
+}
+
+#NLFILE bench/gcliveset/Main.nl
+namespace bench.gcliveset;
+class Main {
+	// 350 live objects, not 50 000, because `nl_vm::gc` re-buffers every
+	// survivor of a trial-deletion pass and re-walks the whole buffer on the
+	// next one: the cost of holding N objects alive is O(N^2) as things
+	// stand (measured while writing this suite — 500 objects ≈ 0.3 s, 2000 ≈
+	// 4.5 s, 3000 ≈ 80 s for the same shape of program). That is exactly the
+	// kind of thing a benchmark suite exists to make visible, so the shape is
+	// kept and only the size is cut to something that finishes. Tracked as
+	// issue #29 — whoever fixes the buffering should raise the count here and
+	// re-record the baseline.
+	public static int main(string[] args) {
+		auto live = new system.List<Node>();
+		for (int i = 0; i < 350; i = i + 1) {
+			live.pushBack(new Node(i));
+		}
+
+		// Chain them, so the collector has a non-trivial live *graph* to walk
+		// rather than 500 isolated nodes.
+		for (int j = 1; j < live.size(); j = j + 1) {
+			live.get(j - 1).next = live.get(j);
+		}
+
+		int total = 0;
+		for (int k = 0; k < live.size(); k = k + 1) {
+			total = total + live.get(k).payload;
+		}
+
+		system.Out.println(system.Int.toString(live.size()) + " " + system.Int.toString(total) + " " + system.Int.toString(Node.destroyed));
+		return 0;
+	}
+}

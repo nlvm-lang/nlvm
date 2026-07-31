@@ -1,0 +1,40 @@
+---
+title: "Recursion — call/return throughput (naive fib) and frame depth (repeated chains just under the VM's 150-frame ceiling)"
+file_separator: "#NLFILE"
+expected_stdout: "46368 7260\n"
+---
+
+#NLFILE bench/recursion/Main.nl
+namespace bench.recursion;
+class Main {
+	// Call/return throughput: ~150k calls, each doing almost no work, so the
+	// number is frame setup + argument passing + return, not the body.
+	private static int fib(int n) {
+		if (n < 2) {
+			return n;
+		}
+		return Main.fib(n - 1) + Main.fib(n - 2);
+	}
+
+	// Depth rather than count, and a self tail call — the shape TCO would
+	// eliminate if #18's open question resolves that way. 120 frames, not
+	// 1200: `nl_vm::call_stack::MAX_CALL_DEPTH` is 150, above which the VM
+	// (correctly) throws StackOverflowException, so a deeper chain would
+	// measure exception unwinding instead of recursion.
+	private static int chain(int n, int acc) {
+		if (n <= 0) {
+			return acc;
+		}
+		return Main.chain(n - 1, acc + n);
+	}
+
+	public static int main(string[] args) {
+		int f = Main.fib(24);
+		int sum = 0;
+		for (int i = 0; i < 1000; i = i + 1) {
+			sum = Main.chain(120, 0);
+		}
+		system.Out.println(system.Int.toString(f) + " " + system.Int.toString(sum));
+		return 0;
+	}
+}

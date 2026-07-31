@@ -1,0 +1,32 @@
+---
+title: "Integer arithmetic in a tight nested loop — the interpreter's dispatch loop, local slot access and int opcodes, with as little allocation as NL allows"
+file_separator: "#NLFILE"
+expected_stdout: "200000 19999900000 2222344444\n"
+---
+
+#NLFILE bench/arith/Main.nl
+namespace bench.arith;
+class Main {
+	// Kept deliberately free of calls, objects and strings: whatever this
+	// benchmark moves must be attributable to arithmetic, comparison,
+	// branching and local-variable access alone.
+	public static int main(string[] args) {
+		int iterations = 0;
+		int sum = 0;
+		int mixed = 0;
+		for (int outer = 0; outer < 200; outer = outer + 1) {
+			for (int inner = 0; inner < 1000; inner = inner + 1) {
+				int value = outer * 1000 + inner;
+				sum = sum + value;
+				if (value % 3 == 0) {
+					mixed = mixed + value / 3;
+				} else {
+					mixed = mixed + 1;
+				}
+				iterations = iterations + 1;
+			}
+		}
+		system.Out.println(system.Int.toString(iterations) + " " + system.Int.toString(sum) + " " + system.Int.toString(mixed));
+		return 0;
+	}
+}
