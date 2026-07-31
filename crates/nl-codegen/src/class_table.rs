@@ -244,9 +244,24 @@ pub fn import_map(file: &SourceFile, all_files: &[SourceFile]) -> HashMap<String
                 .expect("use path is never empty")
                 .to_string()
         });
-        map.insert(simple, u.path.clone());
+        map.insert(simple, canonical_use_target(&u.path));
     }
     map
+}
+
+/// The FQCN a `use <path>;` actually names. Normally the path itself, except
+/// for the built-in exceptions, which live in the prelude under a bare name
+/// (`IOException`) that `system.io.IOException` only *aliases* — see
+/// `nl_syntax::prelude::NAMESPACED_ALIASES`. Without this, `use
+/// system.io.IOException;` would map `IOException` to a namespaced FQCN no
+/// class is ever registered under, shadowing the prelude entry the very same
+/// `use` was meant to bring into scope.
+fn canonical_use_target(path: &str) -> String {
+    nl_syntax::prelude::NAMESPACED_ALIASES
+        .iter()
+        .find(|(alias, _)| *alias == path)
+        .map(|(_, target)| (*target).to_string())
+        .unwrap_or_else(|| path.to_string())
 }
 
 /// Resolves every `Named` component of `ty` from a simple name to its FQCN

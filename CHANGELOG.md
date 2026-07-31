@@ -5,6 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.23.1]
+
+### Fixed
+- `use system.io.File;` (or any other stdlib class) followed by a call on the imported simple name — `File.open(...)`, `FileMode.Read` — no longer fails with `unsupported construct: undefined variable 'File'`. `nl-codegen` recognized a dotted class path at a call/field-access site by matching it *as written* against the stdlib and user-class tables, so only the fully-qualified `system.io.File.open(...)` was ever recognized; the imported name fell through to the ordinary expression path, which tried to load a local variable named `File`. The path now goes through the file's import map first, which also makes an aliased import (`use system.io.File as Fichier;`) work at a call site.
+- `use system.io.IOException;` followed by `catch (IOException e)` no longer reports E015 "unhandled checked exception". The built-in exceptions live in the prelude under a bare name that `system.io.IOException` merely aliases, so the `use` was binding `IOException` to a namespaced FQCN no class is registered under — shadowing, with an unresolvable entry, the prelude class it was meant to import. A `use` of one of those paths now resolves to the prelude class, in both `nl-sema` and `nl-codegen`.
+
 ## [0.23.0]
 
 ### Added

@@ -1,0 +1,45 @@
+---
+title: "use system.io.* — an imported stdlib class is callable by its simple name"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "ok|WRITE|line|caught"
+---
+
+#NLFILE phase7/usestdlib/Main.nl
+namespace phase7.usestdlib;
+use system.io.Directory;
+use system.io.File;
+use system.io.FileHandle;
+use system.io.FileMode;
+use system.io.IOException;
+use system.io.File as Fichier;
+class Main {
+	public static int main(string[] args) {
+		try {
+			Directory.create("target/tmp_phase7usestdlib");
+			string path = "target/tmp_phase7usestdlib/a.txt";
+			File.writeAllText(path, "ok");
+			system.Out.print(Fichier.readAllText(path));
+			system.Out.print("|");
+
+			FileHandle w = File.open(path, FileMode.Write);
+			w.write("WRITE\nline");
+			w.close();
+
+			FileHandle r = File.open(path, FileMode.Read);
+			string|null first = r.readLine();
+			string|null second = r.readLine();
+			r.close();
+			system.Out.print(first == null ? "?" : first);
+			system.Out.print("|");
+			system.Out.print(second == null ? "?" : second);
+			system.Out.print("|");
+
+			File.open("target/tmp_phase7usestdlib/missing.txt", FileMode.Read);
+			system.Out.print("no-throw");
+		} catch (IOException e) {
+			system.Out.print("caught");
+		}
+		return 0;
+	}
+}

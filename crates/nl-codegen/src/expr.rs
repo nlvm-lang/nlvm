@@ -791,6 +791,28 @@ impl<'a> Emitter<'a> {
             .unwrap_or_else(|| name.to_string())
     }
 
+    /// Resolves a dotted class path written at a call/field-access site —
+    /// `File.open(...)` after `use system.io.File;` — to its FQCN. The whole
+    /// path is tried against `imports` first (`File`, or an alias such as
+    /// `F` from `use system.io.File as F;`), then its leading segment, so a
+    /// name imported at any depth still resolves when further segments
+    /// follow it (`FileMode.Read`, or `io.File` after `use system.io;`).
+    /// Unresolvable paths are returned unchanged — `system.Out.print(...)`
+    /// is already fully qualified, and a genuinely unknown name is better
+    /// reported by the caller's own lookup.
+    pub(crate) fn resolve_dotted_path(&self, path: &str) -> String {
+        if let Some(fqcn) = self.imports.get(path) {
+            return fqcn.clone();
+        }
+        match path.split_once('.') {
+            Some((leading, rest)) => match self.imports.get(leading) {
+                Some(fqcn) => format!("{fqcn}.{rest}"),
+                None => path.to_string(),
+            },
+            None => path.to_string(),
+        }
+    }
+
     /// Compiles `expr` as a statement: evaluates it and discards any value
     /// it leaves on the stack. Used for expression statements and for-loop
     /// step expressions.
@@ -2462,9 +2484,13 @@ impl<'a> Emitter<'a> {
         if let Some(path) = dotted_path(target) {
             let leading = path.split('.').next().expect("dotted_path is never empty");
             if self.lookup_local(leading).is_err() {
-                if let Some(value) = crate::stdlib::enum_const_value(&path, name) {
+                // Same import resolution as `compile_method_call` below:
+                // `use system.io.FileMode;` makes `FileMode.Read` name the
+                // stdlib enum that `system.io.FileMode.Read` names directly.
+                let resolved = self.resolve_dotted_path(&path);
+                if let Some(value) = crate::stdlib::enum_const_value(&resolved, name) {
                     self.emit_int_const(value);
-                    return Ok(ExprTy::Object(path));
+                    return Ok(ExprTy::Object(resolved));
                 }
                 // `Status.OK` — a user-declared enum's case constant. Case
                 // values are always compile-time constants (the field's own
@@ -2575,9 +2601,14 @@ impl<'a> Emitter<'a> {
         // instance-call path below.
         if let Some(path) = dotted_path(target) {
             let leading = path.split('.').next().expect("dotted_path is never empty");
-            if self.lookup_local(leading).is_err() && crate::stdlib::is_stdlib_class(&path) {
+            // `use system.io.File;` then `File.open(...)`: the path as
+            // written is a simple name, so it has to go through `imports`
+            // before the stdlib/user-class tables can recognize it. A
+            // fully-qualified `system.io.File.open(...)` resolves to itself.
+            let resolved = self.resolve_dotted_path(&path);
+            if self.lookup_local(leading).is_err() && crate::stdlib::is_stdlib_class(&resolved) {
                 let positional = require_positional_args(args)?;
-                return self.compile_stdlib_call(&path, name, &positional);
+                return self.compile_stdlib_call(&resolved, name, &positional);
             }
             // `Utils.max(a, b)` — a dotted path resolving to a *user* class
             // (as opposed to the `system.*` case above), not a value: same
@@ -2585,7 +2616,7 @@ impl<'a> Emitter<'a> {
             // resolved via `resolve_class_name`/`self.classes` instead of
             // the stdlib table (specs.md's `Utils.swap(ref x, ref y)` etc.).
             if self.lookup_local(leading).is_err() && self.captured_fields.get(leading).is_none() {
-                let fqcn = self.resolve_class_name(&path);
+                let fqcn = resolved;
                 let arg_tys: Vec<Option<Type>> = args
                     .iter()
                     .map(|a| self.overload_arg_ty(&a.value).as_ref().map(expr_ty_to_type))
