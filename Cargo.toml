@@ -9,10 +9,11 @@ members = [
     "crates/nlc",
     "crates/nlvm",
     "crates/nl-test-runner",
+    "crates/nl-bench",
 ]
 
 [workspace.package]
-version = "0.22.1"
+version = "0.23.0"
 edition = "2021"
 
 [workspace.dependencies]
@@ -21,6 +22,7 @@ nl-sema = { path = "crates/nl-sema" }
 nl-bytecode = { path = "crates/nl-bytecode" }
 nl-codegen = { path = "crates/nl-codegen" }
 nl-vm = { path = "crates/nl-vm" }
+nl-test-runner = { path = "crates/nl-test-runner" }
 anyhow = "1"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }

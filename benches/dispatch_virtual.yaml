@@ -1,0 +1,78 @@
+---
+title: "Method dispatch — virtual calls through a 3-level hierarchy and through an interface-typed receiver, against a static call and a monomorphic one for contrast"
+file_separator: "#NLFILE"
+expected_stdout: "199998 150000 400000\n"
+---
+
+#NLFILE bench/dispatch/Shape.nl
+namespace bench.dispatch;
+interface Shape {
+	public int weigh(int n);
+}
+
+#NLFILE bench/dispatch/Base.nl
+namespace bench.dispatch;
+class Base implements Shape {
+	public construct() {}
+
+	public int weigh(int n) {
+		return n + 1;
+	}
+
+	public int shared(int n) {
+		return n + 2;
+	}
+}
+
+#NLFILE bench/dispatch/Middle.nl
+namespace bench.dispatch;
+class Middle extends Base {
+	public construct() { super(); }
+
+	public int weigh(int n) {
+		return n + 3;
+	}
+}
+
+#NLFILE bench/dispatch/Leaf.nl
+namespace bench.dispatch;
+class Leaf extends Middle {
+	public construct() { super(); }
+
+	public int weigh(int n) {
+		return n + 5;
+	}
+}
+
+#NLFILE bench/dispatch/Main.nl
+namespace bench.dispatch;
+class Main {
+	private static int direct(int n) {
+		return n + 7;
+	}
+
+	// Three call shapes, same loop count each, so devirtualization work can
+	// be read as "the polymorphic column moved towards the static one":
+	//  - `poly`: interface-typed receiver, three implementations alternating
+	//    (a megamorphic site an inline cache cannot collapse),
+	//  - `mono`: class-typed receiver, one concrete class, method inherited
+	//    two levels up (the case devirtualization should catch),
+	//  - `stat`: a static call, the floor.
+	public static int main(string[] args) {
+		// Initializer list, not `new Shape[3]`: a fixed-size array of a
+		// non-nullable type has no default value to fill it with (E031).
+		Shape[] shapes = new Shape[]{new Base(), new Middle(), new Leaf()};
+		Leaf leaf = new Leaf();
+
+		int poly = 0;
+		int mono = 0;
+		int stat = 0;
+		for (int i = 0; i < 50000; i = i + 1) {
+			poly = poly + shapes[i % 3].weigh(1);
+			mono = mono + leaf.shared(1);
+			stat = stat + Main.direct(1);
+		}
+		system.Out.println(system.Int.toString(poly) + " " + system.Int.toString(mono) + " " + system.Int.toString(stat));
+		return 0;
+	}
+}

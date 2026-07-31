@@ -1,0 +1,35 @@
+# nlbench baseline — regenerate with:
+#   cargo run --release -p nl-bench -- --save-baseline
+# Wall-clock milliseconds, median of the measured iterations. Only
+# comparable against a run on the same host (see `host:`).
+recorded_at: 2026-07-31
+nlvm_version: 0.23.0
+host:
+  os: linux
+  arch: x86_64
+  cpu: Intel(R) Core(TM) i5-10600KF CPU @ 4.10GHz
+benchmarks:
+  alloc_churn:
+    compile_ms: 2.429
+    run_ms: 339.048
+  arith_loop:
+    compile_ms: 2.196
+    run_ms: 188.863
+  compile_wide:
+    compile_ms: 9.772
+    run_ms: 0.234
+  dispatch_virtual:
+    compile_ms: 2.696
+    run_ms: 424.337
+  exceptions:
+    compile_ms: 2.346
+    run_ms: 305.812
+  gc_live_set:
+    compile_ms: 2.401
+    run_ms: 292.19
+  recursion:
+    compile_ms: 2.19
+    run_ms: 176.187
+  string_build:
+    compile_ms: 2.232
+    run_ms: 26.53

@@ -14,11 +14,20 @@ Détails projet/install/usage → [README.md](README.md). Version specs ciblée 
 | `nl-vm` | interpréteur (frames, stack, opcodes, GC) |
 | `nlc` | binaire CLI compilateur |
 | `nlvm` | binaire CLI VM |
-| `nl-test-runner` | binaire `nltest`, exécute les tests YAML de `tests/` |
+| `nl-test-runner` | binaire `nltest`, exécute les tests YAML de `tests/` ; expose aussi `nl_test_runner::fixture` (parsing du format fixture, partagé avec `nl-bench`) |
+| `nl-bench` | binaire `nlbench`, exécute les benchmarks YAML de `benches/` |
+
+## Commandes (`Makefile`)
+
+Raccourcis autour des commandes cargo (tout en `--locked`, comme la CI) : `make` (build release), `make test` (`cargo test --workspace` + suite YAML, ce que fait la CI), `make unit-tests` / `make fixtures` séparément, `make bench`, `make fmt` / `fmt-check` / `clippy`, `make check` (les trois + tests), `make install`. `make help` les liste.
 
 ## Tests
 
 `tests/*.yaml` — fixtures organisées par phase (`phaseN_...`). Lancer via `nltest` (`cargo run -p nl-test-runner` ou binaire `nltest`).
+
+## Benchmarks
+
+`benches/*.yaml` — même format de fixture que `tests/`, un programme NL par centre de coût. Lancer en release : `cargo run --release -p nl-bench -- benches`. Temps de compilation et d'exécution rapportés séparément, comparés à `benches/baseline.yaml` (baseline liée à la machine, à re-enregistrer avec `--save-baseline`). Prérequis des optimisations suivies dans l'issue #18.
 
 ## Suivi du projet
 

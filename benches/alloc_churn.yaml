@@ -1,0 +1,60 @@
+---
+title: "Allocation throughput — short-lived objects reclaimed by refcount, plus reference cycles only the cycle collector can reclaim. Nothing survives the loop that created it (the surviving-set cost is gc_live_set's job)."
+file_separator: "#NLFILE"
+expected_stdout: "45000 reclaimed\n"
+---
+
+#NLFILE bench/allocchurn/Node.nl
+namespace bench.allocchurn;
+class Node {
+	public static int created = 0;
+	public static int destroyed = 0;
+	public int payload;
+	public Node|null next;
+
+	public construct(int payload) {
+		this.payload = payload;
+		this.next = null;
+		Node.created = Node.created + 1;
+	}
+
+	public destruct() {
+		Node.destroyed = Node.destroyed + 1;
+	}
+}
+
+#NLFILE bench/allocchurn/Main.nl
+namespace bench.allocchurn;
+class Main {
+	// A pair whose two halves point at each other: refcounting alone never
+	// frees them, so this is what the trial-deletion pass (phase15) is
+	// charged for. Kept in its own method so both locals die at scope exit.
+	private static void cycle(int payload) {
+		Node a = new Node(payload);
+		Node b = new Node(payload + 1);
+		a.next = b;
+		b.next = a;
+	}
+
+	public static int main(string[] args) {
+		// Acyclic churn: allocated, linked, dropped immediately — the
+		// refcount path, where a destructor runs the instant the count
+		// reaches zero.
+		for (int j = 0; j < 15000; j = j + 1) {
+			Node temp = new Node(j);
+			temp.next = new Node(j + 1);
+		}
+
+		for (int k = 0; k < 7500; k = k + 1) {
+			Main.cycle(k);
+		}
+
+		// Only "essentially everything was reclaimed" is asserted, not an
+		// exact count: whether the very last cycle has been swept yet when
+		// this line runs depends on when the collector's last pass fired,
+		// which is a timing detail no benchmark should pin down.
+		string reclaimed = Node.destroyed >= Node.created - 4 ? "reclaimed" : "leaked";
+		system.Out.println(system.Int.toString(Node.created) + " " + reclaimed);
+		return 0;
+	}
+}
