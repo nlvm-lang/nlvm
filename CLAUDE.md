@@ -34,3 +34,7 @@ Détails projet/install/usage → [README.md](README.md). Version specs ciblée 
 ## Comportement
 
 Ne commit jamais sauf si explicitement demandé.
+
+## Github
+
+Fetch issues with `gh api repos/nlvm-lang/nlvm/issues/<id>` (instead of deprecated `gh issue view <id>`).

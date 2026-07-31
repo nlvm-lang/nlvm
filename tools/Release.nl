@@ -1,4 +1,4 @@
-namespace tools;
+namespace nlvm.tools;
 
 class Release 
 {

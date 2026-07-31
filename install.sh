@@ -24,7 +24,8 @@ if [ -f "crates/nlc/Cargo.toml" ] && [ -f "crates/nlvm/Cargo.toml" ]; then
   mkdir -p "$BIN_DIR"
   ln -sf "$PWD/target/release/nlc" "$BIN_DIR/nlc"
   ln -sf "$PWD/target/release/nlvm" "$BIN_DIR/nlvm"
-  echo "Built nlc and nlvm from source, linked into $BIN_DIR"
+  ln -sf "$PWD/target/release/nltest" "$BIN_DIR/nltest"
+  echo "Built nlc, nlvm and nltest from source, linked into $BIN_DIR"
   exit 0
 fi
 
@@ -70,10 +71,10 @@ fi
 
 tar xzf "$tmp/$pkg.tar.gz" -C "$tmp"
 mkdir -p "$BIN_DIR"
-cp "$tmp/$pkg/nlc" "$tmp/$pkg/nlvm" "$BIN_DIR/"
+cp "$tmp/$pkg/nlc" "$tmp/$pkg/nlvm" "$tmp/$pkg/nltest" "$BIN_DIR/"
 chmod +x "$BIN_DIR/nlc" "$BIN_DIR/nlvm"
 
-echo "Installed nlc and nlvm $tag into $BIN_DIR"
+echo "Installed nlc, nlvm and nltest $tag into $BIN_DIR"
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
   *) echo "Note: $BIN_DIR is not on your \$PATH — add it to your shell profile." ;;
