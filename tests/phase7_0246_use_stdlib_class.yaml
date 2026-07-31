@@ -1,0 +1,16 @@
+---
+title: "use system.* — an imported stdlib class is callable by its simple name"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "Hello"
+---
+
+#NLFILE phase7/usestdlib/Main.nl
+namespace phase7.usestdlib;
+use system.Out;
+class Main {
+	public static int main(string[] args) {
+		Out.print("Hello");
+		return 0;
+	}
+}
