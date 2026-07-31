@@ -5,7 +5,7 @@
 * ~~outillage: [#6][6], [#13][13], [#3][3]~~
 * ~~Sémantique du langage: [#11][11], [#15][15], [#14][14], [#10][10]~~
 * ~~Robustesse VM: [#16][16], [#17][17], [#12][12]~~
-* Stdlib: complétion: ~~[#1][1], [#5][5], [#4][4]~~, [#2][2]
+* ~~Stdlib: complétion: [#1][1], [#5][5], [#4][4], [#2][2]~~
 * Optimisations: [#19][19]
 
 [1]: https://github.com/nlvm-lang/nlvm/issues/1

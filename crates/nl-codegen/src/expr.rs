@@ -3351,25 +3351,29 @@ impl<'a> Emitter<'a> {
             }
         }
 
-        // String concatenation: '+' where either side is a string.
-        if op == BinOp::Add {
-            let (peek_l, peek_r) = (self.peek_type(lhs), self.peek_type(rhs));
-            if peek_l == Some(ExprTy::StringT) || peek_r == Some(ExprTy::StringT) {
-                let ty_l = self.compile_expr(lhs)?;
-                if ty_l != ExprTy::StringT {
-                    self.op(Opcode::ToString, 0);
-                }
-                let ty_r = self.compile_expr(rhs)?;
-                if ty_r != ExprTy::StringT {
-                    self.op(Opcode::ToString, 0);
-                }
-                self.op(Opcode::StrConcat, -1);
-                return Ok(ExprTy::StringT);
-            }
-        }
-
         let ty_l = self.compile_expr(lhs)?;
         let ty_r = self.compile_expr(rhs)?;
+
+        // String concatenation: '+' where either side is a string. Decided
+        // on the *compiled* types rather than on `peek_type` (which is
+        // best-effort and blind to e.g. a static call receiver, `this`, or
+        // an array element), so every expression shape nl-sema accepted as
+        // a concatenation compiles as one instead of falling through to the
+        // numeric path and its "unsupported" error.
+        if op == BinOp::Add && (ty_l == ExprTy::StringT || ty_r == ExprTy::StringT) {
+            if ty_r != ExprTy::StringT {
+                self.op(Opcode::ToString, 0);
+            }
+            if ty_l != ExprTy::StringT {
+                // stack: [..., lhs, rhs_string] -> convert lhs in place,
+                // same trick as `promote_numeric`.
+                self.op(Opcode::Swap, 0);
+                self.op(Opcode::ToString, 0);
+                self.op(Opcode::Swap, 0);
+            }
+            self.op(Opcode::StrConcat, -1);
+            return Ok(ExprTy::StringT);
+        }
 
         // Non-numeric equality (string/bool/null/references/...): the VM
         // compares tagged values directly (vm.md § Value representation) —

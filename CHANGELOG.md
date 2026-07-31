@@ -5,6 +5,11 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.22.1]
+
+### Fixed
+- `'+'` string concatenation no longer depends on the shape of its operands. `nl-codegen` decided between concatenation and arithmetic *before* compiling either side, from the best-effort `peek_type` probe, which cannot see through a static call (`Build.siteUrl()`), a `this`-receiver call (`this.render()`) or an array element (`parts[0]`) — so `Build.siteUrl() + Build.page()` was rejected with `unsupported construct: arithmetic/comparison between StringT and StringT` even though nl-sema had accepted it, while the same expression anchored to a literal or a local compiled fine. The decision is now made on the *compiled* operand types, so every shape nl-sema types as a concatenation compiles as one. A non-string left operand is converted in place (`SWAP`/`TO_STRING`/`SWAP`, the trick `promote_numeric` already used), which means an implicit `Stringable.toString()` on the left operand now runs after the right operand is evaluated rather than before — operand evaluation stays left-to-right.
+
 ## [0.22.0]
 
 ### Added

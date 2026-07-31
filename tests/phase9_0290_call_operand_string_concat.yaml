@@ -1,0 +1,74 @@
+---
+title: "Phase 9 — '+' string concatenation whose operands are static calls, `this`-receiver calls or array elements: shapes the codegen type peek can't see through must still compile as a concatenation, including the non-string left operand (int, Stringable) that needs an implicit toString()"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: |
+  https://nlvm.dev/index.html
+  a-b
+  x/y
+  7 apples
+  P(3) here
+expected_stderr: ""
+---
+
+#NLFILE phase9/call_concat/Point.nl
+namespace phase9.call_concat;
+class Point implements Stringable {
+	public int x;
+
+	public construct(int x) {
+		this.x = x;
+	}
+
+	public string toString() const {
+		return "P(" + this.x + ")";
+	}
+}
+
+#NLFILE phase9/call_concat/Main.nl
+namespace phase9.call_concat;
+use phase9.call_concat.Point;
+class Main {
+	public construct() {
+	}
+
+	private static string siteUrl() {
+		return "https://nlvm.dev/";
+	}
+
+	private static string page() {
+		return "index.html";
+	}
+
+	private static int count() {
+		return 7;
+	}
+
+	private static Point point() {
+		return new Point(3);
+	}
+
+	private string left() {
+		return "a-";
+	}
+
+	private string right() {
+		return "b";
+	}
+
+	private string joined() {
+		return this.left() + this.right();
+	}
+
+	public static int main(string[] args) {
+		system.Out.println(Main.siteUrl() + Main.page());
+		system.Out.println(new Main().joined());
+
+		string[] parts = new string[]{"x/", "y"};
+		system.Out.println(parts[0] + parts[1]);
+
+		system.Out.println(Main.count() + " apples");
+		system.Out.println(Main.point() + " here");
+		return 0;
+	}
+}
