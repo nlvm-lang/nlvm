@@ -558,7 +558,7 @@ dependencies = [
 
 [[package]]
 name = "nl-bench"
-version = "0.23.1"
+version = "0.24.0"
 dependencies = [
  "anyhow",
  "nl-bytecode",
@@ -573,7 +573,7 @@ dependencies = [
 
 [[package]]
 name = "nl-bytecode"
-version = "0.23.1"
+version = "0.24.0"
 dependencies = [
  "sha2",
  "thiserror",
@@ -581,7 +581,7 @@ dependencies = [
 
 [[package]]
 name = "nl-codegen"
-version = "0.23.1"
+version = "0.24.0"
 dependencies = [
  "nl-bytecode",
  "nl-syntax",
@@ -590,7 +590,7 @@ dependencies = [
 
 [[package]]
 name = "nl-sema"
-version = "0.23.1"
+version = "0.24.0"
 dependencies = [
  "nl-syntax",
  "thiserror",
@@ -598,14 +598,14 @@ dependencies = [
 
 [[package]]
 name = "nl-syntax"
-version = "0.23.1"
+version = "0.24.0"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "nl-test-runner"
-version = "0.23.1"
+version = "0.24.0"
 dependencies = [
  "anyhow",
  "nl-bytecode",
@@ -619,7 +619,7 @@ dependencies = [
 
 [[package]]
 name = "nl-vm"
-version = "0.23.1"
+version = "0.24.0"
 dependencies = [
  "mysql",
  "nl-bytecode",
@@ -633,7 +633,7 @@ dependencies = [
 
 [[package]]
 name = "nlc"
-version = "0.23.1"
+version = "0.24.0"
 dependencies = [
  "anyhow",
  "nl-bytecode",
@@ -644,7 +644,7 @@ dependencies = [
 
 [[package]]
 name = "nlvm"
-version = "0.23.1"
+version = "0.24.0"
 dependencies = [
  "anyhow",
  "nl-bytecode",

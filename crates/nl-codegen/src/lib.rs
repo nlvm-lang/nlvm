@@ -3,6 +3,7 @@ mod closure;
 pub mod error;
 mod expr;
 mod native_generics;
+pub mod opt;
 mod stdlib;
 mod stmt;
 mod type_desc;
@@ -11,6 +12,7 @@ use std::collections::HashMap;
 
 use nl_bytecode::{
     class_flags, field_flags, method_flags, ConstantPool, HashAlgo, MethodDescriptor, Module,
+    OptLevel,
 };
 use nl_syntax::ast::{
     ClassDecl, Expr, LValue, MethodDecl, MethodKind, SourceFile, SourceItem, Stmt, StmtKind, Type,
@@ -22,12 +24,27 @@ pub use error::CodegenError;
 use expr::{expr_ty_of, Emitter, MethodSig};
 use type_desc::method_descriptor;
 
+/// Compiles a whole program at the default optimization level
+/// (`OptLevel::default()` — `-O0`, see `compile_program_with`).
+pub fn compile_program(files: &[SourceFile]) -> Result<Vec<Module>, CodegenError> {
+    compile_program_with(files, OptLevel::default())
+}
+
 /// Compiles a whole program (every file that will be linked together) in one
 /// pass: a shared class table is built first so `new`/field access/instance
 /// method calls that cross file boundaries resolve to real constant-pool
 /// entries. See `nl_vm::Program` for how these modules are linked at load
 /// time.
-pub fn compile_program(files: &[SourceFile]) -> Result<Vec<Module>, CodegenError> {
+///
+/// `level` selects which optimization passes run (`opt::run`) and is stamped
+/// on every emitted module, so a `.nlm`/`.nlp` on disk records how it was
+/// built. Codegen itself always emits the same bytecode for a given input:
+/// optimization is a separate step on top, which is what makes `-O0` and
+/// `-O1` comparable output-for-output (optimizations.md § Testing).
+pub fn compile_program_with(
+    files: &[SourceFile],
+    level: OptLevel,
+) -> Result<Vec<Module>, CodegenError> {
     // Built-in exception classes (nl_syntax::prelude) are implicitly part of
     // every program — see class_table::import_map, which seeds their simple
     // names so user code can reference them without a `use`. Prepended
@@ -55,6 +72,13 @@ pub fn compile_program(files: &[SourceFile]) -> Result<Vec<Module>, CodegenError
     let mut modules = Vec::new();
     for file in &all_files {
         modules.extend(compile_file(file, &all_files, &classes)?);
+    }
+
+    opt::run(&mut modules, level);
+    // Stamped after the pipeline: the field records the level whose passes
+    // actually ran over these modules, not the one that was requested.
+    for module in &mut modules {
+        module.opt_level = Some(level);
     }
     Ok(modules)
 }
@@ -100,6 +124,7 @@ fn compile_file(
                 .collect();
             Ok(vec![Module {
                 version: nl_bytecode::module::VERSION,
+                opt_level: Some(OptLevel::O0),
                 constant_pool: cp,
                 this_class,
                 class_flags: class_flags::INTERFACE,
@@ -318,6 +343,7 @@ fn compile_file(
             }
             let mut modules = vec![Module {
                 version: nl_bytecode::module::VERSION,
+                opt_level: Some(OptLevel::O0),
                 constant_pool: cp,
                 this_class,
                 class_flags: flags,

@@ -30,6 +30,21 @@ pub struct Header {
     /// Absent means the program runs against the real stdin, same as before
     /// this key existed (nlvm issue #6).
     pub stdin: Option<String>,
+    /// nlvm-internal extension, not part of nlvm-specs/docs/tests.md:
+    /// excludes this fixture from `nltest --differential`'s byte-for-byte
+    /// comparison of the `-O0` and `-O1` runs. Its expectations are still
+    /// checked at both levels — only the two runs are not compared with each
+    /// other.
+    ///
+    /// optimizations.md § Testing names the two cases: a test whose output
+    /// carries a stack trace (inlining and TCO elide frames, so the frame
+    /// count is implementation-defined) and one whose termination depends on
+    /// stack exhaustion (TCO means `StackOverflowException` may never be
+    /// thrown). Those are the *only* sanctioned output differences between
+    /// levels, and the spec says such tests must be excluded rather than
+    /// counted as conformance failures. Setting this key on anything else
+    /// hides a real divergence — say why in the fixture.
+    pub optimization_sensitive: Option<bool>,
     pub expected_class: Option<String>,
     pub expected_methods: Option<Vec<String>>,
     pub expected_fields: Option<Vec<serde_yaml::Value>>,
@@ -43,5 +58,9 @@ impl Header {
 
     pub fn is_compile_only(&self) -> bool {
         self.compile_only.unwrap_or(false)
+    }
+
+    pub fn is_optimization_sensitive(&self) -> bool {
+        self.optimization_sensitive.unwrap_or(false)
     }
 }

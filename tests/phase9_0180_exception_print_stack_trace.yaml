@@ -4,6 +4,10 @@ file_separator: "#NLFILE"
 expected_exit_code: 0
 expected_stdout: ""
 expected_stderr: "bad argument\n    at phase9/printstacktrace/Helper.nl:4\n    at phase9/printstacktrace/Main.nl:5\n"
+# optimizations.md § Testing: stderr carries a stack trace,
+# so the -O0 and -O1 runs are not compared with each other. Both still
+# have to satisfy every expectation above.
+optimization_sensitive: true
 ---
 
 #NLFILE phase9/printstacktrace/Helper.nl

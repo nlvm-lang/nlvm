@@ -1189,6 +1189,7 @@ impl<'a> Emitter<'a> {
 
         self.closures.push(nl_bytecode::Module {
             version: nl_bytecode::module::VERSION,
+            opt_level: Some(nl_bytecode::OptLevel::O0),
             constant_pool: synth_cp,
             this_class: synth_this_class,
             class_flags: 0,
