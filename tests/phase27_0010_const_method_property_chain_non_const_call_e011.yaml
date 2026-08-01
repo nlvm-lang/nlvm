@@ -1,0 +1,49 @@
+---
+title: "Compile E011 — a `const` method may not reach around the guarantee by calling a non-const method on an object held in a property of `this` (issue #32 — FAILS TODAY: const is shallow, this compiles and prints 1)"
+file_separator: "#NLFILE"
+expected_compile_error: "E011"
+---
+
+#NLFILE phase27/constchain/Inner.nl
+namespace phase27.constchain;
+class Inner {
+	public int v;
+
+	public construct(int v) {
+		this.v = v;
+	}
+
+	public void bump() {
+		this.v = this.v + 1;
+	}
+}
+
+#NLFILE phase27/constchain/Outer.nl
+namespace phase27.constchain;
+class Outer {
+	public Inner inner;
+
+	public construct(Inner inner) {
+		this.inner = inner;
+	}
+
+	// `this.inner.bump()` mutates state reachable from `this`, which is what
+	// specs.md § Loops calls "deep immutability" ("a const method cannot
+	// mutate the object's logical state"). compiler.md § Const methods is
+	// worded shallowly (E011 covers calls "on `this`"), and nlc follows the
+	// shallow reading — the two documents have to be reconciled, see #32.
+	public int peek() const {
+		this.inner.bump();
+		return this.inner.v;
+	}
+}
+
+#NLFILE phase27/constchain/Main.nl
+namespace phase27.constchain;
+class Main {
+	public static int main(string[] args) {
+		auto o = new Outer(new Inner(0));
+		system.Out.print(o.peek());
+		return 0;
+	}
+}
