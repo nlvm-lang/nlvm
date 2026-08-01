@@ -40,6 +40,7 @@ fn main() -> Result<()> {
     // program argument.
     let mut module_paths = Vec::new();
     let mut program_args = Vec::new();
+    let mut verbose = false;
     let mut past_sep = false;
     let mut i = 0;
     while i < args.len() {
@@ -58,7 +59,7 @@ fn main() -> Result<()> {
                 );
                 return Ok(());
             }
-            "-v" | "--verbose" => {}
+            "-v" | "--verbose" => verbose = true,
             "--" if !past_sep => {
                 past_sep = true;
             }
@@ -83,6 +84,24 @@ fn main() -> Result<()> {
         let loaded =
             nl_vm::load_modules(&bytes).map_err(|e| anyhow::anyhow!("loading {path}: {e}"))?;
         modules.extend(loaded);
+    }
+
+    if verbose {
+        // vm.md § VM invocation: `-v` should report each loaded module's
+        // format version and optimization level. Per module rather than as a
+        // summary because a mixed-level program is *valid* — a prebuilt
+        // stdlib or third-party module is normally not built at the level of
+        // the current invocation (vm.md § Optimization level) — so the point
+        // is to make the mix identifiable, not to flag it.
+        eprintln!("nlvm: {} modules loaded", modules.len());
+        for module in &modules {
+            eprintln!(
+                "nlvm:   {} (module v{}, {})",
+                module.this_class_name().unwrap_or("<unnamed>"),
+                module.version,
+                module.opt_level_label(),
+            );
+        }
     }
 
     let outcome = nl_vm::run_program(&modules, &program_args);

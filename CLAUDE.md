@@ -19,11 +19,13 @@ Détails projet/install/usage → [README.md](README.md). Version specs ciblée 
 
 ## Commandes (`Makefile`)
 
-Raccourcis autour des commandes cargo (tout en `--locked`, comme la CI) : `make` (build release), `make test` (`cargo test --workspace` + suite YAML, ce que fait la CI), `make unit-tests` / `make fixtures` séparément, `make bench`, `make fmt` / `fmt-check` / `clippy`, `make check` (les trois + tests), `make install`. `make help` les liste.
+Raccourcis autour des commandes cargo (tout en `--locked`, comme la CI) : `make` (build release), `make test` (`cargo test --workspace` + suite YAML, ce que fait la CI), `make unit-tests` / `make fixtures` séparément, `make differential`, `make bench`, `make fmt` / `fmt-check` / `clippy`, `make check` (les trois + tests + differential), `make install`. `make help` les liste.
 
 ## Tests
 
 `tests/*.yaml` — fixtures organisées par phase (`phaseN_...`). Lancer via `nltest` (`cargo run -p nl-test-runner` ou binaire `nltest`).
+
+Niveaux d'optimisation : `nlc -O0` (défaut) / `-O1`, niveau enregistré dans le module (format v3, `unrecorded` pour un module v1/v2) et rapporté par module par `nlvm -v`. Les passes sont enregistrées dans `nl_codegen::opt` (table vide pour l'instant). `nltest --differential` rejoue toute la suite aux deux niveaux et exige des sorties identiques (optimizations.md § Testing) — c'est un gate CI ; les fixtures marquées `optimization_sensitive: true` (stack traces, épuisement de pile) sont exclues de la comparaison mais toujours exécutées aux deux niveaux.
 
 ## Benchmarks
 

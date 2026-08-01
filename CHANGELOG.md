@@ -5,6 +5,23 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.24.0]
+
+### Added
+- An **optimization level** on `nlc`: `-O0` (default) and `-O1`, prerequisite for every compiler-side item of [issue #18](https://github.com/nlvm-lang/nlvm/issues/18). `-O0` runs no optimization pass at all and is a supported, tested configuration rather than a debug escape hatch — [`optimizations.md` § Optimization levels](https://github.com/nlvm-lang/nlvm-specs/blob/main/docs/optimizations.md#optimization-levels) requires every implementation to support it and makes it the reference side of every comparison in § Testing. Passes are registered in a single table in the new `nl_codegen::opt` module with the minimum level that enables them, and `nlc --verbose` prints the ones that ran. The table is deliberately **empty for now**: the switch and the differential suite land before the passes they exist to guard. `-O` is compiler-side only; the VM-side optimizations (string interning, superinstructions, inline caching) are applied by `nlvm` at load time and will get their own flag.
+
+- A **differential test mode** in `nltest` (`--differential`, `make differential`, and a CI gate), which is the regression test [`optimizations.md` § Testing](https://github.com/nlvm-lang/nlvm-specs/blob/main/docs/optimizations.md#testing) mandates: every fixture in [`tests/`](tests) is compiled and run at `-O0` *and* at `-O1`, both runs must satisfy the fixture's own expectations, and they must additionally agree with each other on stdout, stderr and exit code — which catches an optimization that changes something a fixture doesn't pin down (stderr on a fixture that only asserts an exit code, say). `nltest -O0`/`-O1` runs the suite at one level. The 234 fixtures pass differentially, 10 of them excluded from the comparison (below). See [issue #24](https://github.com/nlvm-lang/nlvm/issues/24).
+
+- A fixture header key **`optimization_sensitive`** (nlvm-internal, like `expected_parse_error` and `stdin`). § Testing names the only two ways an `-O0` and an `-O1` build may legitimately differ — output carrying a stack trace, whose frames inlining and TCO elide, and termination depending on stack exhaustion, which TCO can remove — and requires such tests to be *excluded* from the comparison rather than counted as conformance failures. The ten fixtures in that position (six whose stderr carries a trace, three asserting `stackTrace` frame counts or per-frame `file`/`line`, and `phase9_0040_stack_overflow_exception`) carry the key and say why; they are still run and still checked against their own expectations at both levels.
+
+### Changed
+- **Module format version 2 → 3**, now matching [`vm.md` § Module format](https://github.com/nlvm-lang/nlvm-specs/blob/main/docs/vm.md#module-format) as of nlvm-specs **0.8.50**: a one-byte `opt_level` follows `version`, so a `.nlm`/`.nlp` on disk records how it was built. This shipped first as an implementation extension and was ratified as-is by [nlvm-specs#2](https://github.com/nlvm-lang/nlvm-specs/issues/2), which the differential work opened; `SPECS_VERSION` moves 0.8.48 → 0.8.50 (0.8.49 refined stack-trace/TCO observability and needed no code change). Everything after the byte is the version 2 layout unchanged.
+  - In a version 1 or 2 module the level is **unrecorded**, not `-O0` — such a module may well have been optimized, and § Optimization level forbids reporting it as unoptimized. `Module::opt_level` is therefore `Option<OptLevel>`.
+  - An unrecognized level byte is rejected rather than clamped: the level is metadata, never a directive, and clamping would make an artifact's recorded provenance a silent lie.
+  - **Unsupported format versions are now rejected** (`UnsupportedVersion`) instead of being decoded as if they were version 2. § Format version splits the namespace — `0x0000`–`0x7FFF` for the spec (`1`, `2`, `3` assigned), `0x8000`–`0xFFFF` for implementations — and requires a VM to reject what it doesn't support rather than guess a layout, since the magic and the integrity trailer are identical across versions.
+
+- **`nlvm -v` reports each loaded module's format version and optimization level** (`nlvm:   app.Main (module v3, -O1)`), per § VM invocation, rather than one summary line. A program mixing levels is explicitly valid — a prebuilt stdlib or third-party module needn't match the current build — so the point is to make the mix identifiable, not to reject it.
+
 ## [0.23.1]
 
 ### Fixed

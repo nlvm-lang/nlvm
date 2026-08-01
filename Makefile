@@ -5,7 +5,7 @@
 CARGO       := cargo
 CARGO_FLAGS := --locked
 
-.PHONY: all help build test unit-tests fixtures bench fmt fmt-check clippy check clean install
+.PHONY: all help build test unit-tests fixtures differential bench fmt fmt-check clippy check clean install
 
 # Every recipe here is a cargo invocation, and cargo already parallelizes
 # internally; running two of them at once only makes them queue on cargo's
@@ -15,17 +15,18 @@ CARGO_FLAGS := --locked
 all: build
 
 help:
-	@echo "make build       release build of the whole workspace (default target)"
-	@echo "make test        cargo test --workspace, then the YAML fixture suite — what CI runs"
-	@echo "make unit-tests  Rust unit tests only"
-	@echo "make fixtures    YAML fixture suite only (tests/, via nltest)"
-	@echo "make bench       benchmark suite (benches/, via nlbench) — release only, by design"
-	@echo "make fmt         cargo fmt --all"
-	@echo "make fmt-check   fail if anything is unformatted"
-	@echo "make clippy      cargo clippy over the workspace"
-	@echo "make check       fmt-check + clippy + test"
-	@echo "make clean       cargo clean"
-	@echo "make install     ./install.sh (builds from source, links into ~/.local/bin)"
+	@echo "make build         release build of the whole workspace (default target)"
+	@echo "make test          cargo test --workspace, then the YAML fixture suite — what CI runs"
+	@echo "make unit-tests    Rust unit tests only"
+	@echo "make fixtures      YAML fixture suite only (tests/, via nltest)"
+	@echo "make differential  fixture suite at -O0 and -O1, outputs compared"
+	@echo "make bench         benchmark suite (benches/, via nlbench) — release only, by design"
+	@echo "make fmt           cargo fmt --all"
+	@echo "make fmt-check     fail if anything is unformatted"
+	@echo "make clippy        cargo clippy over the workspace"
+	@echo "make check         fmt-check + clippy + test + differential"
+	@echo "make clean         cargo clean"
+	@echo "make install       ./install.sh (builds from source, links into ~/.local/bin)"
 
 build:
 	$(CARGO) build -r $(CARGO_FLAGS)
@@ -42,6 +43,12 @@ unit-tests:
 fixtures: build
 	target/release/nltest tests/
 
+# optimizations.md § Testing — every fixture must behave identically with
+# and without optimizations. Separate from `test` because it compiles and
+# runs the whole suite twice; `make check` runs it.
+differential: build
+	target/release/nltest --differential tests/
+
 # Release only: a debug build measures the unoptimized interpreter and nlbench
 # refuses to record a baseline from it.
 bench: build
@@ -56,7 +63,7 @@ fmt-check:
 clippy:
 	$(CARGO) clippy --workspace --all-targets $(CARGO_FLAGS)
 
-check: fmt-check clippy test
+check: fmt-check clippy test differential
 
 clean:
 	$(CARGO) clean

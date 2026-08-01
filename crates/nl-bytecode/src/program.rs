@@ -64,13 +64,14 @@ pub fn decode_program(bytes: &[u8]) -> Result<Vec<Module>, BytecodeError> {
 mod tests {
     use super::*;
     use crate::constant_pool::ConstantPool;
-    use crate::module::{HashAlgo, MAGIC, VERSION};
+    use crate::module::{HashAlgo, OptLevel, MAGIC, VERSION};
 
     fn test_module(class_name: &str) -> Module {
         let mut constant_pool = ConstantPool::new();
         let this_class = constant_pool.add_class(class_name);
         Module {
             version: VERSION,
+            opt_level: Some(OptLevel::O0),
             constant_pool,
             this_class,
             class_flags: 0,

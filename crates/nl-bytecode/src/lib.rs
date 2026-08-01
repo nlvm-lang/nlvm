@@ -10,7 +10,7 @@ pub use disasm::{instructions, Instruction};
 pub use error::BytecodeError;
 pub use module::{
     class_flags, field_flags, method_flags, ExceptionTableEntry, FieldDescriptor, HashAlgo,
-    LineTableEntry, MethodDescriptor, Module,
+    LineTableEntry, MethodDescriptor, Module, OptLevel,
 };
 pub use opcode::Opcode;
 pub use program::{decode_program, encode_program, is_program, PROGRAM_MAGIC, PROGRAM_VERSION};

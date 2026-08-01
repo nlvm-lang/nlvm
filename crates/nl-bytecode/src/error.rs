@@ -8,6 +8,10 @@ pub enum BytecodeError {
     UnknownConstantTag(u8),
     #[error("unknown hash algorithm: {0}")]
     UnknownHashAlgo(u8),
+    #[error("unknown optimization level: {0}")]
+    UnknownOptLevel(u8),
+    #[error("unsupported module format version: {0} (this VM supports 1 to 3)")]
+    UnsupportedVersion(u16),
     #[error("integrity hash mismatch — module is corrupted or tampered with")]
     HashMismatch,
     #[error("malformed module: {0}")]

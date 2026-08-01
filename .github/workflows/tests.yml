@@ -22,6 +22,16 @@ jobs:
       - name: YAML fixture suite (nltest)
         run: cargo run -p nl-test-runner --locked -- tests
 
+      # optimizations.md § Testing — "Run the same program with and without
+      # optimizations; compare outputs, exit codes, and exception behavior.
+      # All existing tests in tests/ must pass regardless of optimization
+      # level." Unlike the benchmark step below this *is* a gate: an
+      # optimization that changes observable behaviour is a bug, and this is
+      # what makes -O1 optional in practice rather than only on paper
+      # (issue #24).
+      - name: Differential fixture suite, -O0 vs -O1 (nltest)
+        run: cargo run -p nl-test-runner --locked -- --differential tests
+
       # Not a timing gate — a shared CI runner is far too noisy for that, and
       # the baseline is recorded per host anyway (see benches/baseline.yaml).
       # This only proves every benchmark still compiles and still produces the

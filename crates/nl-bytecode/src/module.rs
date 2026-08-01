@@ -5,7 +5,74 @@ use crate::error::BytecodeError;
 use sha2::{Digest, Sha256};
 
 pub const MAGIC: u32 = 0x4E4C_4D00;
-pub const VERSION: u16 = 2;
+/// Module format version this implementation emits — vm.md § Format version,
+/// which assigns `1`, `2` and `3` (version 3 adds the `opt_level` byte after
+/// `version`; everything following it is the version 2 layout unchanged).
+pub const VERSION: u16 = 3;
+
+/// The first module format version carrying the `opt_level` byte.
+const VERSION_OPT_LEVEL: u16 = 3;
+
+/// Versions this VM can decode. vm.md § Format version: a VM **must** reject
+/// a module whose version it does not support rather than guess the layout
+/// (the magic and the integrity trailer are identical across versions), and
+/// one that supports version 3 **should** also accept 1 and 2. Everything
+/// else — the spec's unassigned numbers *and* the implementation-defined
+/// range `0x8000`–`0xFFFF`, which this implementation claims none of — is
+/// rejected.
+const SUPPORTED_VERSIONS: std::ops::RangeInclusive<u16> = 1..=VERSION;
+
+/// Optimization level a module was compiled at — `nlc -O0` / `-O1`, recorded
+/// in the module (vm.md § Optimization level) so a `.nlm`/`.nlp` on disk says
+/// how it was built (`nlvm -v` reports it) and so the two halves of a
+/// differential run can never be mistaken for each other.
+///
+/// optimizations.md § Optimization levels is what makes `O0` a first-class
+/// configuration rather than a debug escape hatch: no optimization runs at
+/// `O0`, every implementation must support it, and it is the reference side
+/// of every comparison in § Testing.
+///
+/// Deliberately compiler-side only: the VM-side optimizations of
+/// optimizations.md § VM optimizations (string interning, superinstructions,
+/// inline caching) are chosen by `nlvm` at run time and are explicitly *not*
+/// governed by `-O<n>`, so they get their own switch rather than sharing this
+/// namespace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub enum OptLevel {
+    /// No optimization pass runs.
+    #[default]
+    O0,
+    /// Every pass registered at level 1 runs (see `nl_codegen::opt`).
+    O1,
+}
+
+impl OptLevel {
+    /// Parses the numeric part of `-O<n>`; `None` for a level this
+    /// implementation doesn't define, so callers can report the whole set.
+    pub fn from_number(n: u8) -> Option<Self> {
+        match n {
+            0 => Some(OptLevel::O0),
+            1 => Some(OptLevel::O1),
+            _ => None,
+        }
+    }
+
+    pub fn as_byte(self) -> u8 {
+        match self {
+            OptLevel::O0 => 0,
+            OptLevel::O1 => 1,
+        }
+    }
+}
+
+impl std::fmt::Display for OptLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OptLevel::O0 => f.write_str("-O0"),
+            OptLevel::O1 => f.write_str("-O1"),
+        }
+    }
+}
 
 pub mod class_flags {
     pub const READONLY: u16 = 1 << 0;
@@ -87,6 +154,14 @@ pub enum HashAlgo {
 #[derive(Debug, Clone)]
 pub struct Module {
     pub version: u16,
+    /// Optimization level the module was compiled at, or `None` when the
+    /// module doesn't record one (format version ≤ 2, which has no such
+    /// byte). vm.md § Optimization level is explicit that this is
+    /// *unrecorded*, **not** `O0`: a version 2 module may well have been
+    /// produced by an optimizing compiler, and a VM must not report it as
+    /// unoptimized. Set (`Some`) exactly when `version >= 3` — see
+    /// `validate`.
+    pub opt_level: Option<OptLevel>,
     pub constant_pool: ConstantPool,
     pub this_class: u16,
     pub class_flags: u16,
@@ -112,6 +187,14 @@ impl Module {
     /// its sibling modules — so they're checked once every module of a
     /// program is loaded, by `nl_vm::program::verify_link`.
     pub fn validate(&self) -> Result<(), BytecodeError> {
+        // The `opt_level` byte exists from version 3 on and nowhere else, so
+        // a module recording a level it has no room to encode (or omitting
+        // one it must encode) would round-trip into a different module.
+        if self.opt_level.is_some() != (self.version >= VERSION_OPT_LEVEL) {
+            return Err(BytecodeError::Malformed(
+                "opt_level must be recorded from module format version 3 on, and only then",
+            ));
+        }
         if self.class_flags & class_flags::ABSTRACT != 0
             && self.class_flags & class_flags::FINAL != 0
         {
@@ -145,6 +228,18 @@ impl Module {
             }
         }
         Ok(())
+    }
+
+    /// How the recorded level should be named in diagnostics — vm.md § VM
+    /// invocation asks for `unrecorded` on a version ≤ 2 module rather than
+    /// a level, precisely so it can't be read as "built without
+    /// optimizations".
+    pub fn opt_level_label(&self) -> &'static str {
+        match self.opt_level {
+            Some(OptLevel::O0) => "-O0",
+            Some(OptLevel::O1) => "-O1",
+            None => "unrecorded",
+        }
     }
 
     pub fn this_class_name(&self) -> Option<&str> {
@@ -213,6 +308,11 @@ impl Module {
         let mut buf = Vec::new();
         buf.extend_from_slice(&MAGIC.to_be_bytes());
         buf.extend_from_slice(&self.version.to_be_bytes());
+        // Keyed on the version, like `decode`, so the two stay symmetric;
+        // `validate` is what guarantees the level is there to write.
+        if self.version >= VERSION_OPT_LEVEL {
+            buf.push(self.opt_level.unwrap_or_default().as_byte());
+        }
 
         let cp_entries = self.constant_pool.entries();
         buf.extend_from_slice(&(cp_entries.len() as u16 + 1).to_be_bytes());
@@ -283,6 +383,19 @@ impl Module {
             return Err(BytecodeError::BadMagic(magic));
         }
         let version = r.read_u16()?;
+        if !SUPPORTED_VERSIONS.contains(&version) {
+            return Err(BytecodeError::UnsupportedVersion(version));
+        }
+        let opt_level = if version >= VERSION_OPT_LEVEL {
+            let byte = r.read_u8()?;
+            // vm.md § Optimization level: the level is metadata, never a
+            // directive, and a VM may reject one it doesn't recognize but
+            // must not clamp or reinterpret it — a module compiled at some
+            // future `-O2` must not run labelled `-O1`.
+            Some(OptLevel::from_number(byte).ok_or(BytecodeError::UnknownOptLevel(byte))?)
+        } else {
+            None
+        };
 
         let cp_count = r.read_u16()?;
         let mut constant_pool = ConstantPool::new();
@@ -412,6 +525,7 @@ impl Module {
 
         let module = Module {
             version,
+            opt_level,
             constant_pool,
             this_class,
             class_flags,
@@ -552,6 +666,7 @@ mod tests {
         let this_class = constant_pool.add_class("app.Widget");
         Module {
             version: VERSION,
+            opt_level: Some(OptLevel::O0),
             constant_pool,
             this_class,
             class_flags: flags,
@@ -614,6 +729,85 @@ mod tests {
         let bytes = m.encode();
         let decoded = Module::decode(&bytes).expect("a well-formed concrete method must decode");
         assert_eq!(decoded.methods.len(), 1);
+    }
+
+    #[test]
+    fn opt_level_round_trips() {
+        for level in [OptLevel::O0, OptLevel::O1] {
+            let mut m = base_module(0);
+            m.opt_level = Some(level);
+            let decoded = Module::decode(&m.encode()).expect("must decode");
+            assert_eq!(decoded.opt_level, Some(level));
+            assert_eq!(decoded.version, VERSION);
+        }
+    }
+
+    /// vm.md § Optimization level: in a version 1 or 2 module the level is
+    /// *unrecorded*, not `0` — such a module may well have been optimized,
+    /// so it must not be labelled unoptimized.
+    #[test]
+    fn pre_v3_module_has_no_recorded_level() {
+        let mut m = base_module(0);
+        m.version = 2;
+        m.opt_level = None;
+        let decoded = Module::decode(&m.encode()).expect("a version 2 image must still decode");
+        assert_eq!(decoded.version, 2);
+        assert_eq!(decoded.opt_level, None);
+        assert_eq!(decoded.opt_level_label(), "unrecorded");
+    }
+
+    /// The level and the version that gives it room to exist can't disagree:
+    /// either combination would encode into a module that decodes back
+    /// differently.
+    #[test]
+    fn validate_rejects_level_version_mismatch() {
+        let mut recorded_at_v2 = base_module(0);
+        recorded_at_v2.version = 2;
+        assert!(matches!(
+            recorded_at_v2.validate(),
+            Err(BytecodeError::Malformed(_))
+        ));
+
+        let mut unrecorded_at_v3 = base_module(0);
+        unrecorded_at_v3.opt_level = None;
+        assert!(matches!(
+            unrecorded_at_v3.validate(),
+            Err(BytecodeError::Malformed(_))
+        ));
+    }
+
+    /// vm.md § Format version: a VM must reject a version it doesn't
+    /// support rather than guess the layout — the magic and the integrity
+    /// trailer are identical across versions, so a wrong guess decodes
+    /// garbage instead of failing. `0x8000` is the implementation-defined
+    /// range, which this implementation claims nothing in.
+    #[test]
+    fn decode_rejects_unsupported_versions() {
+        for version in [0, VERSION + 1, 0x8000] {
+            let mut m = base_module(0);
+            m.version = version;
+            let bytes = m.encode();
+            assert!(
+                matches!(
+                    Module::decode(&bytes),
+                    Err(BytecodeError::UnsupportedVersion(v)) if v == version
+                ),
+                "version {version} must be rejected"
+            );
+        }
+    }
+
+    /// The byte is validated, not silently truncated to a known level: a
+    /// module built by some future `-O2` compiler must be rejected rather
+    /// than run as if it were `-O0`.
+    #[test]
+    fn decode_rejects_unknown_opt_level() {
+        let mut bytes = base_module(0).encode();
+        bytes[6] = 7; // the opt_level byte, right after magic + version
+        assert!(matches!(
+            Module::decode(&bytes),
+            Err(BytecodeError::UnknownOptLevel(7))
+        ));
     }
 
     #[test]

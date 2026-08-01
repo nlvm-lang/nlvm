@@ -40,12 +40,35 @@ fn format_syntax_error(path: &Path, e: &nl_syntax::SyntaxError) -> String {
     format!("{}:{}:{}: {msg}", path.display(), e.line(), e.col())
 }
 
+/// `-O`, `-O0`, `-O1` — the numeric suffix, defaulting to 1 for a bare
+/// `-O` (the C compiler convention). An undefined level is an error rather
+/// than a clamp: `-O2` today means "the caller expects passes we don't have",
+/// and silently compiling at `-O1` would misreport what the module contains.
+fn parse_opt_flag(arg: &str) -> Result<nl_bytecode::OptLevel> {
+    let suffix = &arg[2..];
+    if suffix.is_empty() {
+        return Ok(nl_bytecode::OptLevel::O1);
+    }
+    suffix
+        .parse::<u8>()
+        .ok()
+        .and_then(nl_bytecode::OptLevel::from_number)
+        .with_context(|| format!("unknown optimization level '{arg}' (supported: -O0, -O1)"))
+}
+
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut output = PathBuf::from(".");
     let mut sources = Vec::new();
     let mut lint = false;
     let mut emit_modules = false;
+    let mut verbose = false;
+    // optimizations.md § Principles (3): correctness never depends on an
+    // optimization being applied, so the unoptimized configuration is the
+    // one that must always work — it is also the default until the
+    // differential suite (`nltest --differential`) has a pass to compare
+    // (issue #24).
+    let mut opt_level = nl_bytecode::OptLevel::O0;
 
     let mut i = 0;
     while i < args.len() {
@@ -71,6 +94,15 @@ fn main() -> Result<()> {
             }
             "--emit-modules" => {
                 emit_modules = true;
+            }
+            // Not `-v`: that spelling has always meant `--version` here
+            // (compiler.md § Options gives it to `--verbose`, but changing
+            // it now would silently turn `nlc -v` into a compilation).
+            "--verbose" => {
+                verbose = true;
+            }
+            opt if opt.starts_with("-O") => {
+                opt_level = parse_opt_flag(opt)?;
             }
             other => {
                 let path = PathBuf::from(other);
@@ -133,7 +165,21 @@ fn main() -> Result<()> {
     // nl_syntax::prelude) — bundled alongside the caller's own classes so
     // `nlvm` can load a program that references e.g. `Exception` without
     // the caller having to know about the prelude.
-    let modules = nl_codegen::compile_program(&files).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let modules =
+        nl_codegen::compile_program_with(&files, opt_level).map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    if verbose {
+        let applied = nl_codegen::opt::enabled_passes(opt_level);
+        let passes = if applied.is_empty() {
+            "no optimization pass".to_string()
+        } else {
+            applied.join(", ")
+        };
+        eprintln!(
+            "nlc: {} modules compiled at {opt_level} ({passes})",
+            modules.len()
+        );
+    }
 
     // `--emit-modules`: one `.nlm` file per class/interface in the output
     // directory (the historical layout). Default: a single `.nlp` program
