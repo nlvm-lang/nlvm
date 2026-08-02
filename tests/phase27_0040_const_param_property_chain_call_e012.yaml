@@ -1,0 +1,44 @@
+---
+title: "Compile E012 — a `const` parameter protects the whole object graph reachable from it, not just its first hop: `o.inner.bump()` is as much a mutation as `o.bump()` (issue #32)"
+file_separator: "#NLFILE"
+expected_compile_error: "E012"
+---
+
+#NLFILE phase27/constparamchain/Inner.nl
+namespace phase27.constparamchain;
+class Inner {
+	public int v;
+
+	public construct(int v) {
+		this.v = v;
+	}
+
+	public void bump() {
+		this.v = this.v + 1;
+	}
+}
+
+#NLFILE phase27/constparamchain/Outer.nl
+namespace phase27.constparamchain;
+class Outer {
+	public Inner inner;
+
+	public construct(Inner inner) {
+		this.inner = inner;
+	}
+}
+
+#NLFILE phase27/constparamchain/Main.nl
+namespace phase27.constparamchain;
+class Main {
+	public static void touch(const Outer o) {
+		o.inner.bump();
+	}
+
+	public static int main(string[] args) {
+		auto o = new Outer(new Inner(0));
+		Main.touch(o);
+		system.Out.print(o.inner.v);
+		return 0;
+	}
+}

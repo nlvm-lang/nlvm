@@ -1,5 +1,5 @@
 ---
-title: "Compile E011 — a `const` method may not reach around the guarantee by calling a non-const method on an object held in a property of `this` (issue #32 — FAILS TODAY: const is shallow, this compiles and prints 1)"
+title: "Compile E011 — a `const` method may not reach around the guarantee by calling a non-const method on an object held in a property of `this` (issue #32)"
 file_separator: "#NLFILE"
 expected_compile_error: "E011"
 ---
@@ -30,8 +30,10 @@ class Outer {
 	// `this.inner.bump()` mutates state reachable from `this`, which is what
 	// specs.md § Loops calls "deep immutability" ("a const method cannot
 	// mutate the object's logical state"). compiler.md § Const methods is
-	// worded shallowly (E011 covers calls "on `this`"), and nlc follows the
-	// shallow reading — the two documents have to be reconciled, see #32.
+	// worded shallowly (E011 covers calls "on `this`") and nlc used to
+	// follow that reading literally; it now enforces the deep guarantee
+	// along the whole property chain, and compiler.md is the document that
+	// needs the edit — see #32.
 	public int peek() const {
 		this.inner.bump();
 		return this.inner.v;

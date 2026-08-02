@@ -1,0 +1,88 @@
+---
+title: "Transitive const/readonly rejects mutation only — reads through a property chain, `const` method calls on it, and every mutation from a non-const context still compile and run (issue #32)"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "0 3 1 7 3 42"
+---
+
+#NLFILE phase27/chainreads/Inner.nl
+namespace phase27.chainreads;
+class Inner {
+	public int v;
+	public int[] slots;
+
+	public construct(int v) {
+		this.v = v;
+		this.slots = new int[]{7, 8};
+	}
+
+	public void bump() {
+		this.v = this.v + 1;
+	}
+
+	public int get() const {
+		return this.v;
+	}
+}
+
+#NLFILE phase27/chainreads/Outer.nl
+namespace phase27.chainreads;
+class Outer {
+	public Inner inner;
+
+	public construct(Inner inner) {
+		this.inner = inner;
+	}
+
+	// Every read form through the chain stays legal in a const method: a
+	// property, a `const` method call, an array element.
+	public int peek() const {
+		return this.inner.v + this.inner.get() + this.inner.slots[0];
+	}
+
+	// ... and a non-const method may still mutate the same chain freely.
+	public void poke() {
+		this.inner.bump();
+		this.inner.slots[0] = 100;
+	}
+}
+
+#NLFILE phase27/chainreads/Box.nl
+namespace phase27.chainreads;
+class readonly Box {
+	public Inner inner;
+
+	// The declaring class's own constructor is where a readonly instance is
+	// built, one hop or several — the exemption applies to the whole chain.
+	public construct(Inner inner) {
+		this.inner = inner;
+		this.inner.v = 3;
+	}
+}
+
+#NLFILE phase27/chainreads/Main.nl
+namespace phase27.chainreads;
+class Main {
+	// A `const` parameter is still perfectly usable for reading.
+	public static int read(const Outer o) {
+		return o.inner.get();
+	}
+
+	public static int main(string[] args) {
+		auto o = new Outer(new Inner(0));
+		system.Out.print(Main.read(o) + " ");
+		o.poke();
+		system.Out.print((o.inner.v + o.inner.slots[1] - 6) + " ");
+		system.Out.print(o.inner.get() + " ");
+
+		auto b = new Box(new Inner(0));
+		system.Out.print(b.inner.slots[0] + " ");
+		system.Out.print(b.inner.get() + " ");
+
+		// A plain (non-readonly, non-const) holder is unaffected.
+		auto free = new Outer(new Inner(41));
+		free.inner.bump();
+		system.Out.print(free.inner.v);
+		return 0;
+	}
+}

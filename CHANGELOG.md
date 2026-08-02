@@ -5,6 +5,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.25.0]
+
+### Changed
+- **`const` and `readonly` are now transitive** ([issue #32](https://github.com/nlvm-lang/nlvm/issues/32)). Both guarantees used to stop at the first property hop: a `const` method could call a non-`const` method on an object held in a property of `this` (`this.inner.bump()`), a `const` parameter's object graph could be mutated one hop down (`o.inner.v = 1`), and a `readonly` class protected only its own properties, not the objects they point at (`box.inner.v = 42`). That made the feature vacuous for any class with reference-typed properties — the only case where it is worth having — while [`specs.md` § Loops](https://github.com/nlvm-lang/nlvm-specs/blob/main/docs/specs.md#loops) advertises *deep* immutability ("a const method cannot mutate the object's logical state, including elements of its collections"). Whatever is reachable from an immutable receiver by property reads, array indexing and casts is now itself immutable, so E010/E011/E012/E013/E039 apply along the whole chain instead of just its root. Reads are unaffected: only writes and non-`const` calls are rejected, and a `readonly` class's own `construct` may still initialize what it holds, however many hops deep.
+  - Two gaps of the same kind closed on the way: a `const` parameter's properties could be written directly (`i.v = 5` — only the "may only call `const` methods" half of compiler.md § Const parameters was enforced), and array elements were never covered at all (`this.slots[0] = 99` in a `const` method, `a[0] = 1` on a `const int[]` parameter).
+  - The implicit const of a for-each variable follows the same rule, so `for (auto item : this.inner.items)` inside a `const` method is read-only like `for (auto item : this.items)` already was.
+  - E013 gained two message variants for the transitive case (`Cannot modify property 'v' reached through readonly class 'Box'`, and the call-site counterpart) — the existing "property '%s' of readonly class '%s'" would name a class the property is not declared in. Same code, so nothing changes for a `.yaml` fixture or any tool matching on `E013`.
+  - **This rejects programs that used to compile.** Both spec documents need the corresponding edit: [`compiler.md` § Immutability enforcement](https://github.com/nlvm-lang/nlvm-specs/blob/main/docs/compiler.md#immutability-enforcement) is worded one-hop ("any assignment to `this.property`", "any call to a non-const method on `this`") and is what the shallow implementation was conformant with — see issue #32 for the reconciliation.
+  - Nine fixtures (`tests/phase27_*`) cover each reproduction in the issue, the two extra gaps, the for-each rule, and one run test pinning down what stays legal (chained reads, `const` calls through a chain, mutation from a non-const context, a `readonly` class's constructor).
+
 ## [0.24.0]
 
 ### Added

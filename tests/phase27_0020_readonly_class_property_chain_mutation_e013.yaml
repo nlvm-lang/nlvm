@@ -1,5 +1,5 @@
 ---
-title: "Compile E013 — a `readonly` class must not let the target of one of its properties be mutated (issue #32 — FAILS TODAY: readonly is shallow, this compiles and prints 42)"
+title: "Compile E013 — a `readonly` class must not let the target of one of its properties be mutated (issue #32)"
 file_separator: "#NLFILE"
 expected_compile_error: "E013"
 ---
@@ -33,12 +33,13 @@ namespace phase27.readonlychain;
 class Main {
 	public static int main(string[] args) {
 		auto b = new Box(new Inner(0));
-		// `b.inner` may not be reassigned (E013), but nothing stops the
-		// object it points at from being mutated — so "no property of any
-		// instance can be modified" (compiler.md § Readonly classes) only
-		// holds one hop deep. E013 is the closest existing code; its message
-		// names the readonly class, which does not fit here (`v` belongs to
-		// `Inner`), so #32 may well need a new diagnostic instead.
+		// `b.inner` may not be reassigned (E013), and since #32 nothing
+		// reachable through it may be mutated either — "no property of any
+		// instance can be modified" (compiler.md § Readonly classes) holds
+		// all the way down. Same E013 code, with its own wording: "property
+		// 'v' of readonly class 'Box'" would name a class `v` is not
+		// declared in (`v` belongs to `Inner`), so the transitive form
+		// reports "reached through readonly class 'Box'" instead.
 		b.inner.bump();
 		b.inner.v = 42;
 		system.Out.print(b.inner.v);

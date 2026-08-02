@@ -1,0 +1,42 @@
+---
+title: "Compile E010 — a `const` method may not assign to a property of an object reached through a property of `this` (issue #32)"
+file_separator: "#NLFILE"
+expected_compile_error: "E010"
+---
+
+#NLFILE phase27/constchainwrite/Inner.nl
+namespace phase27.constchainwrite;
+class Inner {
+	public int v;
+
+	public construct(int v) {
+		this.v = v;
+	}
+}
+
+#NLFILE phase27/constchainwrite/Outer.nl
+namespace phase27.constchainwrite;
+class Outer {
+	public Inner inner;
+
+	public construct(Inner inner) {
+		this.inner = inner;
+	}
+
+	// `this.v = 7` has always been E010; `this.inner.v = 7` mutates the
+	// same logical state one hop further out, so it is the same error.
+	public int poke() const {
+		this.inner.v = 7;
+		return this.inner.v;
+	}
+}
+
+#NLFILE phase27/constchainwrite/Main.nl
+namespace phase27.constchainwrite;
+class Main {
+	public static int main(string[] args) {
+		auto o = new Outer(new Inner(0));
+		system.Out.print(o.poke());
+		return 0;
+	}
+}

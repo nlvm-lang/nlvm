@@ -1,0 +1,33 @@
+---
+title: "Compile E012 — a `const` parameter's own properties may not be written either: only the method-call half of the guarantee used to be enforced (issue #32)"
+file_separator: "#NLFILE"
+expected_compile_error: "E012"
+---
+
+#NLFILE phase27/constparamwrite/Inner.nl
+namespace phase27.constparamwrite;
+class Inner {
+	public int v;
+
+	public construct(int v) {
+		this.v = v;
+	}
+}
+
+#NLFILE phase27/constparamwrite/Main.nl
+namespace phase27.constparamwrite;
+class Main {
+	// compiler.md § Const parameters: "for object types, only const methods
+	// may be called on it" spells out the call side; a direct property write
+	// is the more obvious mutation and was silently accepted before #32.
+	public static void touch(const Inner i) {
+		i.v = 5;
+	}
+
+	public static int main(string[] args) {
+		auto i = new Inner(0);
+		Main.touch(i);
+		system.Out.print(i.v);
+		return 0;
+	}
+}

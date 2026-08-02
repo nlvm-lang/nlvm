@@ -980,6 +980,75 @@ struct VarEntry {
     ty: Type,
 }
 
+/// Why the object denoted by a receiver expression may not be mutated —
+/// neither assigned into (`recv.p = ...`, `recv.p++`, `recv[i] = ...`) nor
+/// sent a non-`const` method (`recv.mutate()`). `None` from
+/// `MethodChecker::immutable_receiver` (the common case) means mutation is
+/// allowed.
+///
+/// Issue #32: each of these guarantees used to stop at the first property
+/// hop — `this.inner.bump()` inside a `const` method, `box.inner.v = 1` on a
+/// `readonly` class — which made them vacuous for any class with
+/// reference-typed properties, while specs.md § Loops advertises *deep*
+/// immutability. The rule is transitive instead: anything reachable from an
+/// immutable receiver by property reads and array indexing is itself
+/// immutable.
+enum ImmutableVia {
+    /// `this`/`super` inside a `const` method — E010 (write) / E011 (call).
+    ConstMethodThis,
+    /// A `const` parameter or local variable — E012.
+    ConstVar(String),
+    /// A `for each` loop variable over a read-only collection — E039.
+    ConstLoopVar(String),
+    /// Reached through a property of the named `readonly` class — E013.
+    ReadonlyClass(String),
+}
+
+impl ImmutableVia {
+    /// The diagnostic for writing `property` of this receiver (`=`, a
+    /// compound assignment, `++`/`--`). For an array element write the
+    /// caller passes the property the array itself is held in, which is the
+    /// only name worth reporting (`this.items[0] = 1` → "property 'items'").
+    fn write_error(self, property: &str) -> SemaError {
+        match self {
+            ImmutableVia::ConstMethodThis => {
+                SemaError::ConstMethodPropertyModification(property.to_string())
+            }
+            ImmutableVia::ConstVar(name) => SemaError::ConstModification(name),
+            ImmutableVia::ConstLoopVar(name) => SemaError::ConstLoopVariableModification(name),
+            ImmutableVia::ReadonlyClass(fqcn) => {
+                SemaError::ReadonlyClassChainModification(property.to_string(), fqcn)
+            }
+        }
+    }
+
+    /// The diagnostic for calling the non-`const` method `name` on this
+    /// receiver.
+    fn call_error(self, name: &str) -> SemaError {
+        match self {
+            ImmutableVia::ConstMethodThis => SemaError::ConstMethodNonConstCall(name.to_string()),
+            ImmutableVia::ConstVar(var) => SemaError::ConstModification(var),
+            ImmutableVia::ConstLoopVar(var) => SemaError::ConstLoopVariableModification(var),
+            ImmutableVia::ReadonlyClass(fqcn) => {
+                SemaError::ReadonlyClassChainCall(name.to_string(), fqcn)
+            }
+        }
+    }
+}
+
+/// The last property name crossed by a receiver expression, for the "which
+/// property is being modified" slot of E010/E013 when the write target is an
+/// array element (`this.items[0] = 1` → `items`). `None` only for a receiver
+/// that is a bare local (`a[0] = 1`), whose diagnostics (E012/E039) name the
+/// variable instead and ignore this.
+fn last_property(expr: &Expr) -> Option<&str> {
+    match expr {
+        Expr::FieldAccess(_, name) => Some(name),
+        Expr::Index(target, _) | Expr::Cast(_, target) => last_property(target),
+        _ => None,
+    }
+}
+
 /// `assigned` is a flat set of variable ids "definitely assigned so far" on
 /// the current control-flow path; ids are unique per declaration (never
 /// reused), so it doesn't need to be pruned when a block's scope ends —
@@ -997,16 +1066,19 @@ struct MethodChecker<'a> {
     this_fqcn: String,
     /// compiler.md § Const methods — E010/E011. `true` while checking a
     /// method declared `const`: `this.property = ...` and calls to
-    /// non-`const` methods on `this` are both rejected.
+    /// non-`const` methods on `this` are both rejected — and so is either
+    /// one on anything reachable from `this` (`immutable_receiver`).
     is_const_method: bool,
     /// compiler.md § Readonly classes and properties — E013/E014. `true`
     /// while checking a constructor (`construct`/`<construct>`), where
-    /// `this.property = ...` is exempt from the readonly rule.
+    /// `this.property = ...` (and any deeper write through it) is exempt
+    /// from the readonly rule.
     is_current_constructor: bool,
     /// compiler.md § Const parameters/local variables — E012. Variable ids
     /// that cannot be reassigned/mutated, nor have a non-`const` method
-    /// called on them (for object types). Uses the same never-reused id
-    /// space as `assigned`.
+    /// called on them (for object types) — mutating what they *reach* is
+    /// equally rejected, see `immutable_receiver`. Uses the same
+    /// never-reused id space as `assigned`.
     const_vars: HashSet<u32>,
     /// compiler.md § For-each loop in const context — E039. Same rules as
     /// `const_vars`, but a distinct set because the violation reports a
@@ -1469,6 +1541,65 @@ impl<'a> MethodChecker<'a> {
         }
     }
 
+    /// Walks a receiver expression down to its root to decide whether the
+    /// object it denotes may be mutated — see `ImmutableVia` for the rules
+    /// and for why the walk is transitive (issue #32). Property reads, array
+    /// indexing and casts all preserve immutability, so no chain of them can
+    /// launder a `const`/`readonly` receiver into a mutable one.
+    ///
+    /// The type queries go through `simple_receiver_ty`, which is
+    /// deliberately best-effort: an expression shape it doesn't model (a
+    /// ternary, a stdlib receiver, ...) yields `None` and the mutation is
+    /// left alone, same leniency as the rest of this checker. The
+    /// `const`/`readonly`-loop-variable roots need no type at all, so those
+    /// answers are exact.
+    fn immutable_receiver(&self, expr: &Expr) -> Option<ImmutableVia> {
+        match expr {
+            // `super.x = ...` mutates the same object `this.x = ...` does.
+            Expr::This | Expr::Super => self
+                .is_const_method
+                .then_some(ImmutableVia::ConstMethodThis),
+            Expr::Ident(name) => {
+                let (id, _) = self.resolve(name)?;
+                if self.readonly_loop_vars.contains(&id) {
+                    Some(ImmutableVia::ConstLoopVar(name.clone()))
+                } else if self.const_vars.contains(&id) {
+                    Some(ImmutableVia::ConstVar(name.clone()))
+                } else {
+                    None
+                }
+            }
+            Expr::FieldAccess(target, field) => {
+                if let Some(via) = self.immutable_receiver(target) {
+                    return Some(via);
+                }
+                // compiler.md § Readonly classes: "no property of any
+                // instance can be modified" — reading a property of a
+                // `readonly` class therefore yields an object whose own
+                // state is part of that guarantee.
+                let Type::Named(fqcn) = self.simple_receiver_ty(target)? else {
+                    return None;
+                };
+                let (owner, _) = class_table::find_field_owner(self.classes, &fqcn, field)?;
+                if !self.classes.get(&owner).is_some_and(|i| i.is_readonly) {
+                    return None;
+                }
+                // Same constructor exemption as `check_readonly`: a
+                // `readonly` class's own constructor is where its state is
+                // built, one hop or several.
+                if self.is_current_constructor
+                    && self.this_fqcn == owner
+                    && matches!(**target, Expr::This)
+                {
+                    return None;
+                }
+                Some(ImmutableVia::ReadonlyClass(owner))
+            }
+            Expr::Index(target, _) | Expr::Cast(_, target) => self.immutable_receiver(target),
+            _ => None,
+        }
+    }
+
     /// compiler.md § Checked exception propagation — E015. `exc_fqcn` is
     /// exempt if it isn't a checked exception at all (not `Exception` or a
     /// non-`RuntimeException` subclass of it); otherwise it must be caught
@@ -1800,17 +1931,15 @@ impl<'a> MethodChecker<'a> {
                 // loop variable is implicitly non-modifiable when iterating
                 // `this.<field>` inside a `const` method, or a const/const
                 // `ref` parameter — or explicitly, when the loop header
-                // itself writes `for (const ... : ...)`.
-                let is_readonly_collection = *is_const_foreach
-                    || match iterable {
-                        Expr::FieldAccess(target, _) => {
-                            self.is_const_method && matches!(**target, Expr::This)
-                        }
-                        Expr::Ident(name) => self
-                            .resolve(name)
-                            .is_some_and(|(id, _)| self.const_vars.contains(&id)),
-                        _ => false,
-                    };
+                // itself writes `for (const ... : ...)`. The two implicit
+                // cases are exactly "the collection expression is one this
+                // context may not mutate", which is what
+                // `immutable_receiver` answers — including through a
+                // property chain (`this.inner.items`) or a `readonly` class,
+                // where the old first-hop-only test said "mutable" (issue
+                // #32).
+                let is_readonly_collection =
+                    *is_const_foreach || self.immutable_receiver(iterable).is_some();
                 if is_readonly_collection {
                     self.readonly_loop_vars.insert(id);
                 }
@@ -2534,35 +2663,20 @@ impl<'a> MethodChecker<'a> {
                                 args,
                             )?;
                         }
-                        // compiler.md § Const methods — E011: a non-`const`
-                        // method cannot be called on `this` from inside a
-                        // `const` method.
-                        if self.is_const_method && matches!(**target, Expr::This) {
-                            if let Some((_, method)) = &resolved {
-                                if !method.is_const {
-                                    return Err(SemaError::ConstMethodNonConstCall(name.clone()));
-                                }
-                            }
-                        }
-                        // compiler.md § Const parameters/local variables —
-                        // E012: "for object types, only const methods may be
-                        // called on it".
-                        if let Expr::Ident(var_name) = &**target {
-                            if let Some((id, _)) = self.resolve(var_name) {
-                                let is_readonly_loop_var = self.readonly_loop_vars.contains(&id);
-                                let is_const_var = self.const_vars.contains(&id);
-                                if is_readonly_loop_var || is_const_var {
-                                    if let Some((_, method)) = &resolved {
-                                        if !method.is_const {
-                                            return Err(if is_readonly_loop_var {
-                                                SemaError::ConstLoopVariableModification(
-                                                    var_name.clone(),
-                                                )
-                                            } else {
-                                                SemaError::ConstModification(var_name.clone())
-                                            });
-                                        }
-                                    }
+                        // compiler.md § Const methods (E011), § Const
+                        // parameters/local variables (E012: "for object
+                        // types, only const methods may be called on it"),
+                        // § For-each loop in const context (E039),
+                        // § Readonly classes (E013) — one rule, since they
+                        // all forbid the same thing: a non-`const` method on
+                        // an object the current context promised not to
+                        // mutate. `immutable_receiver` walks the whole
+                        // receiver chain, so this holds however many
+                        // property hops away the object is (issue #32).
+                        if let Some((_, method)) = &resolved {
+                            if !method.is_const {
+                                if let Some(via) = self.immutable_receiver(target) {
+                                    return Err(via.call_error(name));
                                 }
                             }
                         }
@@ -2985,11 +3099,16 @@ impl<'a> MethodChecker<'a> {
                 Ok(declared_ty)
             }
             LValue::Field(target_expr, name) => {
-                // compiler.md § Const methods — E010: `this.property = ...`
-                // is rejected unconditionally inside a `const` method, even
-                // before the target/field itself resolves to anything.
-                if self.is_const_method && matches!(**target_expr, Expr::This) {
-                    return Err(SemaError::ConstMethodPropertyModification(name.clone()));
+                // compiler.md § Const methods (E010), § Const parameters/
+                // local variables (E012), § For-each loop in const context
+                // (E039), § Readonly classes (E013) — a write through a
+                // receiver that may not be mutated, rejected before the
+                // target/field itself resolves to anything (a `const`
+                // method's `this.property = ...` was always unconditional
+                // this way; `immutable_receiver` keeps that and extends it
+                // to the rest of the chain — issue #32).
+                if let Some(via) = self.immutable_receiver(target_expr) {
+                    return Err(via.write_error(name));
                 }
                 // `Counter.instances = n;` — a plain (non-enum) class's
                 // `static` field, written via its class name. Same
@@ -3042,6 +3161,13 @@ impl<'a> MethodChecker<'a> {
                 Ok(field_ty)
             }
             LValue::Index(target_expr, index_expr) => {
+                // Same rule as the `LValue::Field` arm: specs.md § Loops
+                // spells out that deep immutability covers "elements of its
+                // collections", so an element write is a mutation of the
+                // array's holder just as a property write is (issue #32).
+                if let Some(via) = self.immutable_receiver(target_expr) {
+                    return Err(via.write_error(last_property(target_expr).unwrap_or("element")));
+                }
                 let target_ty = self.check_expr(target_expr, assigned)?;
                 self.check_expr(index_expr, assigned)?;
                 let value_ty = self.check_expr(value, assigned)?;
@@ -3084,12 +3210,12 @@ impl<'a> MethodChecker<'a> {
                 self.incr_result_ty(&ty, op_symbol)
             }
             LValue::Field(target_expr, name) => {
-                // compiler.md § Const methods — E010, same unconditional
-                // rejection as `check_assign`'s `LValue::Field` arm:
-                // `this.count++` mutates a property just as `this.count = n`
-                // does.
-                if self.is_const_method && matches!(**target_expr, Expr::This) {
-                    return Err(SemaError::ConstMethodPropertyModification(name.clone()));
+                // Same immutable-receiver rejection as `check_assign`'s
+                // `LValue::Field` arm: `this.count++` mutates a property
+                // just as `this.count = n` does, and so does
+                // `this.inner.count++` one hop further out.
+                if let Some(via) = self.immutable_receiver(target_expr) {
+                    return Err(via.write_error(name));
                 }
                 // `Counter.instances++` — a plain class's `static` field
                 // written through its class name; `target_expr` is a dotted
@@ -3137,6 +3263,9 @@ impl<'a> MethodChecker<'a> {
                 self.incr_result_ty(&field_ty, op_symbol)
             }
             LValue::Index(target_expr, index_expr) => {
+                if let Some(via) = self.immutable_receiver(target_expr) {
+                    return Err(via.write_error(last_property(target_expr).unwrap_or("element")));
+                }
                 let target_ty = self.check_expr(target_expr, assigned)?;
                 self.check_expr(index_expr, assigned)?;
                 let Type::Array(elem) = target_ty else {

@@ -1,0 +1,60 @@
+---
+title: "Compile E039 — the implicit const of a for-each variable follows the collection, not just its first hop: `this.inner.items` inside a const method is read-only too (issue #32)"
+file_separator: "#NLFILE"
+expected_compile_error: "E039"
+---
+
+#NLFILE phase27/foreachchaincoll/Item.nl
+namespace phase27.foreachchaincoll;
+class Item {
+	public int v;
+
+	public construct(int v) {
+		this.v = v;
+	}
+
+	public void bump() {
+		this.v = this.v + 1;
+	}
+}
+
+#NLFILE phase27/foreachchaincoll/Inner.nl
+namespace phase27.foreachchaincoll;
+class Inner {
+	public Item[] items;
+
+	public construct() {
+		this.items = new Item[]{new Item(1), new Item(2)};
+	}
+}
+
+#NLFILE phase27/foreachchaincoll/Outer.nl
+namespace phase27.foreachchaincoll;
+class Outer {
+	public Inner inner;
+
+	public construct() {
+		this.inner = new Inner();
+	}
+
+	// compiler.md § For-each loop in const context names `this.items`; the
+	// collection is just as read-only when it takes two hops to reach.
+	public int total() const {
+		int sum = 0;
+		for (auto item : this.inner.items) {
+			item.bump();
+			sum = sum + item.v;
+		}
+		return sum;
+	}
+}
+
+#NLFILE phase27/foreachchaincoll/Main.nl
+namespace phase27.foreachchaincoll;
+class Main {
+	public static int main(string[] args) {
+		auto o = new Outer();
+		system.Out.print(o.total());
+		return 0;
+	}
+}

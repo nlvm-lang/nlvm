@@ -1,0 +1,30 @@
+---
+title: "Compile E010 — specs.md § Loops: deep immutability covers \"elements of its collections\", so a `const` method may not write an array element reached from `this` (issue #32)"
+file_separator: "#NLFILE"
+expected_compile_error: "E010"
+---
+
+#NLFILE phase27/constelement/Bag.nl
+namespace phase27.constelement;
+class Bag {
+	public int[] slots;
+
+	public construct() {
+		this.slots = new int[]{1, 2, 3};
+	}
+
+	public int peek() const {
+		this.slots[0] = 99;
+		return this.slots[0];
+	}
+}
+
+#NLFILE phase27/constelement/Main.nl
+namespace phase27.constelement;
+class Main {
+	public static int main(string[] args) {
+		auto b = new Bag();
+		system.Out.print(b.peek());
+		return 0;
+	}
+}

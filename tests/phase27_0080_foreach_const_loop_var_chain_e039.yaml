@@ -1,0 +1,41 @@
+---
+title: "Compile E039 — specs.md § Loops: the implicitly-const loop variable's guarantee is deep, so mutating an object held in one of its properties is rejected too (issue #32)"
+file_separator: "#NLFILE"
+expected_compile_error: "E039"
+---
+
+#NLFILE phase27/foreachchain/Inner.nl
+namespace phase27.foreachchain;
+class Inner {
+	public int v;
+
+	public construct(int v) {
+		this.v = v;
+	}
+
+	public void bump() {
+		this.v = this.v + 1;
+	}
+}
+
+#NLFILE phase27/foreachchain/Outer.nl
+namespace phase27.foreachchain;
+class Outer {
+	public Inner inner;
+
+	public construct(Inner inner) {
+		this.inner = inner;
+	}
+}
+
+#NLFILE phase27/foreachchain/Main.nl
+namespace phase27.foreachchain;
+class Main {
+	public static int main(string[] args) {
+		Outer[] items = new Outer[]{new Outer(new Inner(1))};
+		for (const auto item : items) {
+			item.inner.bump();
+		}
+		return 0;
+	}
+}

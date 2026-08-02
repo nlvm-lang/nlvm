@@ -77,6 +77,19 @@ pub enum SemaError {
     TemplateOperatorUnsupported(String, String, String),
     #[error("E013 — Cannot modify property '{0}' of readonly class '{1}'")]
     ReadonlyClassModification(String, String),
+    /// The transitive form of E013 (issue #32): the modified property is not
+    /// a property of the `readonly` class itself but of an object reached
+    /// through one — `box.inner.v = 1`, where `v` belongs to `Inner`. Same
+    /// code, distinct wording: "property 'v' of readonly class 'Box'" would
+    /// be a lie about where `v` is declared.
+    #[error("E013 — Cannot modify property '{0}' reached through readonly class '{1}'")]
+    ReadonlyClassChainModification(String, String),
+    /// The call-site counterpart of `ReadonlyClassChainModification` —
+    /// `box.inner.bump()`, where `bump` is not `const`.
+    #[error(
+        "E013 — Cannot call non-const method '{0}' on an object reached through readonly class '{1}'"
+    )]
+    ReadonlyClassChainCall(String, String),
     #[error("E014 — Cannot modify readonly property '{0}'")]
     ReadonlyPropertyModification(String),
     #[error("E032 — Cannot instantiate abstract class '{0}'")]
@@ -150,6 +163,8 @@ impl SemaError {
             SemaError::TemplateBoundNotSatisfied(_, _, _) => "E037",
             SemaError::TemplateOperatorUnsupported(_, _, _) => "E006",
             SemaError::ReadonlyClassModification(_, _) => "E013",
+            SemaError::ReadonlyClassChainModification(_, _) => "E013",
+            SemaError::ReadonlyClassChainCall(_, _) => "E013",
             SemaError::ReadonlyPropertyModification(_) => "E014",
             SemaError::InstantiateAbstractClass(_) => "E032",
             SemaError::ClassMustBeAbstract(_, _) => "E033",
